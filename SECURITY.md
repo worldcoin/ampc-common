@@ -1,5 +1,3 @@
-
-
 # Security @ Worldcoin
 
 Security is an essential part of Worldcoin, and we take it very seriously. From the beginning, we have incorporated secure design and applied best practices across the project. However, security doesn’t just end with us. Security audits by third-party firms and research by community members are critical to establishing a solid foundation. If you have identified a security concern, we encourage you to submit your findings to our Product Security Incident Response Team (PSIRT) — your findings may even qualify for a reward!
