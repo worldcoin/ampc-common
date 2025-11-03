@@ -1,0 +1,19 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  annotations:
+    github.com/project-slug: worldcoin/ampc-common
+  tags: ['code-lang:rust']
+  description: Contains the common utilities that can be used by any AMPC setup
+  links:
+    - title: Linear
+      url: PLACEHOLDER-ADD-LINEAR-URL
+    - title: Documentation
+      url: PLACEHOLDER-ADD-DOCUMENTATION-URL
+    - title: Slack
+      url: https://tfh.slack.com/app_redirect?channel=public-proof-of-personhood-team
+  name: ampc-common
+spec:
+  lifecycle: production
+  owner: team-proof-of-personhood
+  type: library
