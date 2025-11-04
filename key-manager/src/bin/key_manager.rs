@@ -14,7 +14,6 @@ use rand::{thread_rng, Rng};
 use reqwest::Client;
 use sodiumoxide::crypto::box_::{curve25519xsalsa20poly1305, PublicKey, SecretKey, Seed};
 
-const PUBLIC_KEY_S3_BUCKET_NAME: &str = "wf-smpcv2-stage-public-keys";
 const PUBLIC_KEY_S3_OBJECT_PREFIX: &str = "public-key";
 
 #[derive(Debug, Parser)] // requires `derive` feature
@@ -40,6 +39,9 @@ struct KeyManagerCli {
 
     #[arg(short, long, env, default_value = "iris-mpc")]
     app_name: String,
+
+    #[arg(short, long, env, default_value = "wf-smpcv2-stage-public-keys")]
+    public_key_bucket_name: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -49,9 +51,6 @@ enum Commands {
     Rotate {
         #[arg(short, long, env)]
         dry_run: Option<bool>,
-
-        #[arg(short, long, env)]
-        public_key_bucket_name: Option<String>,
     },
     /// Validate private key in key manager against public keys (either provided
     /// or in s3)
@@ -64,9 +63,6 @@ enum Commands {
 
         #[arg(short, long, env)]
         b64_pub_key: Option<String>,
-
-        #[arg(short, long, env)]
-        public_key_bucket_name: Option<String>,
     },
 }
 
@@ -80,23 +76,19 @@ async fn main() -> Result<()> {
     let region_provider = S3Region::new(region.clone());
     let shared_config = aws_config::from_env().region(region_provider).load().await;
 
-    let bucket_key_name = format!("{}-{}", PUBLIC_KEY_S3_OBJECT_PREFIX, args.node_id);
+    let object_name = format!("{}-{}", PUBLIC_KEY_S3_OBJECT_PREFIX, args.node_id);
     let private_key_secret_id: String = format!(
         "{}/{}/ecdh-private-key-{}",
         args.env, args.app_name, args.node_id
     );
-
     match args.command {
-        Commands::Rotate {
-            dry_run,
-            public_key_bucket_name,
-        } => {
+        Commands::Rotate { dry_run } => {
             rotate_keys(
                 &shared_config,
-                &bucket_key_name,
+                &object_name,
                 &private_key_secret_id,
                 dry_run,
-                public_key_bucket_name,
+                &args.public_key_bucket_name,
                 args.endpoint_url,
             )
             .await?;
@@ -104,15 +96,14 @@ async fn main() -> Result<()> {
         Commands::Validate {
             version_stage,
             b64_pub_key,
-            public_key_bucket_name,
         } => {
             validate_keys(
                 &shared_config,
                 &private_key_secret_id,
                 &version_stage,
                 b64_pub_key,
-                &bucket_key_name,
-                public_key_bucket_name,
+                &object_name,
+                &args.public_key_bucket_name,
                 region.clone(),
                 args.endpoint_url,
             )
@@ -128,8 +119,8 @@ async fn validate_keys(
     secret_id: &str,
     version_stage: &str,
     b64_pub_key: Option<String>,
-    bucket_key_name: &str,
-    public_key_bucket_name: Option<String>,
+    object_name: &str,
+    bucket_name: &str,
     region: String,
     endpoint_url: Option<String>,
 ) -> Result<()> {
@@ -141,11 +132,6 @@ async fn validate_keys(
 
     let sm_client = SecretsManagerClient::from_conf(sm_config_builder.build());
 
-    let bucket_name = if let Some(bucket_name) = public_key_bucket_name {
-        bucket_name
-    } else {
-        PUBLIC_KEY_S3_BUCKET_NAME.to_string()
-    };
     // Parse user-provided public key, if present
     let pub_key = if let Some(b64_pub_key) = b64_pub_key {
         let user_pubkey = STANDARD.decode(b64_pub_key.as_bytes()).unwrap();
@@ -156,7 +142,7 @@ async fn validate_keys(
     } else {
         // Otherwise, get the latest one from S3 using HTTPS
         let user_pubkey_string =
-            download_key_from_s3(bucket_name.as_str(), bucket_key_name, region.clone()).await?;
+            download_key_from_s3(bucket_name, object_name, region.clone()).await?;
         let user_pubkey = STANDARD.decode(user_pubkey_string.as_bytes()).unwrap();
         match PublicKey::from_slice(&user_pubkey) {
             Some(key) => key,
@@ -175,19 +161,13 @@ async fn validate_keys(
 
 async fn rotate_keys(
     sdk_config: &SdkConfig,
-    bucket_key_name: &str,
+    object_name: &str,
     private_key_secret_id: &str,
     dry_run: Option<bool>,
-    public_key_bucket_name: Option<String>,
+    bucket_name: &str,
     endpoint_url: Option<String>,
 ) -> Result<()> {
     let mut rng = thread_rng();
-
-    let bucket_name = if let Some(bucket_name) = public_key_bucket_name {
-        bucket_name
-    } else {
-        PUBLIC_KEY_S3_BUCKET_NAME.to_string()
-    };
 
     let mut seedbuf = [0u8; 32];
     rng.fill(&mut seedbuf);
@@ -225,25 +205,8 @@ async fn rotate_keys(
 
         return Ok(());
     }
-    match upload_public_key_to_s3(
-        &s3_client,
-        bucket_name.as_str(),
-        bucket_key_name,
-        pub_key_str.as_str(),
-    )
-    .await
-    {
-        Ok(output) => {
-            println!("Bucket: {}", bucket_name);
-            println!("Key: {}", bucket_key_name);
-            println!("ETag: {}", output.e_tag.unwrap());
-        }
-        Err(e) => {
-            eprintln!("Error uploading public key to S3: {:?}", e);
-            return Err(eyre::eyre!("Error uploading public key to S3"));
-        }
-    }
 
+    // Upload private key to secrets manager
     match upload_private_key_to_asm(&sm_client, private_key_secret_id, priv_key_str.as_str()).await
     {
         Ok(output) => {
@@ -256,6 +219,20 @@ async fn rotate_keys(
             return Err(eyre::eyre!(
                 "Error uploading private key to Secrets Manager"
             ));
+        }
+    }
+
+    // Upload public key to S3
+    match upload_public_key_to_s3(&s3_client, bucket_name, object_name, pub_key_str.as_str()).await
+    {
+        Ok(output) => {
+            println!("Bucket: {}", bucket_name);
+            println!("Key: {}", object_name);
+            println!("ETag: {}", output.e_tag.unwrap());
+        }
+        Err(e) => {
+            eprintln!("Error uploading public key to S3: {:?}", e);
+            return Err(eyre::eyre!("Error uploading public key to S3"));
         }
     }
 
