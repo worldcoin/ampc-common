@@ -11,6 +11,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: temporary-key-manager
+  namespace: <your-namespace>
 spec:
   serviceAccountName: <your-service-account>
   hostNetwork: true
@@ -27,13 +28,13 @@ spec:
 Execute the key rotation command **twice**:
 
 ```bash
-kubectl exec -it temporary-key-manager -- key-manager \
+kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
   --node-id <0|1|2> \
   --env <environment> \
   --region <aws-region> \
   --app-name <app-name> \
   --public-key-bucket-name <bucket-name>
-    rotate \
+  rotate \
   --dry-run false
 ```
 
