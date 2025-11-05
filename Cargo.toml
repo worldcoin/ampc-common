@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "key-manager",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR (Apache-2.0 WITH LLVM-exception)"
+repository = "https://github.com/worldcoin/ampc-common"
+
+[workspace.dependencies]
+aws-config = { version = "1.5.10", features = ["behavior-version-latest"] }
+aws-sdk-s3 = { version = "1.65.0", default-features = false }
+aws-sdk-secretsmanager = { version = "1.47.0", default-features = false }
+clap = { version = "4", features = ["derive", "env"] }
+base64 = "0.22.1"
+eyre = "0.6"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+sodiumoxide = "0.2.7"
+tokio = { version = "1.40", features = ["full", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+# Abort on panics rather than unwinding.
+# This improves performance and makes panic propagation more reliable.
+# bench gets its setting from release, and test from dev.
+[profile.release]
+panic = 'abort'
+debug = 1
+
+[profile.dev]
+panic = 'abort'

@@ -1,0 +1,24 @@
+[package]
+name = "key-manager"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-secretsmanager = { workspace = true }
+clap = { workspace = true }
+base64 = { workspace = true }
+eyre = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+sodiumoxide = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "key-manager"
+path = "src/bin/key_manager.rs"
