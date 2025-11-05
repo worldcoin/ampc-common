@@ -61,6 +61,7 @@ dependencies = [
  "axum",
  "eyre",
  "futures",
+ "hex",
  "itertools 0.13.0",
  "pprof",
  "reqwest",

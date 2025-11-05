@@ -22,6 +22,7 @@ tracing = { workspace = true }
 itertools = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
+hex = { workspace = true }
 pprof = { version = "0.15.0", features = ["flamegraph", "prost-codec"], optional = true }
 
 [lib]

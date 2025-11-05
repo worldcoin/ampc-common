@@ -5,7 +5,10 @@ pub mod server_coordination;
 pub mod shutdown_handler;
 pub mod task_monitor;
 
-pub use batch_sync::BatchSyncSharedState;
+pub use batch_sync::{
+    get_batch_sync_entries, get_batch_sync_states, BatchSyncEntries, BatchSyncEntriesResult,
+    BatchSyncResult, BatchSyncSharedState, BatchSyncState,
+};
 pub use config::ServerCoordinationConfig;
 pub use server_coordination::{
     get_others_sync_state, init_heartbeat_task, set_node_ready, start_coordination_server,

@@ -26,6 +26,7 @@ pub struct ReadyProbeResponse {
     pub shutting_down: bool,
 }
 
+/// Build HTTP check addresses from hostnames, ports, and endpoint
 pub fn get_check_addresses<S>(hostnames: &[S], ports: &[S], endpoint: &str) -> Vec<String>
 where
     S: AsRef<str>,
