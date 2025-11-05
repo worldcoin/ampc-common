@@ -1,7 +1,8 @@
+use crate::batch_sync::{batch_sync_routes, BatchSyncSharedState};
 use crate::config::ServerCoordinationConfig;
+use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
 use crate::task_monitor::TaskMonitor;
-use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -25,90 +26,10 @@ pub struct ReadyProbeResponse {
     pub shutting_down: bool,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct BatchSyncSharedState {
-    pub batch_id: u64,
-    pub messages_to_poll: u32,
-}
-
 // Returns a new task monitor.
 pub fn init_task_monitor() -> TaskMonitor {
     tracing::info!("Preparing task monitor");
     TaskMonitor::new()
-}
-
-// ---- Optional pprof HTTP routes ----
-#[cfg(feature = "profiling")]
-#[derive(Debug, Deserialize)]
-struct PprofQuery {
-    seconds: Option<u64>,
-    frequency: Option<i32>,
-}
-
-#[cfg(feature = "profiling")]
-fn pprof_routes() -> Router {
-    use pprof::protos::Message;
-    use pprof::ProfilerGuardBuilder;
-    use std::time::Duration as StdDuration;
-    use tokio::time::sleep as tokio_sleep;
-
-    Router::new()
-        .route(
-            "/pprof/flame",
-            get(|Query(q): Query<PprofQuery>| async move {
-                let seconds = q.seconds.unwrap_or(30).min(300);
-                let frequency = q.frequency.unwrap_or(99).clamp(1, 1000);
-                let guard = ProfilerGuardBuilder::default()
-                    .frequency(frequency)
-                    .build()
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                tokio_sleep(StdDuration::from_secs(seconds)).await;
-                match guard.report().build() {
-                    Ok(report) => {
-                        let mut svg = Vec::new();
-                        if let Err(e) = report.flamegraph(&mut svg) {
-                            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-                        }
-                        Ok((StatusCode::OK, [("content-type", "image/svg+xml")], svg))
-                    }
-                    Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-                }
-            }),
-        )
-        .route(
-            "/pprof/profile",
-            get(|Query(q): Query<PprofQuery>| async move {
-                let seconds = q.seconds.unwrap_or(30).min(300);
-                let frequency = q.frequency.unwrap_or(99).clamp(1, 1000);
-                let guard = ProfilerGuardBuilder::default()
-                    .frequency(frequency)
-                    .build()
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                tokio_sleep(StdDuration::from_secs(seconds)).await;
-                match guard.report().build() {
-                    Ok(report) => match report.pprof() {
-                        Ok(profile) => {
-                            let mut buf = Vec::new();
-                            if let Err(e) = profile.encode(&mut buf) {
-                                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-                            }
-                            Ok((
-                                StatusCode::OK,
-                                [("content-type", "application/octet-stream")],
-                                buf,
-                            ))
-                        }
-                        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-                    },
-                    Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
-                }
-            }),
-        )
-}
-
-#[cfg(not(feature = "profiling"))]
-fn pprof_routes() -> Router {
-    Router::new()
 }
 
 pub fn get_check_addresses<S>(hostnames: &[S], ports: &[S], endpoint: &str) -> Vec<String>
@@ -207,71 +128,10 @@ where
 
             // Add batch sync routes if state is provided
             if let Some(batch_sync_state) = batch_sync_shared_state {
-                #[derive(Debug, Deserialize)]
-                struct BatchSyncQuery {
-                    batch_id: u64,
-                }
-
-                #[derive(Debug, Clone, Serialize, Deserialize)]
-                struct BatchSyncState {
-                    pub messages_to_poll: u32,
-                    pub batch_id: u64,
-                }
-
-                app = app
-                    .route(
-                        "/batch-sync-state",
-                        get(move |Query(params): Query<BatchSyncQuery>| {
-                            let batch_sync_shared_state = batch_sync_state.clone();
-                            async move {
-                                let shared_state = batch_sync_shared_state.lock().await;
-
-                                if params.batch_id != shared_state.batch_id {
-                                    return (
-                                        StatusCode::CONFLICT,
-                                        format!(
-                                            "Batch ID mismatch: requested {}, current {}",
-                                            params.batch_id, shared_state.batch_id
-                                        ),
-                                    )
-                                        .into_response();
-                                }
-
-                                let batch_sync_state = BatchSyncState {
-                                    messages_to_poll: shared_state.messages_to_poll,
-                                    batch_id: shared_state.batch_id,
-                                };
-
-                                match serde_json::to_string(&batch_sync_state) {
-                                    Ok(body) => (StatusCode::OK, body).into_response(),
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to serialize batch sync state: {:?}",
-                                            e
-                                        );
-                                        (
-                                            StatusCode::INTERNAL_SERVER_ERROR,
-                                            format!("Serialization error: {}", e),
-                                        )
-                                            .into_response()
-                                    }
-                                }
-                            }
-                        }),
-                    )
-                    .route(
-                        "/batch-sync-entries",
-                        get(move || async move {
-                            (
-                                StatusCode::NOT_IMPLEMENTED,
-                                "Batch sync entries not implemented in this version",
-                            )
-                                .into_response()
-                        }),
-                    );
+                app = app.merge(batch_sync_routes(batch_sync_state));
             }
 
-            // Merge pprof routes if profiling feature is enabled
+            // Merge profiling routes
             app = app.merge(pprof_routes());
 
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))

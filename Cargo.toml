@@ -30,7 +30,6 @@ itertools = "0.13"
 futures = "0.3"
 uuid = { version = "1.11", features = ["v4"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-config = "0.14"
 
 # Abort on panics rather than unwinding.
 # This improves performance and makes panic propagation more reliable.
