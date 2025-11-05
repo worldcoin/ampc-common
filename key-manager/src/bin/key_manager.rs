@@ -324,14 +324,14 @@ mod test {
     }
 
     #[test]
-    fn test_encode_and_decode_shares() {
+    fn test_encrypt_and_decrypt_shares() {
         let (server_public_key, server_private_key) = generate_key_pairs(Seed([0u8; 32]));
         let share = "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";
-        let ciphertext = sealedbox::seal(share.as_bytes(), &server_public_key);
+        let encrypted_share = sealedbox::seal(share.as_bytes(), &server_public_key);
 
-        let server_iris_code_plaintext =
-            sealedbox::open(&ciphertext, &server_public_key, &server_private_key).unwrap();
+        let decrypted_share =
+            sealedbox::open(&encrypted_share, &server_public_key, &server_private_key).unwrap();
 
-        assert_eq!(share.as_bytes(), server_iris_code_plaintext.as_slice());
+        assert_eq!(share.as_bytes(), decrypted_share.as_slice());
     }
 }
