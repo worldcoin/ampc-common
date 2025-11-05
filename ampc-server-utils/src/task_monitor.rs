@@ -38,6 +38,7 @@ impl Drop for TaskMonitor {
 impl TaskMonitor {
     /// Create a new task monitor.
     pub fn new() -> Self {
+        tracing::info!("Preparing task monitor");
         Self::default()
     }
 

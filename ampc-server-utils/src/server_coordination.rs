@@ -26,12 +26,6 @@ pub struct ReadyProbeResponse {
     pub shutting_down: bool,
 }
 
-// Returns a new task monitor.
-pub fn init_task_monitor() -> TaskMonitor {
-    tracing::info!("Preparing task monitor");
-    TaskMonitor::new()
-}
-
 pub fn get_check_addresses<S>(hostnames: &[S], ports: &[S], endpoint: &str) -> Vec<String>
 where
     S: AsRef<str>,
