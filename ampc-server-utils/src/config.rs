@@ -1,7 +1,7 @@
 //! Configuration for AMPC coordination server
 
 use eyre::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Configuration for server coordination
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,11 +11,17 @@ pub struct ServerCoordinationConfig {
     pub party_id: usize,
 
     /// Hostnames of all nodes
-    #[serde(default = "default_node_hostnames")]
+    #[serde(
+        default = "default_node_hostnames",
+        deserialize_with = "deserialize_yaml_json_string"
+    )]
     pub node_hostnames: Vec<String>,
 
     /// Healthcheck ports for all nodes (the port for this server is healthcheck_ports[party_id])
-    #[serde(default = "default_healthcheck_ports")]
+    #[serde(
+        default = "default_healthcheck_ports",
+        deserialize_with = "deserialize_yaml_json_string"
+    )]
     pub healthcheck_ports: Vec<String>,
 
     /// Image name/version identifier
@@ -61,6 +67,14 @@ fn default_http_query_retry_delay_ms() -> u64 {
 
 fn default_startup_sync_timeout_secs() -> u64 {
     300
+}
+
+fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = Deserialize::deserialize(deserializer)?;
+    serde_json::from_str(&value).map_err(serde::de::Error::custom)
 }
 
 impl ServerCoordinationConfig {
