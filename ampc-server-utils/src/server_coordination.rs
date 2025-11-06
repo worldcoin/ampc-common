@@ -39,8 +39,8 @@ where
         .collect::<Vec<String>>()
 }
 
-/// Initializes and starts HTTP server for coordinating ampc-server-utils, readiness,
-/// and synchronization between MPC nodes.
+/// Initializes and starts HTTP server for coordinating healthcheck, readiness,
+/// and synchronization between AMPC nodes.
 ///
 /// Note: returns a reference to a readiness flag, an `AtomicBool`, which can later
 /// be set to indicate to other MPC nodes that this server is ready for operation.
@@ -129,10 +129,10 @@ pub async fn start_coordination_server(
 
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
                 .await
-                .wrap_err("ampc-server-utils listener bind error")?;
+                .wrap_err("AMPC coordination server listener bind error")?;
             axum::serve(listener, app)
                 .await
-                .wrap_err("ampc-server-utils listener server launch error")?;
+                .wrap_err("AMPC coordination server listener launch error")?;
 
             Ok::<(), Error>(())
         }
@@ -273,12 +273,12 @@ pub async fn init_heartbeat_task(
                 } else if probe_response.uuid != last_response[i] {
                     panic!("Node {} seems to have restarted, killing server...", host);
                 } else if probe_response.shutting_down {
-                    tracing::info!("Node {} has starting graceful shutdown", host);
+                    tracing::info!("Node {} has started graceful shutdown", host);
 
                     if !heartbeat_shutdown_handler.is_shutting_down() {
                         heartbeat_shutdown_handler.trigger_manual_shutdown();
                         tracing::error!(
-                            "Node {} has starting graceful shutdown, therefore triggering \
+                            "Node {} has started graceful shutdown, therefore triggering \
                              graceful shutdown",
                             host
                         );
@@ -358,7 +358,7 @@ pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<
     Ok(())
 }
 
-/// Retrieve outputs from a ampc-server-utils endpoint from all other server nodes.
+/// Retrieve outputs from a healthcheck endpoint from all other server nodes.
 ///
 /// Upon failure, retries with wait duration `config.http_query_retry_delay_ms`
 /// between attempts, until `config.startup_sync_timeout_secs` seconds have elapsed.

@@ -1,4 +1,4 @@
-//! Configuration for ampc-server-utils coordination server
+//! Configuration for AMPC coordination server
 
 use eyre::Result;
 use serde::{Deserialize, Serialize};
