@@ -49,5 +49,5 @@ kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
 Delete the temporary pod:
 
 ```bash
-kubectl delete pod temporary-key-manager
+kubectl delete pod temporary-key-manager -n <your-namespace>
 ```
