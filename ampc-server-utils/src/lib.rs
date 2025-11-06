@@ -3,6 +3,7 @@ pub mod config;
 pub mod profiling;
 pub mod server_coordination;
 pub mod shutdown_handler;
+pub mod startup_sync;
 pub mod task_monitor;
 
 pub use batch_sync::{

@@ -2,6 +2,7 @@ use crate::batch_sync::{batch_sync_routes, BatchSyncSharedState};
 use crate::config::ServerCoordinationConfig;
 use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
+use crate::startup_sync::StartupSyncState;
 use crate::task_monitor::TaskMonitor;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -43,16 +44,13 @@ where
 ///
 /// Note: returns a reference to a readiness flag, an `AtomicBool`, which can later
 /// be set to indicate to other MPC nodes that this server is ready for operation.
-pub async fn start_coordination_server<T>(
+pub async fn start_coordination_server(
     config: &ServerCoordinationConfig,
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
-    my_state: &T,
+    my_state: &StartupSyncState,
     batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
-) -> Arc<AtomicBool>
-where
-    T: Serialize + DeserializeOwned + Clone + Send + 'static,
-{
+) -> Arc<AtomicBool> {
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
