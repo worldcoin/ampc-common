@@ -3,6 +3,7 @@ pub mod config;
 pub mod profiling;
 pub mod server_coordination;
 pub mod shutdown_handler;
+pub mod sqs;
 pub mod startup_sync;
 pub mod task_monitor;
 
@@ -16,5 +17,9 @@ pub use server_coordination::{
     try_get_endpoint_other_nodes, wait_for_others_ready, wait_for_others_unready,
     ReadyProbeResponse,
 };
-pub use shutdown_handler::ShutdownHandler;
+pub use sqs::{
+    delete_messages_until_sequence_num, get_approximate_number_of_messages, get_next_sns_seq_num,
+    SQSMessage,
+};
+pub use startup_sync::{StartupSyncResult, StartupSyncState};
 pub use task_monitor::TaskMonitor;

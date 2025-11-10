@@ -58,6 +58,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "ampc-server-utils"
 version = "0.1.0"
 dependencies = [
+ "aws-sdk-sqs",
  "axum",
  "eyre",
  "futures",
@@ -287,6 +288,28 @@ name = "aws-sdk-secretsmanager"
 version = "1.92.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "586e413eaa0286dab7b40d2054c4b8b12ffaf30a756a65b6a7c32ee752cbd521"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http",
+ "aws-smithy-json",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-types",
+ "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-sqs"
+version = "1.88.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3eb4ecdef63c5075260eabea36fcd4eaeb320a6437368f403b45701763b2eebb"
 dependencies = [
  "aws-credential-types",
  "aws-runtime",
