@@ -14,6 +14,7 @@ profiling = ["dep:pprof"]
 axum = { workspace = true }
 eyre = { workspace = true }
 reqwest = { workspace = true }
+aws-sdk-sqs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

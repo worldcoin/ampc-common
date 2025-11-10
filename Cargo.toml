@@ -14,6 +14,7 @@ repository = "https://github.com/worldcoin/ampc-common"
 aws-config = { version = "1.5.10", features = ["behavior-version-latest"] }
 aws-sdk-s3 = { version = "1.65.0", default-features = false }
 aws-sdk-secretsmanager = { version = "1.47.0", default-features = false }
+aws-sdk-sqs = { version = "1.89.0", default-features = false }
 clap = { version = "4", features = ["derive", "env"] }
 base64 = "0.22.1"
 eyre = "0.6"
