@@ -67,11 +67,11 @@ pub async fn get_next_sns_seq_num(
     if let Some(msgs) = sqs_snoop_response.messages {
         if msgs.len() != 1 {
             return Err(eyre!(
-                "Expected exactly one message in the queue, but found {}",
+                "Expected exactly one message, but found {}",
                 msgs.len()
             ));
         }
-        let sqs_message = msgs.first().expect("first sqs message is empty");
+        let sqs_message = &msgs[0];
         match serde_json::from_str::<SQSMessage>(sqs_message.body().unwrap_or("")) {
             Ok(message) => {
                 // Found a valid message originating from SNS --> get its sequence number
@@ -82,9 +82,9 @@ pub async fn get_next_sns_seq_num(
             }
             Err(err) => {
                 tracing::error!(
-                    "Found corrupt message in queue while parsing SNS message from body. The error is: '{}'. The SQS message body is '{}'",
+                    "Found corrupt message in queue while parsing SNS message from body. The error is: '{}'. The SQS message body is '{:?}'",
                     err,
-                    sqs_message.body().unwrap_or("None")
+                    sqs_message.body()
                 );
                 Err(err)
                     .context("Found corrupt message in queue while parsing SNS message from body")
@@ -173,9 +173,9 @@ pub async fn delete_messages_until_sequence_num(
                     msgs.len()
                 ));
             }
-            let msg = msgs.first().expect("first sqs message is empty");
+            let msg = &msgs[0];
             let sequence_num: u128 = str::parse(
-                &serde_json::from_str::<SQSMessage>(msg.body().unwrap_or(""))
+                &serde_json::from_str::<SQSMessage>(msg.body().unwrap())
                     .map_err(|e| eyre!("message is not a valid SQS message: {}", e))?
                     .sequence_number,
             )
@@ -190,7 +190,7 @@ pub async fn delete_messages_until_sequence_num(
                 sqs_client
                     .delete_message()
                     .queue_url(queue_url)
-                    .receipt_handle(msg.receipt_handle.clone().unwrap_or_default())
+                    .receipt_handle(msg.receipt_handle.clone().unwrap())
                     .send()
                     .await
                     .context("while deleting message from SQS")?;
@@ -203,7 +203,7 @@ pub async fn delete_messages_until_sequence_num(
                 sqs_client
                     .change_message_visibility()
                     .queue_url(queue_url)
-                    .receipt_handle(msg.receipt_handle.clone().unwrap_or_default())
+                    .receipt_handle(msg.receipt_handle.clone().unwrap())
                     .visibility_timeout(0)
                     .send()
                     .await
