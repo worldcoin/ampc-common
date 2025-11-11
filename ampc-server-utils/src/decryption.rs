@@ -41,10 +41,9 @@ pub enum SharesDecodingError {
     ShareParsingError(String),
 }
 
-#[derive(Clone, Debug)]
 pub struct SharesEncryptionKeyPairs {
-    pub current_key_pair: SharesEncryptionKeyPair,
-    pub previous_key_pair: Option<SharesEncryptionKeyPair>,
+    current_key_pair: SharesEncryptionKeyPair,
+    previous_key_pair: Option<SharesEncryptionKeyPair>,
 }
 
 impl Zeroize for SharesEncryptionKeyPairs {
@@ -126,7 +125,6 @@ impl SharesEncryptionKeyPairs {
     }
 }
 
-#[derive(Clone, Debug)]
 pub struct SharesEncryptionKeyPair {
     pk: PublicKey,
     sk: SecretKey,
@@ -225,7 +223,7 @@ async fn download_private_key_from_asm(
 #[allow(clippy::result_large_err)]
 pub fn decrypt_share<T: DeserializeOwned>(
     encrypted_share_b64: String,
-    key_pairs: SharesEncryptionKeyPairs,
+    key_pairs: &SharesEncryptionKeyPairs,
 ) -> Result<T, SharesDecodingError> {
     // Base64 decode the encrypted share
     let share_bytes = STANDARD
@@ -239,7 +237,7 @@ pub fn decrypt_share<T: DeserializeOwned>(
     {
         Ok(bytes) => Ok(bytes),
         Err(_) => {
-            match if let Some(key_pair) = key_pairs.previous_key_pair.clone() {
+            match if let Some(key_pair) = key_pairs.previous_key_pair.as_ref() {
                 key_pair.open_sealed_box(share_bytes)
             } else {
                 Err(SharesDecodingError::PreviousKeyNotFound)

@@ -28,7 +28,7 @@ hex = { workspace = true }
 base64 = { workspace = true }
 sodiumoxide = { workspace = true }
 zeroize = "1.8.1"
-thiserror = "1.0"
+thiserror = "2.0"
 pprof = { version = "0.15.0", features = ["flamegraph", "prost-codec"], optional = true }
 
 [lib]
