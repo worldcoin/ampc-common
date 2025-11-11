@@ -58,8 +58,10 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "ampc-server-utils"
 version = "0.1.0"
 dependencies = [
+ "aws-sdk-secretsmanager",
  "aws-sdk-sqs",
  "axum",
+ "base64",
  "eyre",
  "futures",
  "hex",
@@ -68,10 +70,13 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sodiumoxide",
+ "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
