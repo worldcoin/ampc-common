@@ -74,7 +74,7 @@ impl SharesEncryptionKeyPairs {
         client: SecretsManagerClient,
         environment: &str,
         service_name: &str,
-        party_id: &usize,
+        party_id: usize,
     ) -> Result<Self, SharesDecodingError> {
         let current_sk_b64_string = download_private_key_from_asm(
             &client,
