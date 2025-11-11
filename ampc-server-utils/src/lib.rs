@@ -1,5 +1,6 @@
 pub mod batch_sync;
 pub mod config;
+pub mod decryption;
 pub mod profiling;
 pub mod server_coordination;
 pub mod shutdown_handler;
@@ -12,6 +13,7 @@ pub use batch_sync::{
     BatchSyncResult, BatchSyncSharedState, BatchSyncState,
 };
 pub use config::ServerCoordinationConfig;
+pub use decryption::{decrypt_share, SharesDecodingError, SharesEncryptionKeyPairs};
 pub use server_coordination::{
     get_others_sync_state, init_heartbeat_task, set_node_ready, start_coordination_server,
     try_get_endpoint_other_nodes, wait_for_others_ready, wait_for_others_unready,
