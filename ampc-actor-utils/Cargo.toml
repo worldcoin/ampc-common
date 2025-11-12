@@ -1,0 +1,37 @@
+[package]
+name = "ampc-actor-utils"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR (Apache-2.0 WITH LLVM-exception)"
+repository = "https://github.com/worldcoin/ampc-common"
+
+[dependencies]
+ampc-secret-sharing = { path = "../ampc-secret-sharing" }
+tokio.workspace = true
+tokio-util.workspace = true
+async-trait = "~0.1"
+async-channel = "2.3.1"
+blake3 = "1"
+futures.workspace = true
+socket2 = { version = "0.6.0", features = ["all"] }
+tokio-rustls = { version = "0.26.2" }
+bytes = "1.7"
+eyre.workspace = true
+serde.workspace = true
+num_enum = "0.7.3"
+rand_chacha = { version = "0.3", features = ["serde1"] }
+dashmap = "6.1.0"
+itertools.workspace = true
+num-traits.workspace = true
+rand.workspace = true
+aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
+metrics = "0.22.1"
+tracing.workspace = true
+
+[features]
+networking_metrics = []
+chacha_prf = []
+
+[dev-dependencies]
+tracing-test = "0.2"
+statrs = "0.17"
