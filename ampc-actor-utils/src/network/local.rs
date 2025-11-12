@@ -98,7 +98,8 @@ impl Networking for LocalNetworking {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{network::value::NetworkValue, shares::ring_impl::RingElement};
+    use crate::network::value::NetworkValue;
+    use ampc_secret_sharing::shares::ring_impl::RingElement;
 
     #[tokio::test]
     async fn test_network_send_receive() {

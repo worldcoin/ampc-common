@@ -19,6 +19,7 @@ itertools = { workspace = true }
 [dev-dependencies]
 itertools = { workspace = true }
 aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
+rand_distr = "0.4"
 
 [lib]
 name = "ampc_secret_sharing"

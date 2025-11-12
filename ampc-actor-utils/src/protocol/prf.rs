@@ -1,8 +1,6 @@
-use crate::{
-    protocol::shuffle::Permutation,
-    shares::{int_ring::IntRing2k, ring_impl::RingElement},
-};
+use crate::protocol::shuffle::Permutation;
 use aes_prng::AesRng;
+use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
 use eyre::Result;
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 

@@ -8,17 +8,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use std::time::Duration;
 
-use crate::execution::hawk_main::HawkArgs;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
+use crate::network::config::TlsConfig;
 use crate::network::tcp::config::TcpConfig;
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::handle::TcpNetworkHandle;
 use async_trait::async_trait;
 use eyre::Result;
-use iris_mpc_common::config::TlsConfig;
 use itertools::izip;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -65,20 +64,6 @@ pub struct NetworkHandleArgs {
     pub request_parallelism: usize,
     pub sessions_per_request: usize,
     pub tls: Option<TlsConfig>,
-}
-
-impl NetworkHandleArgs {
-    pub fn from_hawk(args: &HawkArgs, sessions_per_request: usize) -> Self {
-        Self {
-            party_index: args.party_index,
-            addresses: args.addresses.clone(),
-            outbound_addresses: args.outbound_addrs.clone(),
-            connection_parallelism: args.connection_parallelism,
-            request_parallelism: args.request_parallelism,
-            sessions_per_request,
-            tls: args.tls.clone(),
-        }
-    }
 }
 
 pub async fn build_network_handle(

@@ -1,16 +1,16 @@
+use crate::fast_metrics::FastHistogram;
 use crate::{
     execution::session::{Session, SessionHandles},
     network::value::{NetworkInt, NetworkValue},
-    shares::{
-        bit::Bit,
-        int_ring::IntRing2k,
-        ring_impl::{RingElement, VecRingElement},
-        share::Share,
-        vecshare::{SliceShare, VecShare},
-    },
+};
+use ampc_secret_sharing::shares::{
+    bit::Bit,
+    int_ring::IntRing2k,
+    ring_impl::{RingElement, VecRingElement},
+    share::Share,
+    vecshare::{SliceShare, VecShare},
 };
 use eyre::{bail, eyre, Error, Result};
-use iris_mpc_common::fast_metrics::FastHistogram;
 use itertools::{izip, Itertools};
 use num_traits::{One, Zero};
 use rand::{distributions::Standard, prelude::Distribution, Rng};
@@ -217,6 +217,7 @@ where
 
 /// Computes the sum of three integers using the binary ripple-carry adder and return two resulting overflow carries.
 /// Input integers are given in binary form.
+#[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -298,6 +299,7 @@ where
     Ok((res1, res2))
 }
 
+#[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn bit_inject_ot_2round_helper<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -351,6 +353,7 @@ where
     Ok(shares)
 }
 
+#[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn bit_inject_ot_2round_receiver<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -417,6 +420,7 @@ where
     Ok(shares)
 }
 
+#[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn bit_inject_ot_2round_sender<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -474,6 +478,7 @@ where
 ///
 /// The protocol itself is unbalanced, but we balance the assignment of roles
 /// in a round-robin over sessions.
+#[allow(dead_code)]
 pub(crate) async fn bit_inject_ot_2round<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<Bit>,
@@ -506,6 +511,7 @@ where
 ///
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
+#[allow(dead_code)]
 pub(crate) fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
@@ -513,14 +519,16 @@ pub(crate) fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
+#[allow(dead_code)]
 fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
 }
 
 /// Lifts the given shares of u16 to shares of u32.
+#[allow(dead_code)]
 pub(crate) async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
     let len = shares.len();
-    let mut padded_len = (len + 63) / 64;
+    let mut padded_len = len.div_ceil(64);
     padded_len *= 64;
 
     // Interpret the shares as u32
@@ -843,12 +851,14 @@ where
 }
 
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
+#[allow(dead_code)]
 async fn extract_msb_u32(session: &mut Session, x_: VecShare<u32>) -> Result<VecShare<u64>, Error> {
     let x = x_.transpose_pack_u64();
     extract_msb::<u64>(session, x).await
 }
 
 /// Extracts the MSB of the secret shared input value.
+#[allow(dead_code)]
 pub(crate) async fn single_extract_msb_u32(
     session: &mut Session,
     x: Share<u32>,
@@ -863,6 +873,7 @@ pub(crate) async fn single_extract_msb_u32(
 
 /// Extracts the secret shared MSBs of the secret shared input values.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
+#[allow(dead_code)]
 pub(crate) async fn extract_msb_u32_batch(
     session: &mut Session,
     x: &[Share<u32>],
@@ -940,4 +951,33 @@ pub(crate) async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Re
     izip!(shares.iter(), b_from_previous.iter())
         .map(|(s, prev_b)| Ok((s.a ^ s.b ^ prev_b).convert()))
         .collect::<Result<Vec<_>>>()
+}
+
+/// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
+async fn extract_msb_u16(session: &mut Session, x_: VecShare<u16>) -> Result<VecShare<u64>, Error> {
+    let x = x_.transpose_pack_u64();
+    extract_msb::<u64>(session, x).await
+}
+
+/// Extracts the MSB of the secret shared input value.
+pub(crate) async fn extract_msb_u16_batch(
+    session: &mut Session,
+    x: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>> {
+    let res_len = x.len();
+    let mut res = Vec::with_capacity(res_len);
+
+    let packed_bits = extract_msb_u16(session, VecShare::new_vec(x.to_vec())).await?;
+
+    'outer: for bit_batch in packed_bits.into_iter() {
+        let (a, b) = bit_batch.get_ab();
+        for i in 0..64 {
+            res.push(Share::new(a.get_bit_as_bit(i), b.get_bit_as_bit(i)));
+            if res.len() == res_len {
+                break 'outer;
+            }
+        }
+    }
+
+    Ok(res)
 }

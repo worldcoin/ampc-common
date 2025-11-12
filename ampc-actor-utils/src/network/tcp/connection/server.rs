@@ -93,6 +93,7 @@ impl Server for BoxTcpServer {
     }
 }
 
+#[allow(dead_code)]
 pub struct BoxTlsServer(pub TlsServer);
 #[async_trait]
 impl Server for BoxTlsServer {

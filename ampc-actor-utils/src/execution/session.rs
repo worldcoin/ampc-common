@@ -5,8 +5,8 @@ use crate::{
         Networking,
     },
     protocol::prf::Prf,
-    shares::ring_impl::VecRingElement,
 };
+use ampc_secret_sharing::shares::ring_impl::VecRingElement;
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Debug, sync::Arc};

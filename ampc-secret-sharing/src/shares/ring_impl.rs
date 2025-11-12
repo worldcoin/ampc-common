@@ -21,6 +21,97 @@ use std::{
 #[repr(transparent)]
 pub struct RingElement<T: IntRing2k + std::fmt::Display>(pub T);
 
+#[derive(Default, Clone)]
+pub struct VecRingElement<T: IntRing2k + std::fmt::Display>(pub Vec<RingElement<T>>);
+
+impl<T: IntRing2k + std::fmt::Display> VecRingElement<T> {
+    pub fn with_capacity(capacity: usize) -> Self {
+        VecRingElement(Vec::with_capacity(capacity))
+    }
+
+    pub fn push(&mut self, value: RingElement<T>) {
+        self.0.push(value);
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<T: IntRing2k + std::fmt::Display> From<Vec<RingElement<T>>> for VecRingElement<T> {
+    fn from(v: Vec<RingElement<T>>) -> Self {
+        VecRingElement(v)
+    }
+}
+
+impl<T: IntRing2k + std::fmt::Display> IntoIterator for VecRingElement<T> {
+    type Item = RingElement<T>;
+    type IntoIter = std::vec::IntoIter<RingElement<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<T: IntRing2k + std::fmt::Display> FromIterator<RingElement<T>> for VecRingElement<T> {
+    fn from_iter<I: IntoIterator<Item = RingElement<T>>>(iter: I) -> Self {
+        let res = Vec::from_iter(iter);
+        VecRingElement(res)
+    }
+}
+
+impl<T: IntRing2k + std::fmt::Display> Extend<RingElement<T>> for VecRingElement<T> {
+    fn extend<I: IntoIterator<Item = RingElement<T>>>(&mut self, iter: I) {
+        self.0.extend(iter);
+    }
+}
+
+impl<T: IntRing2k> Add for VecRingElement<T> {
+    type Output = Result<Self, eyre::Error>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        if self.0.len() != rhs.0.len() {
+            eyre::bail!("Adding vectors of different lengths");
+        }
+        let sum = itertools::izip!(self.0, rhs.0)
+            .map(|(a, b)| a + b)
+            .collect();
+        Ok(sum)
+    }
+}
+
+impl<T: IntRing2k> Sub for VecRingElement<T> {
+    type Output = Result<Self, eyre::Error>;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        if self.0.len() != rhs.0.len() {
+            eyre::bail!("Subtracting vectors of different lengths");
+        }
+        let diff = itertools::izip!(self.0, rhs.0)
+            .map(|(a, b)| a - b)
+            .collect();
+        Ok(diff)
+    }
+}
+
+impl<T: IntRing2k> Sub<&Self> for VecRingElement<T> {
+    type Output = Result<Self, eyre::Error>;
+
+    fn sub(self, rhs: &Self) -> Self::Output {
+        if self.0.len() != rhs.0.len() {
+            eyre::bail!("Subtracting vectors of different lengths");
+        }
+        let diff = itertools::izip!(self.0, rhs.0.iter())
+            .map(|(a, b)| a - b)
+            .collect();
+        Ok(diff)
+    }
+}
+
 pub struct BitIter<'a, T: IntRing2k> {
     bits: &'a RingElement<T>,
     index: usize,
@@ -77,7 +168,6 @@ impl<T: IntRing2k> RingElement<T> {
         self.0
     }
 
-    #[allow(dead_code)]
     pub(crate) fn bit_iter(&self) -> BitIter<'_, T> {
         BitIter {
             bits: self,
@@ -90,8 +180,7 @@ impl<T: IntRing2k> RingElement<T> {
         RingElement((self.0 >> index) & T::one())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn get_bit_as_bit(&self, index: usize) -> RingElement<Bit> {
+    pub fn get_bit_as_bit(&self, index: usize) -> RingElement<Bit> {
         let bit = ((self.0 >> index) & T::one()) == T::one();
         RingElement(Bit::new(bit))
     }

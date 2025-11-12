@@ -3,9 +3,11 @@ use itertools::{izip, Itertools};
 use rand::Rng;
 
 use crate::{
+    constants::N_PARTIES,
     execution::session::{Session, SessionHandles},
-    shares::{ring_impl::VecRingElement, share::DistanceShare, RingElement, Share},
-    utils::constants::N_PARTIES,
+};
+use ampc_secret_sharing::shares::{
+    ring_impl::VecRingElement, share::DistanceShare, RingElement, Share,
 };
 
 /// Secret shared permutation used in the shuffle protocol
@@ -249,87 +251,4 @@ async fn shuffle_party_2(
 
     // Reconstruct shares using tilde_A and tilde_C
     Ok(reconstruct_distances(tilde_a, tilde_c))
-}
-
-#[cfg(test)]
-mod tests {
-    use num_traits::Zero;
-    use tokio::task::JoinSet;
-    use tracing_test::traced_test;
-
-    use crate::{hawkers::aby3::test_utils::setup_local_store_aby3_players, network::NetworkType};
-
-    use super::*;
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[traced_test]
-    async fn test_shuffle() -> Result<()> {
-        let list_len = 6_u32;
-        // Create a sorted plain list of distances:
-        // (0,(0,1)), (1,(1,1)), ..., (5,(5,1))
-        let plain_list = (0..list_len).map(|i| (i, (i, 1))).collect_vec();
-
-        // PRF seeds are fixed in test setup, so the shuffle is deterministic
-        let mut local_stores = setup_local_store_aby3_players(NetworkType::Local).await?;
-        let mut jobs = JoinSet::new();
-        for store in local_stores.iter_mut() {
-            let store = store.clone();
-            let plain_list = plain_list.clone();
-            jobs.spawn(async move {
-                let mut store_lock = store.lock().await;
-                let role = store_lock.session.own_role();
-                let distances = plain_list
-                    .iter()
-                    .map(|(id, (code_dist, mask_dist))| {
-                        (
-                            Share::from_const(*id, role),
-                            DistanceShare::new(
-                                Share::from_const(*code_dist, role),
-                                Share::from_const(*mask_dist, role),
-                            ),
-                        )
-                    })
-                    .collect_vec();
-                random_shuffle(&mut store_lock.session, distances).await
-            });
-        }
-        let res = jobs
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>>>()?;
-
-        assert_eq!(res.len(), N_PARTIES);
-        assert_eq!(res[0].len(), list_len as usize);
-        assert_eq!(res[1].len(), list_len as usize);
-        assert_eq!(res[2].len(), list_len as usize);
-
-        let expected = vec![
-            (2, (2, 1)),
-            (4, (4, 1)),
-            (3, (3, 1)),
-            (1, (1, 1)),
-            (0, (0, 1)),
-            (5, (5, 1)),
-        ];
-
-        for (i, expected_i) in expected.into_iter().enumerate() {
-            let distance_i = {
-                let mut id = Share::zero();
-                let mut dist = DistanceShare::new(Share::zero(), Share::zero());
-                for party_res in res.iter() {
-                    id += party_res[i].clone().0;
-                    dist += &party_res[i].clone().1;
-                }
-                let id = id.get_a().convert();
-                let code_dot = dist.code_dot.get_a().convert();
-                let mask_dot = dist.mask_dot.get_a().convert();
-
-                (id, (code_dot, mask_dot))
-            };
-            assert_eq!(distance_i, expected_i);
-        }
-
-        Ok(())
-    }
 }

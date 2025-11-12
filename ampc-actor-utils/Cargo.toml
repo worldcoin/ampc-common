@@ -6,9 +6,8 @@ license = "MIT OR (Apache-2.0 WITH LLVM-exception)"
 repository = "https://github.com/worldcoin/ampc-common"
 
 [dependencies]
-# MPC dependencies for shares types
-iris-mpc-cpu = { git = "https://github.com/worldcoin/iris-mpc.git", rev="e0c94c0" }
-iris-mpc-common = { git = "https://github.com/worldcoin/iris-mpc.git", rev="e0c94c0" }
+# Local dependencies
+ampc-secret-sharing = { path = "../ampc-secret-sharing" }
 
 # Core async runtime
 tokio.workspace = true
@@ -16,34 +15,25 @@ tokio-util.workspace = true
 async-trait = "~0.1"
 async-channel = "2.3.1"
 futures.workspace = true
-
-# Networking
 socket2 = { version = "0.6.0", features = ["all"] }
 tokio-rustls = { version = "0.26.2" }
 bytes = "1.7"
-
-# Error handling
 eyre.workspace = true
-thiserror = "1.0"
-
-# Serialization
 serde.workspace = true
-serde_json.workspace = true
 num_enum = "0.7.3"
 
 # Collections and utilities
 dashmap = "6.1.0"
 itertools.workspace = true
-
-# Random number generation
+num-traits.workspace = true
 rand.workspace = true
-
-# Metrics (optional feature)
-metrics = { version = "0.22.1", optional = true }
-
-# Logging
+aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
+metrics = "0.22.1"
 tracing.workspace = true
 
 [features]
-networking_metrics = ["metrics"]
+networking_metrics = []
 
+[dev-dependencies]
+tracing-test = "0.2"
+statrs = "0.17"

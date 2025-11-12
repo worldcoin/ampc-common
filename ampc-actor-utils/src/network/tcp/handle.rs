@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::{
     execution::{
-        hawk_main::scheduler::parallelize,
         player::{Identity, Role, RoleAssignment},
         session::{NetworkSession, Session},
     },
@@ -124,7 +123,8 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
             session_futures.push(fut);
         }
 
-        let r = parallelize(session_futures.into_iter()).await?;
+        let results = join_all(session_futures).await;
+        let r = results.into_iter().collect::<Result<Vec<_>>>()?;
         Ok((r, ct))
     }
 

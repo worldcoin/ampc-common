@@ -1,4 +1,4 @@
-use crate::shares::{self, bit::Bit, ring_impl::RingElement, IntRing2k};
+use ampc_secret_sharing::shares::{self, bit::Bit, ring_impl::RingElement, IntRing2k};
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -371,7 +371,7 @@ where
             5 + len
         );
     }
-    if len % size_of::<T>() != 0 {
+    if !len.is_multiple_of(size_of::<T>()) {
         bail!(
             "invalid length for VecRing{}: length {} does not divide type length {}",
             type_bits,

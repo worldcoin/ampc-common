@@ -2,8 +2,8 @@
 
 use std::{collections::HashMap, io, time::Instant};
 
+use crate::fast_metrics::FastHistogram;
 use bytes::BytesMut;
-use iris_mpc_common::fast_metrics::FastHistogram;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
     sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender},
@@ -173,7 +173,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
         // depending on the descriptor, read the length field too
         let nd: DescriptorByte = buf[0]
             .try_into()
-            .map_err(|_e| io::Error::new(io::ErrorKind::Other, "invalid descriptor byte"))?;
+            .map_err(|_e| io::Error::other("invalid descriptor byte"))?;
         // base_len includes the descriptor byte
         let base_len = nd.base_len();
         let total_len: usize = if matches!(
@@ -207,17 +207,13 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             match NetworkValue::deserialize(&buf[..total_len]) {
                 Ok(nv) => {
                     if ch.send(nv).is_err() {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "failed to forward message",
-                        ));
+                        return Err(io::Error::other("failed to forward message"));
                     }
                 }
                 Err(e) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("failed to deserialize message: {e}"),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "failed to deserialize message: {e}"
+                    )));
                 }
             };
         } else {
