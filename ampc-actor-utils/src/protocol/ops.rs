@@ -92,6 +92,17 @@ pub async fn galois_ring_to_rep3(
     Ok(res)
 }
 
+/// Compares the given distances to zero and reveal the bit "less than zero".
+pub async fn lt_zero_and_open_u16(
+    session: &mut Session,
+    distances: &[Share<u16>],
+) -> Result<Vec<bool>> {
+    let bits = extract_msb_u16_batch(session, distances).await?;
+    open_bin(session, &bits)
+        .await
+        .map(|v| v.into_iter().map(|x| x.convert()).collect())
+}
+
 /// Subtracts a public ring element from a secret-shared ring element in-place.
 pub fn sub_pub<T: IntRing2k + NetworkInt>(
     session: &mut Session,

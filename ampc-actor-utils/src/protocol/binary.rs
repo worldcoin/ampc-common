@@ -668,7 +668,7 @@ where
     Ok(s_msb ^ c_msb ^ carry)
 }
 
-/// Returns the MSB of the sum of three 32-bit integers using the binary parallel prefix adder tree.
+/// Returns the MSB of the sum of three integers of type T using the binary parallel prefix adder tree.
 /// Input integers are given in binary form.
 async fn binary_add_3_get_msb_prefix<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -688,10 +688,6 @@ where
             x3.len()
         );
     };
-
-    if len < 32 {
-        bail!("Input length should be at least 32: {len}");
-    }
 
     // Let x1, x2, x3 are integers modulo 2^k.
     //
