@@ -2,6 +2,7 @@
 members = [
     "key-manager",
     "ampc-server-utils",
+    "ampc-networking",
 ]
 resolver = "2"
 
