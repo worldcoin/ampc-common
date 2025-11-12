@@ -1,0 +1,25 @@
+[package]
+name = "ampc-secret-sharing"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rand = { workspace = true }
+serde = { workspace = true }
+num-traits = "0.2"
+bytemuck = { version = "1.14", features = ["derive"] }
+eyre = { workspace = true }
+async-trait = "0.1"
+aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
+itertools = { workspace = true }
+
+[dev-dependencies]
+itertools = { workspace = true }
+aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
+
+[lib]
+name = "ampc_secret_sharing"
+path = "src/lib.rs"

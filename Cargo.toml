@@ -3,7 +3,7 @@ members = [
     "key-manager",
     "ampc-secret-sharing",
     "ampc-server-utils",
-    "ampc-networking",
+    "ampc-actor-utils",
 ]
 resolver = "2"
 

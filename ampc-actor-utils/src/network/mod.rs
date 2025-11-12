@@ -1,11 +1,6 @@
+use crate::{execution::player::Identity, network::value::NetworkValue};
 use async_trait::async_trait;
-use iris_mpc_cpu::execution::player::Identity;
 use eyre::Result;
-use crate::value::NetworkValue;
-
-pub mod local;
-pub mod tcp;
-pub mod value;
 
 /// Requirements for networking.
 #[async_trait]
@@ -40,3 +35,7 @@ impl NetworkType {
         }
     }
 }
+
+pub mod local;
+pub mod tcp;
+pub mod value;
