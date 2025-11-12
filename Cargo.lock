@@ -109,7 +109,6 @@ name = "ampc-secret-sharing"
 version = "0.1.0"
 dependencies = [
  "aes-prng",
- "async-trait",
  "bytemuck",
  "eyre",
  "itertools 0.13.0",

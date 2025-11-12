@@ -6,10 +6,7 @@ license = "MIT OR (Apache-2.0 WITH LLVM-exception)"
 repository = "https://github.com/worldcoin/ampc-common"
 
 [dependencies]
-# Local dependencies
 ampc-secret-sharing = { path = "../ampc-secret-sharing" }
-
-# Core async runtime
 tokio.workspace = true
 tokio-util.workspace = true
 async-trait = "~0.1"
@@ -23,8 +20,6 @@ eyre.workspace = true
 serde.workspace = true
 num_enum = "0.7.3"
 rand_chacha = { version = "0.3", features = ["serde1"] }
-
-# Collections and utilities
 dashmap = "6.1.0"
 itertools.workspace = true
 num-traits.workspace = true
