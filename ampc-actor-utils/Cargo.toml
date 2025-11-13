@@ -32,6 +32,7 @@ tracing.workspace = true
 [features]
 networking_metrics = []
 chacha_prf = []
+ripple_carry_adder = []
 
 [dev-dependencies]
 tracing-test = "0.2"
