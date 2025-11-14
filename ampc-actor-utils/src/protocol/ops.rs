@@ -117,15 +117,19 @@ pub fn sub_pub<T: IntRing2k + NetworkInt>(
     }
 }
 
-/// Compares the given distance to a threshold and reveal the bit "less than or equal".
-pub async fn lte_threshold_and_open_u16(
+/// For each of the given distance shares returns `true` if it's a share of a non-negative value.
+pub async fn gte_zero_and_open_u16(
     session: &mut Session,
     distances: &[Share<u16>],
 ) -> Result<Vec<bool>> {
     let bits = extract_msb_u16_batch(session, distances).await?;
+
+    // MSB is `1` is `distance < 0`.
+    // MSB is `0` if `distance >= 0`.
+    // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
     open_bin(session, &bits)
         .await
-        .map(|v| v.into_iter().map(|x| x.convert()).collect())
+        .map(|v| v.into_iter().map(|x| !x.convert()).collect())
 }
 
 /// Open ring shares to reveal the secret value
