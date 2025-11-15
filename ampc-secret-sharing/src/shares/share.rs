@@ -57,6 +57,7 @@ impl<T: IntRing2k> Share<T> {
     }
 }
 
+
 impl<T: IntRing2k> Add<&Self> for Share<T> {
     type Output = Self;
 
@@ -371,10 +372,11 @@ impl<T: IntRing2k> Add<Self> for DistanceShare<T> {
 mod tests {
     use super::*;
     use crate::shares::bit::Bit;
+
     use aes_prng::AesRng;
     use itertools::izip;
-    use rand::distributions::{Distribution, Standard};
     use rand::{Rng, SeedableRng};
+    use rand_distr::{Distribution, Standard};
 
     // Simple Role implementation for tests
     struct TestRole(usize);

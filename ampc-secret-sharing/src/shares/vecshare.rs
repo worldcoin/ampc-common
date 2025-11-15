@@ -60,7 +60,7 @@ impl<'a, T: IntRing2k> SliceShareMut<'a, T> {
 #[serde(bound = "")]
 #[repr(transparent)]
 pub struct VecShare<T: IntRing2k> {
-    pub(crate) shares: Vec<Share<T>>,
+    pub shares: Vec<Share<T>>,
 }
 
 impl<T: IntRing2k> VecShare<T> {

@@ -7,6 +7,7 @@ pub mod shutdown_handler;
 pub mod sqs;
 pub mod startup_sync;
 pub mod task_monitor;
+pub mod statistics;
 
 pub use batch_sync::{
     get_batch_sync_entries, get_batch_sync_states, BatchSyncEntries, BatchSyncEntriesResult,
@@ -25,3 +26,4 @@ pub use sqs::{
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
 pub use task_monitor::TaskMonitor;
+pub use statistics::{BucketStatistics, AnonStatsResultSource, BucketResult, Bucket2DResult, BucketStatistics2D};
