@@ -27,6 +27,7 @@ num-traits.workspace = true
 rand.workspace = true
 aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
 metrics = "0.22.1"
+rand_distr = "0.4.3"
 tracing.workspace = true
 
 [features]

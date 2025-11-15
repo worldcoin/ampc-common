@@ -1,3 +1,4 @@
+use ampc_secret_sharing::shares::share::Role as ShareRole;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -57,6 +58,12 @@ impl Role {
         } else {
             Role(self.0 - 1)
         }
+    }
+}
+
+impl ShareRole for Role {
+    fn index(&self) -> usize {
+        self.0 as usize
     }
 }
 
