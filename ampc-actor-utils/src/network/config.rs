@@ -1,6 +1,7 @@
 /// Network configuration types
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// TLS configuration for secure network communication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsConfig {
     #[serde(default)]
@@ -13,7 +14,9 @@ pub struct TlsConfig {
     pub root_certs: Vec<String>,
 }
 
-fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> eyre::Result<Vec<String>, D::Error>
+/// Deserialize a YAML/JSON string into a vector of strings
+/// This is used for configuration fields that are stored as JSON strings in YAML
+pub fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
