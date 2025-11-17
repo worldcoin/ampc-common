@@ -4,12 +4,32 @@ use chrono::{
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fmt::{Display, Formatter};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub enum Eye {
     #[default]
     Left,
     Right,
+}
+
+
+impl Eye {
+    pub fn other(&self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+impl Display for Eye {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Left => write!(f, "left"),
+            Self::Right => write!(f, "right"),
+        }
+    }
 }
 
 
