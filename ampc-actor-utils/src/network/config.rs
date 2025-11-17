@@ -2,11 +2,14 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// TLS configuration for secure network communication.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
+#[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
 pub struct TlsConfig {
+    #[arg(required = false)]
     #[serde(default)]
     pub private_key: Option<String>,
 
+    #[arg(required = false)]
     #[serde(default)]
     pub leaf_cert: Option<String>,
 
@@ -14,8 +17,6 @@ pub struct TlsConfig {
     pub root_certs: Vec<String>,
 }
 
-/// Deserialize a YAML/JSON string into a vector of strings
-/// This is used for configuration fields that are stored as JSON strings in YAML
 pub fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
