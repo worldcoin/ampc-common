@@ -1,15 +1,13 @@
+use crate::protocol::ops::{min_of_pair_batch, B};
 use crate::{
     execution::session::Session,
-    protocol::{
-        binary::{bit_inject_ot_2round, extract_msb_u32_batch},
-    },
+    protocol::binary::{bit_inject_ot_2round, extract_msb_u32_batch},
 };
-use eyre::{eyre, Result};
-use itertools::Itertools;
-use ampc_secret_sharing::Share;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::VecShare;
-use crate::protocol::ops::{min_of_pair_batch, B};
+use ampc_secret_sharing::Share;
+use eyre::{eyre, Result};
+use itertools::Itertools;
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
 /// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
@@ -127,13 +125,6 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use super::{compare_min_threshold_buckets, compare_threshold_buckets};
-    use aes_prng::AesRng;
-    use itertools::Itertools;
-    use rand::{Rng, RngCore, SeedableRng};
-    use rand_distr::{Distribution, Standard};
-    use tokio::{sync::Mutex, task::JoinSet};
-    use ampc_secret_sharing::{IntRing2k, RingElement, Share};
-    use ampc_secret_sharing::shares::share::DistanceShare;
     use crate::{
         execution::{
             local::{generate_local_identities, LocalRuntime},
@@ -141,6 +132,13 @@ mod tests {
         },
         protocol::ops::{open_ring, translate_threshold_a},
     };
+    use aes_prng::AesRng;
+    use ampc_secret_sharing::shares::share::DistanceShare;
+    use ampc_secret_sharing::{IntRing2k, RingElement, Share};
+    use itertools::Itertools;
+    use rand::{Rng, RngCore, SeedableRng};
+    use rand_distr::{Distribution, Standard};
+    use tokio::{sync::Mutex, task::JoinSet};
 
     fn create_single_sharing<R: RngCore, T: IntRing2k>(
         rng: &mut R,
@@ -366,8 +364,8 @@ mod tests {
                         &threshold_a_terms,
                         &grouped_distances,
                     )
-                        .await
-                        .unwrap();
+                    .await
+                    .unwrap();
 
                     open_ring(&mut session, &bucket_result_shares)
                         .await
