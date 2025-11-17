@@ -1,7 +1,7 @@
-pub(crate) mod binary;
+pub mod binary;
 pub mod ops;
-pub(crate) mod prf;
-pub(crate) mod shuffle;
+pub mod prf;
+pub mod shuffle;
 pub mod anon_stats;
 
 // Re-export key types

@@ -368,6 +368,21 @@ impl<T: IntRing2k> Add<Self> for DistanceShare<T> {
     }
 }
 
+/// Reconstructs a vector of DistanceShare from replicated shares
+/// Used in iris-mpc protocol operations
+pub fn reconstruct_distance_vector(
+    a: super::ring_impl::VecRingElement<u32>,
+    b: super::ring_impl::VecRingElement<u32>,
+) -> Vec<DistanceShare<u32>> {
+    use itertools::Itertools;
+    a.0.into_iter()
+        .zip(b.0)
+        .map(|(a, b)| Share::new(a, b))
+        .tuples()
+        .map(|(code_dot, mask_dot)| DistanceShare::new(code_dot, mask_dot))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

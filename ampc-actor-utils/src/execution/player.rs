@@ -1,4 +1,3 @@
-use ampc_secret_sharing::shares::share::Role as ShareRole;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -61,9 +60,10 @@ impl Role {
     }
 }
 
-impl ShareRole for Role {
+// Implement the Role trait from ampc-secret-sharing for use with Share types
+impl ampc_secret_sharing::shares::share::Role for Role {
     fn index(&self) -> usize {
-        self.0 as usize
+        Role::index(self)
     }
 }
 

@@ -7,5 +7,5 @@ pub mod vecshare_bittranspose;
 
 pub use int_ring::IntRing2k;
 pub use ring_impl::{RingElement, VecRingElement};
-pub use share::{Role, Share};
+pub use share::{reconstruct_distance_vector, DistanceShare, Role, Share};
 pub use vecshare::VecShare;

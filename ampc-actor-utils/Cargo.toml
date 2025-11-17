@@ -29,6 +29,7 @@ aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dra
 metrics = "0.22.1"
 rand_distr = "0.4.3"
 tracing.workspace = true
+clap = { version = "4", features = ["derive"] }
 
 [features]
 networking_metrics = []
