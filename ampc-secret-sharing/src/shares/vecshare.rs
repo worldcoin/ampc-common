@@ -70,6 +70,11 @@ impl<T: IntRing2k> VecShare<T> {
         Self { shares }
     }
 
+    /// Access the underlying shares
+    pub fn shares(&self) -> &[Share<T>] {
+        &self.shares
+    }
+
     pub fn new_vec(shares: Vec<Share<T>>) -> Self {
         Self { shares }
     }

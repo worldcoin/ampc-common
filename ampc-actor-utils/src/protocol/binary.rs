@@ -164,6 +164,7 @@ async fn and_many_receive<T: IntRing2k + NetworkInt>(
 }
 
 /// Low-level SMPC protocol to compute the AND of two vectors of bit-sliced shares.
+#[allow(dead_code)]
 async fn and_many<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     a: SliceShare<'_, T>,
@@ -176,6 +177,47 @@ where
     let shares_b = and_many_receive(session).await?;
     let complete_shares = VecShare::from_ab(shares_a, shares_b);
     Ok(complete_shares)
+}
+
+/// Reduce the given vector of bit-vector shares by computing their element-wise AND.
+///
+/// Each vector in `v` is expected to have `len` bits.
+#[allow(dead_code)]
+pub async fn and_product(
+    session: &mut Session,
+    v: Vec<VecShare<Bit>>,
+    len: usize,
+) -> Result<VecShare<Bit>, Error> {
+    if v.is_empty() {
+        bail!("Input vector is empty");
+    }
+    for vec_share in &v {
+        if vec_share.len() != len {
+            bail!("Input vector shares have different lengths");
+        }
+    }
+
+    let mut res = v;
+    while res.len() > 1 {
+        // if the length is odd, we save the last column to add it back later
+        let maybe_last_column = if res.len() % 2 == 1 { res.pop() } else { None };
+        let half_len = res.len() / 2;
+        let left_bits: VecShare<u64> =
+            VecShare::new_vec(res.drain(..half_len).flatten().collect_vec()).pack();
+        let right_bits: VecShare<u64> =
+            VecShare::new_vec(res.drain(..).flatten().collect_vec()).pack();
+        let and_bits = and_many(session, left_bits.as_slice(), right_bits.as_slice()).await?;
+        let mut and_bits = and_bits.convert_to_bits();
+        let num_and_bits = half_len * len;
+        and_bits.truncate(num_and_bits);
+        res = and_bits
+            .inner()
+            .chunks(len)
+            .map(|chunk| VecShare::new_vec(chunk.to_vec()))
+            .collect_vec();
+        res.extend(maybe_last_column);
+    }
+    res.pop().ok_or(eyre!("Not enough elements"))
 }
 
 /// Computes binary AND of two vectors of bit-sliced shares.
@@ -479,7 +521,7 @@ where
 /// The protocol itself is unbalanced, but we balance the assignment of roles
 /// in a round-robin over sessions.
 #[allow(dead_code)]
-pub(crate) async fn bit_inject_ot_2round<T: IntRing2k + NetworkInt>(
+pub async fn bit_inject_ot_2round<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<Bit>,
 ) -> Result<VecShare<T>, Error>
@@ -512,7 +554,7 @@ where
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
 #[allow(dead_code)]
-pub(crate) fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
+pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
     Share::new(RingElement(a), RingElement(b))
@@ -526,7 +568,7 @@ fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
 
 /// Lifts the given shares of u16 to shares of u32.
 #[allow(dead_code)]
-pub(crate) async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
+pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
     let len = shares.len();
     let mut padded_len = len.div_ceil(64);
     padded_len *= 64;
@@ -855,7 +897,7 @@ async fn extract_msb_u32(session: &mut Session, x_: VecShare<u32>) -> Result<Vec
 
 /// Extracts the MSB of the secret shared input value.
 #[allow(dead_code)]
-pub(crate) async fn single_extract_msb_u32(
+pub async fn single_extract_msb_u32(
     session: &mut Session,
     x: Share<u32>,
 ) -> Result<Share<Bit>, Error> {
@@ -870,7 +912,7 @@ pub(crate) async fn single_extract_msb_u32(
 /// Extracts the secret shared MSBs of the secret shared input values.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
-pub(crate) async fn extract_msb_u32_batch(
+pub async fn extract_msb_u32_batch(
     session: &mut Session,
     x: &[Share<u32>],
 ) -> Result<Vec<Share<Bit>>> {
@@ -898,7 +940,7 @@ pub(crate) async fn extract_msb_u32_batch(
 /// Thus, the current party should send its `b` share to the next party and receive the `b` share from the previous party.
 /// `a XOR b XOR previous b` yields the opened bit.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub(crate) async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Vec<Bit>> {
+pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Vec<Bit>> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {
         NetworkValue::RingElementBit(shares[0].b)
@@ -956,7 +998,7 @@ async fn extract_msb_u16(session: &mut Session, x_: VecShare<u16>) -> Result<Vec
 }
 
 /// Extracts the MSB of the secret shared input value.
-pub(crate) async fn extract_msb_u16_batch(
+pub async fn extract_msb_u16_batch(
     session: &mut Session,
     x: &[Share<u16>],
 ) -> Result<Vec<Share<Bit>>> {

@@ -131,7 +131,7 @@ pub async fn lte_threshold_and_open_u16(
 /// Open ring shares to reveal the secret value
 /// This is a helper function for opening shares
 #[allow(dead_code)]
-async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
+pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
     session: &mut Session,
     shares: &[Share<T>],
 ) -> Result<Vec<T>> {

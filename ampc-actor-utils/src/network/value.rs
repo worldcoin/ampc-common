@@ -371,7 +371,8 @@ where
             5 + len
         );
     }
-    if !len.is_multiple_of(size_of::<T>()) {
+    #[allow(clippy::manual_is_multiple_of)]
+    if len % size_of::<T>() != 0 {
         bail!(
             "invalid length for VecRing{}: length {} does not divide type length {}",
             type_bits,
