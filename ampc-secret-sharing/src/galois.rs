@@ -1,4 +1,5 @@
 pub mod degree4 {
+    use crate::id::PartyID;
     use basis::{Basis, Monomial};
     use rand::{CryptoRng, Rng};
     use std::marker::PhantomData;
@@ -52,7 +53,8 @@ pub mod degree4 {
             GaloisRingElement::from_coefs([1, 1, 1, 1]),
         ];
         pub fn encode1(x: &[u16]) -> Option<Vec<Self>> {
-            if !x.len().is_multiple_of(4) {
+            #[allow(clippy::manual_is_multiple_of)]
+            if x.len() % 4 != 0 {
                 return None;
             }
             Some(
@@ -65,7 +67,8 @@ pub mod degree4 {
             )
         }
         pub fn encode2(x: &[u16]) -> Option<Vec<Self>> {
-            if !x.len().is_multiple_of(4) {
+            #[allow(clippy::manual_is_multiple_of)]
+            if x.len() % 4 != 0 {
                 return None;
             }
             Some(
@@ -399,6 +402,41 @@ pub mod degree4 {
                 ]),
             };
             [share1, share2, share3]
+        }
+
+        pub fn deg_1_lagrange_polys_at_zero(
+            my_id: PartyID,
+            other_id: PartyID,
+        ) -> GaloisRingElement<Monomial> {
+            let mut res = GaloisRingElement::ONE;
+            let i = usize::from(my_id) + 1;
+            let j = usize::from(other_id) + 1;
+            res = res * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
+            res = res
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse();
+            res
+        }
+
+        pub fn deg_1_lagrange_poly_at_v(
+            my_id: usize,
+            other_id: usize,
+            v: usize,
+        ) -> GaloisRingElement<Monomial> {
+            assert!(my_id < 15);
+            assert!(other_id < 15);
+            assert!(v < 15);
+            let i = my_id + 1;
+            let j = other_id + 1;
+            let v = v + 1;
+            let mut res = GaloisRingElement::EXCEPTIONAL_SEQUENCE[v]
+                - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j];
+            res = res
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse();
+            res
         }
 
         pub fn deg_2_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 3] {

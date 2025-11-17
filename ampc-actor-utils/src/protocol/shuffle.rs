@@ -1,11 +1,12 @@
 use eyre::Result;
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use rand::Rng;
 
 use crate::{
     constants::N_PARTIES,
     execution::session::{Session, SessionHandles},
 };
+use ampc_secret_sharing::shares::share::reconstruct_id_distance_vector;
 use ampc_secret_sharing::shares::{
     ring_impl::VecRingElement, share::DistanceShare, RingElement, Share,
 };
@@ -15,47 +16,37 @@ use ampc_secret_sharing::shares::{
 /// i.e., party i holds pi_{i,i+1} and pi_{i-1,i} (indices modulo 3)
 pub type Permutation = (Vec<u32>, Vec<u32>);
 
-fn reconstruct_distances(
-    a: VecRingElement<u32>,
-    b: VecRingElement<u32>,
-) -> Vec<(Share<u32>, DistanceShare<u32>)> {
-    izip!(a.0, b.0)
-        .tuples()
-        .map(
-            |((id_a, id_b), (code_dot_a, code_dot_b), (mask_dot_a, mask_dot_b))| {
-                let id_share = Share { a: id_a, b: id_b };
-                let dist_share = DistanceShare {
-                    code_dot: Share {
-                        a: code_dot_a,
-                        b: code_dot_b,
-                    },
-                    mask_dot: Share {
-                        a: mask_dot_a,
-                        b: mask_dot_b,
-                    },
-                };
-                (id_share, dist_share)
-            },
-        )
-        .collect_vec()
-}
-
-fn batch_shuffle(
+/// Shuffle batches of triplets according to the given permutation.
+/// In particular, the input data is organized as a sequence of triplets
+/// (
+///     a_11, b_11, c_11,
+///     a_12, b_12, c_12,
+///     ...,
+///     a_1n, b_1n, c_1n,
+///     ...,
+///     a_k1, b_k1, c_k1,
+///     a_k2, b_k2, c_k2,
+///     ...,
+///     a_kn, b_kn, c_kn,
+/// ),
+/// i.e., each batch of `k` batches contains `n = batch_size` consecutive triplets `(a_i, b_i, c_i)`.
+///
+/// The permutation `perm` is applied to each batch of triplets independently,
+/// resulting in the output data where each i-th triplet in each batch is equal to `a_{perm(i)}, b_{perm(i)}, c_{perm(i)}`.
+fn shuffle_triplets(
     perm: Vec<u32>,
     data: VecRingElement<u32>,
     batch_size: usize,
 ) -> VecRingElement<u32> {
-    let mut res = Vec::with_capacity(data.len());
-    for i in perm {
-        let start = (i as usize) * batch_size;
-        let end = start + batch_size;
-        res.extend_from_slice(&data.0[start..end]);
+    let mut res = VecRingElement::with_capacity(data.len());
+    for batch in data.0.chunks(batch_size * 3) {
+        for i in perm.iter() {
+            let start = (*i as usize) * 3;
+            let end = start + 3;
+            res.0.extend_from_slice(&batch[start..end]);
+        }
     }
-    VecRingElement(res)
-}
-
-fn shuffle_triplets(perm: Vec<u32>, data: VecRingElement<u32>) -> VecRingElement<u32> {
-    batch_shuffle(perm, data, 3)
+    res
 }
 
 /// Perform a random shuffle of the input distances using the 3-party shuffle protocol
@@ -100,29 +91,51 @@ fn shuffle_triplets(perm: Vec<u32>, data: VecRingElement<u32>) -> VecRingElement
 /// = pi(A + B + C)
 /// = pi(distances)
 #[allow(dead_code)]
-pub(crate) async fn random_shuffle(
+pub(crate) async fn random_shuffle_batch(
     session: &mut Session,
-    distances: Vec<(Share<u32>, DistanceShare<u32>)>,
-) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
+    distances: Vec<Vec<(Share<u32>, DistanceShare<u32>)>>,
+) -> Result<Vec<Vec<(Share<u32>, DistanceShare<u32>)>>> {
+    // check that distances is not empty
+    if distances.is_empty() {
+        eyre::bail!("Input distances cannot be empty");
+    }
+
+    // check that all batches have the same length
+    let batch_size = distances[0].len();
+    if !distances.iter().all(|batch| batch.len() == batch_size) {
+        eyre::bail!("All batches must have the same length");
+    }
+
+    let flattened_distances = distances.into_iter().flatten().collect_vec();
+
     let shuffle_role =
         (session.session_id().0 + session.own_role().index() as u32) % N_PARTIES as u32;
 
-    match shuffle_role {
-        0 => shuffle_party_0(session, distances).await,
-        1 => shuffle_party_1(session, distances).await,
-        2 => shuffle_party_2(session, distances).await,
+    let flattened_results = match shuffle_role {
+        0 => shuffle_party_0(session, flattened_distances, batch_size).await?,
+        1 => shuffle_party_1(session, flattened_distances, batch_size).await?,
+        2 => shuffle_party_2(session, flattened_distances, batch_size).await?,
         _ => eyre::bail!("Invalid shuffle role: {}", shuffle_role),
-    }
+    };
+
+    // Reshape flattened_results back into batches
+    let results = flattened_results
+        .chunks(batch_size)
+        .map(|chunk| chunk.to_vec())
+        .collect();
+
+    Ok(results)
 }
 
 async fn shuffle_party_0(
     session: &mut Session,
     distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    batch_size: usize,
 ) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
-    let (pi_01, pi_20) = prf.gen_permutation(n as u32)?;
+    let (pi_01, pi_20) = prf.gen_permutation((batch_size) as u32)?;
     let (a, b): (Vec<Vec<_>>, Vec<Vec<_>>) = distances
         .into_iter()
         .map(|(id_share, dist_share)| {
@@ -139,10 +152,9 @@ async fn shuffle_party_0(
         .unzip();
 
     // X0 = pi_01(A + B + Z_01)
-    let x0 = shuffle_triplets(pi_01, ((a + b)? + z01)?);
+    let x0 = shuffle_triplets(pi_01, ((a + b)? + z01)?, batch_size);
     // X1 = pi_20(X0 + Z_20)
-    let x1 = shuffle_triplets(pi_20, (x0 + z20)?);
-
+    let x1 = shuffle_triplets(pi_20, (x0 + z20)?, batch_size);
     let network = &mut session.network_session;
     network.send_ring_vec_next(&x1).await?;
 
@@ -150,18 +162,18 @@ async fn shuffle_party_0(
     let (tilde_b, tilde_a) = (0..(3 * n))
         .map(|_| prf.gen_rands::<RingElement<u32>>())
         .unzip();
-    Ok(reconstruct_distances(tilde_b, tilde_a))
+    Ok(reconstruct_id_distance_vector(tilde_b, tilde_a))
 }
 
 async fn shuffle_party_1(
     session: &mut Session,
     distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    batch_size: usize,
 ) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
-    let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
     // pi_12 and pi_01
-    let (pi_12, pi_01) = prf.gen_permutation(n as u32)?;
+    let (pi_12, pi_01) = prf.gen_permutation((batch_size) as u32)?;
     // extract C
     let c: VecRingElement<u32> = distances
         .into_iter()
@@ -175,18 +187,17 @@ async fn shuffle_party_1(
         .unzip();
 
     // Y0 = pi_01(C - Z_01)
-    let y0 = shuffle_triplets(pi_01, (c - z01)?);
+    let y0 = shuffle_triplets(pi_01, (c - z01)?, batch_size);
 
     // ROUND 1
-    // Send Y1 to party 2
+    // Send Y0 to party 2
     let network = &mut session.network_session;
     network.send_ring_vec_next(&y0).await?;
 
     // Receive X1 from party 0
     let x1 = network.receive_ring_vec_prev().await?;
-
     // X2 = pi_12(X1 + Z_12)
-    let x2 = shuffle_triplets(pi_12, (x1 + z12)?);
+    let x2 = shuffle_triplets(pi_12, (x1 + z12)?, batch_size);
 
     // tilde(B) shared with party 0
     let tilde_b: VecRingElement<u32> = (0..x2.len())
@@ -206,17 +217,18 @@ async fn shuffle_party_1(
     let tilde_c = (tilde_c1 + tilde_c2)?;
 
     // Reconstruct shares using tilde_C and tilde_B
-    Ok(reconstruct_distances(tilde_c, tilde_b))
+    Ok(reconstruct_id_distance_vector(tilde_c, tilde_b))
 }
 
 async fn shuffle_party_2(
     session: &mut Session,
     distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    batch_size: usize,
 ) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
-    let (pi_20, pi_12) = prf.gen_permutation(n as u32)?;
+    let (pi_20, pi_12) = prf.gen_permutation((batch_size) as u32)?;
 
     let (z20, z12): (VecRingElement<u32>, VecRingElement<u32>) = (0..3 * n)
         .map(|_| prf.gen_rands::<RingElement<u32>>())
@@ -229,9 +241,9 @@ async fn shuffle_party_2(
     let y0 = network.receive_ring_vec_prev().await?;
 
     // Y1 = pi_20(Y0 - Z_20)
-    let y1 = shuffle_triplets(pi_20, (y0 - z20)?);
+    let y1 = shuffle_triplets(pi_20, (y0 - z20)?, batch_size);
     // Y2 = pi_12(Y1 - Z_12)
-    let y2 = shuffle_triplets(pi_12, (y1 - z12)?);
+    let y2 = shuffle_triplets(pi_12, (y1 - z12)?, batch_size);
     // tilde(A) shared with party 0
     let tilde_a: VecRingElement<u32> = (0..y2.len())
         .map(|_| prf.get_my_prf().gen::<RingElement<u32>>())
@@ -250,5 +262,5 @@ async fn shuffle_party_2(
     let tilde_c = (tilde_c1 + tilde_c2)?;
 
     // Reconstruct shares using tilde_A and tilde_C
-    Ok(reconstruct_distances(tilde_a, tilde_c))
+    Ok(reconstruct_id_distance_vector(tilde_a, tilde_c))
 }

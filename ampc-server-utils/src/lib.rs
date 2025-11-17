@@ -6,6 +6,7 @@ pub mod server_coordination;
 pub mod shutdown_handler;
 pub mod sqs;
 pub mod startup_sync;
+pub mod statistics;
 pub mod task_monitor;
 
 pub use batch_sync::{
@@ -24,4 +25,7 @@ pub use sqs::{
     SQSMessage,
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
+pub use statistics::{
+    AnonStatsResultSource, Bucket2DResult, BucketResult, BucketStatistics, BucketStatistics2D,
+};
 pub use task_monitor::TaskMonitor;

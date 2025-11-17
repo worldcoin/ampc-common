@@ -1,4 +1,4 @@
-mod config;
+pub mod config;
 mod connection;
 mod data;
 mod handle;
