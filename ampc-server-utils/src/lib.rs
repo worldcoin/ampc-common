@@ -26,4 +26,4 @@ pub use sqs::{
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
 pub use task_monitor::TaskMonitor;
-pub use statistics::{BucketStatistics, AnonStatsResultSource, BucketResult, Bucket2DResult, BucketStatistics2D};
+pub use statistics::{BucketStatistics, AnonStatsResultSource, BucketResult, Bucket2DResult, BucketStatistics2D, Eye};
