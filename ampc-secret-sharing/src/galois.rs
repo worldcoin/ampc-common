@@ -1,4 +1,5 @@
 pub mod degree4 {
+    use crate::id::PartyID;
     use basis::{Basis, Monomial};
     use rand::{CryptoRng, Rng};
     use std::marker::PhantomData;
@@ -401,6 +402,21 @@ pub mod degree4 {
                 ]),
             };
             [share1, share2, share3]
+        }
+
+        pub fn deg_1_lagrange_polys_at_zero(
+            my_id: PartyID,
+            other_id: PartyID,
+        ) -> GaloisRingElement<Monomial> {
+            let mut res = GaloisRingElement::ONE;
+            let i = usize::from(my_id) + 1;
+            let j = usize::from(other_id) + 1;
+            res = res * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
+            res = res
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse();
+            res
         }
 
         pub fn deg_1_lagrange_poly_at_v(
