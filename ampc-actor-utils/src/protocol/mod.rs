@@ -2,6 +2,7 @@ pub mod binary;
 pub mod ops;
 pub mod prf;
 pub mod shuffle;
+pub mod anon_stats;
 
 // Re-export key types
 pub use prf::{Prf, PrfSeed};
