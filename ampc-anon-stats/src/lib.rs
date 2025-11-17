@@ -17,4 +17,4 @@ pub use crate::server::coordination::{
 };
 pub use crate::server::health::{spawn_healthcheck_server_with_state, HealthServerState};
 pub use crate::server::sync::{sync_on_id_hash, sync_on_job_sizes};
-pub use crate::server::config::{AnonStatsServerConfig};
+pub use crate::server::config::{AnonStatsServerConfig, Opt};

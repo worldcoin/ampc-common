@@ -1,17 +1,6 @@
 use clap::Parser;
 use serde::{Deserialize, Deserializer, Serialize};
-
-// Note: AwsConfig and ServiceConfig will need to be defined or imported from iris-mpc-common
-// when integrating with iris-mpc. For now, these are placeholders.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AwsConfig {
-    // Placeholder - will be replaced when integrating with iris-mpc
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceConfig {
-    // Placeholder - will be replaced when integrating with iris-mpc
-}
+use ampc_server_utils::config::{AwsConfig, ServiceConfig};
 
 #[derive(Debug, Clone, Parser)]
 pub struct Opt {
