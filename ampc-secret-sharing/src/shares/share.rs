@@ -1,4 +1,5 @@
 use super::{int_ring::IntRing2k, ring_impl::RingElement};
+use itertools::{izip, Itertools};
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use std::ops::{
@@ -56,7 +57,6 @@ impl<T: IntRing2k> Share<T> {
         (self.a, self.b)
     }
 }
-
 
 impl<T: IntRing2k> Add<&Self> for Share<T> {
     type Output = Self;
@@ -291,6 +291,11 @@ impl<T: IntRing2k> Neg for &Share<T> {
     }
 }
 
+// WARNING: This only works because there are three additive shares.
+// NOT(b) = NOT(b_0 XOR b_1 XOR b_2)
+// = b_0 XOR b_1 XOR b_2 XOR 1
+// = b_0 XOR 1 XOR b_1 XOR 1 XOR b_2 XOR 1
+// = NOT(b_0) XOR NOT(b_1) XOR NOT(b_2)
 impl<T: IntRing2k> Not for &Share<T> {
     type Output = Share<T>;
 
@@ -368,19 +373,38 @@ impl<T: IntRing2k> Add<Self> for DistanceShare<T> {
     }
 }
 
+impl<T: IntRing2k> AddAssign<&Self> for DistanceShare<T> {
+    fn add_assign(&mut self, rhs: &Self) {
+        self.code_dot += &rhs.code_dot;
+        self.mask_dot += &rhs.mask_dot;
+    }
+}
+
 /// Reconstructs a vector of DistanceShare from replicated shares
 /// Used in iris-mpc protocol operations
 pub fn reconstruct_distance_vector(
     a: super::ring_impl::VecRingElement<u32>,
     b: super::ring_impl::VecRingElement<u32>,
 ) -> Vec<DistanceShare<u32>> {
-    use itertools::Itertools;
-    a.0.into_iter()
-        .zip(b.0)
+    izip!(a.0, b.0)
         .map(|(a, b)| Share::new(a, b))
         .tuples()
         .map(|(code_dot, mask_dot)| DistanceShare::new(code_dot, mask_dot))
-        .collect()
+        .collect_vec()
+}
+
+pub fn reconstruct_id_distance_vector(
+    a: super::ring_impl::VecRingElement<u32>,
+    b: super::ring_impl::VecRingElement<u32>,
+) -> Vec<(Share<u32>, DistanceShare<u32>)> {
+    izip!(a.0, b.0)
+        .map(|(a, b)| Share::new(a, b))
+        .tuples()
+        .map(|(id, code_dot, mask_dot)| {
+            let dist_share = DistanceShare::new(code_dot, mask_dot);
+            (id, dist_share)
+        })
+        .collect_vec()
 }
 
 #[cfg(test)]

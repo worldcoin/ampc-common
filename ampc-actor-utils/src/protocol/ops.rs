@@ -3,18 +3,20 @@
 
 use crate::execution::session::SessionHandles;
 use crate::network::value::NetworkInt;
-use crate::protocol::binary::{bit_inject_ot_2round, extract_msb_u16_batch, extract_msb_u32_batch, lift, open_bin};
+use crate::protocol::binary::{
+    bit_inject_ot_2round, extract_msb_u16_batch, extract_msb_u32_batch, lift, open_bin,
+};
 use crate::{
     execution::session::{NetworkSession, Session},
     network::value::NetworkValue,
     protocol::prf::{Prf, PrfSeed},
 };
+use ampc_secret_sharing::shares::bit::Bit;
+use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
 use tracing::instrument;
-use ampc_secret_sharing::shares::bit::Bit;
-use ampc_secret_sharing::shares::share::DistanceShare;
 
 pub(crate) const B_BITS: u64 = 16;
 pub(crate) const B: u64 = 1 << B_BITS;
@@ -137,6 +139,7 @@ pub async fn lte_threshold_and_open_u16(
 /// Open ring shares to reveal the secret value
 /// This is a helper function for opening shares
 #[allow(dead_code)]
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
     session: &mut Session,
     shares: &[Share<T>],
@@ -165,7 +168,6 @@ pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
         .map(|(s, c)| Ok((s.a + s.b + c).convert()))
         .collect::<Result<Vec<_>>>()
 }
-
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 /// Same as [open_ring], but for non-replicated shares. Due to the share being non-replicated,
@@ -201,7 +203,6 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
         .map(|(a, b, c)| Ok((*a + *b + *c).convert()))
         .collect::<Result<Vec<_>>>()
 }
-
 
 /// Conditionally selects the distance shares based on control bits.
 /// If the control bit is 1, it selects the first distance share (d1),
@@ -333,7 +334,6 @@ pub(crate) async fn oblivious_cross_compare(
     extract_msb_u32_batch(session, &diff).await
 }
 
-
 /// For every pair of distance shares (d1, d2), this computes the secret-shared bit d2 < d1 and lift it to u32 shares.
 ///
 /// The less-than operator is implemented in 2 steps:
@@ -367,7 +367,6 @@ pub async fn min_of_pair_batch(
     conditionally_select_distance(session, distances, bits.as_slice()).await
 }
 
-
 /// Lifts a share of a vector (VecShare) of 16-bit values to a share of a vector
 /// (VecShare) of 32-bit values.
 pub async fn batch_signed_lift(
@@ -388,7 +387,6 @@ pub async fn batch_signed_lift(
     Ok(lifted_values)
 }
 
-
 /// Wrapper over batch_signed_lift that lifts a vector (Vec) of 16-bit shares to
 /// a vector (Vec) of 32-bit shares.
 pub async fn batch_signed_lift_vec(
@@ -398,7 +396,6 @@ pub async fn batch_signed_lift_vec(
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
 }
-
 
 #[cfg(test)]
 mod tests {
