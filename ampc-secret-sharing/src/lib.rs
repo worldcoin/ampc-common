@@ -6,7 +6,9 @@
 pub mod galois;
 pub mod id;
 pub mod shares;
+pub mod vector;
 
 pub use galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
 pub use id::PartyID;
 pub use shares::{IntRing2k, RingElement, Role, Share};
+pub use vector::{SecretSharedVector, Vector};
