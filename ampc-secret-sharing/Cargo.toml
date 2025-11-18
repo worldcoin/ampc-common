@@ -14,7 +14,6 @@ bytemuck = { version = "1.14", features = ["derive"] }
 eyre = { workspace = true }
 aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
 itertools = { workspace = true }
-base64 = "0.22"
 
 [dev-dependencies]
 itertools = { workspace = true }

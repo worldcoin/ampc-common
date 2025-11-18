@@ -53,36 +53,6 @@ impl<const SIZE: usize> Vector<SIZE> {
             .sum()
     }
 
-    /// Create a Vector from a base64-encoded string.
-    ///
-    /// # Errors
-    /// Returns an error if:
-    /// - The base64 string is invalid
-    /// - The decoded data is not exactly SIZE bytes
-    pub fn from_base64(embedding_base64: &str) -> Result<Self, String> {
-        use base64::engine::general_purpose::STANDARD as base64_engine;
-        use base64::Engine;
-
-        let decoded_bytes = base64_engine
-            .decode(embedding_base64)
-            .map_err(|e| format!("Failed to decode base64 embedding: {e}"))?;
-
-        if decoded_bytes.len() != SIZE {
-            return Err(format!(
-                "Invalid embedding size: expected {} bytes, got {}",
-                SIZE,
-                decoded_bytes.len()
-            ));
-        }
-
-        let mut embedding = [0i8; SIZE];
-        for (i, &byte) in decoded_bytes.iter().enumerate() {
-            embedding[i] = byte as i8;
-        }
-
-        Ok(Vector(embedding))
-    }
-
     /// Create secret shares from this vector.
     ///
     /// This function creates 3 secret shares, each containing SIZE u16 values.
