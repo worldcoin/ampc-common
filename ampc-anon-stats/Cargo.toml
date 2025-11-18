@@ -13,7 +13,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 bincode = { workspace = true }
 siphasher = "1"
-config = { version = "0.15.19", features = ["serde_json"] }
+config = { version = "0.15.19", default-features = false, features = ["json"] }
 tracing = { workspace = true }
 clap = { version = "4.5.51", features = ["derive"] }
 itertools = "0.14.0"
