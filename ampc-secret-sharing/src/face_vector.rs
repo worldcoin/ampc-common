@@ -1,7 +1,7 @@
-//! Vector types for secret sharing.
+//! Face vector types for secret sharing.
 //!
-//! This module provides `Vector` and `SecretSharedVector` types that can be used
-//! to represent plaintext vectors and their secret-shared counterparts.
+//! This module provides `FaceVector` and `FaceSecretSharedVector` types for
+//! face embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
 use rand::{CryptoRng, Rng};
@@ -9,45 +9,46 @@ use rand_distr::{Distribution, StandardNormal};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-/// A plaintext vector of i8 values that can be secret-shared.
+/// Size of face embedding vectors (512 elements)
+pub const FACE_VECTOR_SIZE: usize = 512;
+
+/// A plaintext face vector of 512 i8 values that can be secret-shared.
 ///
-/// This is the input type for secret sharing operations.
-/// The size is specified via const generics, e.g., `Vector<512>` for face embeddings.
+/// This is the input type for face embedding secret sharing operations.
 #[derive(Clone)]
-pub struct Vector<const SIZE: usize>(pub [i8; SIZE]);
+pub struct FaceVector(pub [i8; FACE_VECTOR_SIZE]);
 
-/// A secret-shared vector containing u16 values.
+/// A secret-shared face vector containing 512 u16 values.
 ///
-/// This represents one share of a secret-shared vector.
-/// Each share contains SIZE u16 values.
+/// This represents one share of a secret-shared face vector.
 #[derive(Clone, Debug)]
-pub struct SecretSharedVector<const SIZE: usize>(pub [u16; SIZE]);
+pub struct FaceSecretSharedVector(pub [u16; FACE_VECTOR_SIZE]);
 
-impl<const SIZE: usize> Default for SecretSharedVector<SIZE> {
+impl Default for FaceSecretSharedVector {
     fn default() -> Self {
-        SecretSharedVector([0u16; SIZE])
+        FaceSecretSharedVector([0u16; FACE_VECTOR_SIZE])
     }
 }
 
-impl<const SIZE: usize> Vector<SIZE> {
-    /// Create a new Vector from an array of i8 values.
-    pub fn new(data: [i8; SIZE]) -> Self {
-        Vector(data)
+impl FaceVector {
+    /// Create a new FaceVector from an array of 512 i8 values.
+    pub fn new(data: [i8; FACE_VECTOR_SIZE]) -> Self {
+        FaceVector(data)
     }
 
-    /// Create a random Vector with values in the range [-8, 7).
+    /// Create a random FaceVector with values in the range [-8, 7).
     ///
     /// This is useful for testing and database initialization.
     pub fn random<R: CryptoRng + Rng>(rng: &mut R) -> Self {
-        let mut vec = [0i8; SIZE];
+        let mut vec = [0i8; FACE_VECTOR_SIZE];
         for element in &mut vec {
             *element = rng.gen_range(-8..7);
         }
-        Vector(vec)
+        FaceVector(vec)
     }
 
-    /// Compute the dot product with another vector.
-    pub fn dot(&self, other: &Vector<SIZE>) -> i16 {
+    /// Compute the dot product with another face vector.
+    pub fn dot(&self, other: &FaceVector) -> i16 {
         self.0
             .iter()
             .zip(other.0.iter())
@@ -55,14 +56,16 @@ impl<const SIZE: usize> Vector<SIZE> {
             .sum()
     }
 
-    /// Create a random normalized vector.
+    /// Create a random normalized face vector.
     ///
     /// This generates a vector with values sampled from a standard normal distribution,
     /// normalized to unit length, and then quantized to i8 values.
     ///
     /// This is useful for testing and generating realistic embedding vectors.
     pub fn random_normalized<R: CryptoRng + Rng>(rng: &mut R) -> Self {
-        let mut v: Vec<f64> = (0..SIZE).map(|_| StandardNormal.sample(rng)).collect();
+        let mut v: Vec<f64> = (0..FACE_VECTOR_SIZE)
+            .map(|_| StandardNormal.sample(rng))
+            .collect();
         let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
         v.iter_mut().for_each(|x| *x /= norm);
         Self::quantize(v)
@@ -74,16 +77,16 @@ impl<const SIZE: usize> Vector<SIZE> {
     /// to an i8 array by scaling values to the range [-7, 7].
     fn quantize(vector: Vec<f64>) -> Self {
         let max = vector.iter().map(|x| x.abs()).fold(f64::MIN, f64::max);
-        let vec: [i8; SIZE] = vector
+        let vec: [i8; FACE_VECTOR_SIZE] = vector
             .iter()
             .map(|&x| (x / max * 7.0).round() as i8)
             .collect::<Vec<i8>>()
             .try_into()
             .unwrap();
-        Vector(vec)
+        FaceVector(vec)
     }
 
-    /// Generate a random vector with a dot product within the specified range.
+    /// Generate a random face vector with a dot product within the specified range.
     ///
     /// This method generates a random vector `v2` such that `self.dot(&v2)` is within
     /// the range `[dot + eps.start, dot + eps.end)`.
@@ -97,7 +100,7 @@ impl<const SIZE: usize> Vector<SIZE> {
     /// Panics if `eps.start >= eps.end`
     ///
     /// # Returns
-    /// A random vector with dot product in the specified range
+    /// A random face vector with dot product in the specified range
     pub fn random_with_dot<R: CryptoRng + Rng>(
         &self,
         dot: i16,
@@ -118,7 +121,9 @@ impl<const SIZE: usize> Vector<SIZE> {
 
         // Rejection sampling
         loop {
-            let mut z: Vec<f64> = (0..SIZE).map(|_| StandardNormal.sample(rng)).collect();
+            let mut z: Vec<f64> = (0..FACE_VECTOR_SIZE)
+                .map(|_| StandardNormal.sample(rng))
+                .collect();
             let dot_z_v1: f64 = z.iter().zip(&v1).map(|(a, b)| a * b).sum();
             z.iter_mut()
                 .zip(&v1)
@@ -139,33 +144,33 @@ impl<const SIZE: usize> Vector<SIZE> {
         }
     }
 
-    /// Create secret shares from this vector.
+    /// Create secret shares from this face vector.
     ///
-    /// This function creates 3 secret shares, each containing SIZE u16 values.
+    /// This function creates 3 secret shares, each containing 512 u16 values.
     /// The vector is processed in chunks of 4, where each chunk is converted to
     /// a GaloisRingElement and then secret-shared.
     ///
     /// # Errors
-    /// Returns an error if SIZE is not divisible by 4
+    /// Returns an error if vector size is not divisible by 4 (should never happen for 512)
     pub fn secret_share<R: CryptoRng + Rng>(
         &self,
         rng: &mut R,
-    ) -> eyre::Result<[SecretSharedVector<SIZE>; 3]> {
+    ) -> eyre::Result<[FaceSecretSharedVector; 3]> {
         #[allow(clippy::manual_is_multiple_of)]
-        if SIZE % 4 != 0 {
+        if FACE_VECTOR_SIZE % 4 != 0 {
             return Err(eyre::eyre!(
                 "Vector size must be divisible by 4, got {}",
-                SIZE
+                FACE_VECTOR_SIZE
             ));
         }
 
         let mut shares = [
-            SecretSharedVector::default(),
-            SecretSharedVector::default(),
-            SecretSharedVector::default(),
+            FaceSecretSharedVector::default(),
+            FaceSecretSharedVector::default(),
+            FaceSecretSharedVector::default(),
         ];
 
-        for i in (0..SIZE).step_by(4) {
+        for i in (0..FACE_VECTOR_SIZE).step_by(4) {
             let element = GaloisRingElement::<basis::A>::from_coefs([
                 self.0[i] as u16,
                 self.0[i + 1] as u16,
@@ -186,14 +191,14 @@ impl<const SIZE: usize> Vector<SIZE> {
     }
 }
 
-impl<const SIZE: usize> SecretSharedVector<SIZE> {
+impl FaceSecretSharedVector {
     /// Get the underlying array of u16 values.
-    pub fn as_array(&self) -> &[u16; SIZE] {
+    pub fn as_array(&self) -> &[u16; FACE_VECTOR_SIZE] {
         &self.0
     }
 
     /// Get a mutable reference to the underlying array.
-    pub fn as_array_mut(&mut self) -> &mut [u16; SIZE] {
+    pub fn as_array_mut(&mut self) -> &mut [u16; FACE_VECTOR_SIZE] {
         &mut self.0
     }
 
@@ -225,7 +230,7 @@ impl<const SIZE: usize> SecretSharedVector<SIZE> {
 }
 
 // Manual Serialize/Deserialize implementation for large arrays
-impl<const SIZE: usize> Serialize for SecretSharedVector<SIZE> {
+impl Serialize for FaceSecretSharedVector {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -234,35 +239,35 @@ impl<const SIZE: usize> Serialize for SecretSharedVector<SIZE> {
     }
 }
 
-impl<'de, const SIZE: usize> Deserialize<'de> for SecretSharedVector<SIZE> {
+impl<'de> Deserialize<'de> for FaceSecretSharedVector {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
         let vec: Vec<u16> = Deserialize::deserialize(deserializer)?;
-        if vec.len() != SIZE {
+        if vec.len() != FACE_VECTOR_SIZE {
             return Err(serde::de::Error::custom(format!(
                 "Expected {} elements, got {}",
-                SIZE,
+                FACE_VECTOR_SIZE,
                 vec.len()
             )));
         }
-        let mut arr = [0u16; SIZE];
+        let mut arr = [0u16; FACE_VECTOR_SIZE];
         arr.copy_from_slice(&vec);
-        Ok(SecretSharedVector(arr))
+        Ok(FaceSecretSharedVector(arr))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Vector;
+    use super::FaceVector;
     use rand::thread_rng;
 
     #[test]
     fn test_random_normalized_with_dot() {
         for _ in 0..100 {
             let mut rng = thread_rng();
-            let v1 = Vector::<512>::random_normalized(&mut rng);
+            let v1 = FaceVector::random_normalized(&mut rng);
             let v2 = v1.random_with_dot(1000, -10..10, &mut rng);
             let dot = v1.dot(&v2);
             assert!((990..1010).contains(&dot));
