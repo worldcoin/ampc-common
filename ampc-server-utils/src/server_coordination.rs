@@ -245,7 +245,6 @@ pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<
     }
 
     tracing::info!("All nodes are ready.");
-    validate_peer_health(config).await?;
     Ok(())
 }
 
@@ -300,86 +299,4 @@ pub async fn try_get_endpoint_other_nodes(
             tracing::error!("{}: {}", msg, err);
         })
         .wrap_err(msg)
-}
-
-fn other_node_endpoints(config: &ServerCoordinationConfig, endpoint: &str) -> Result<Vec<String>> {
-    if config.node_hostnames.is_empty() || config.healthcheck_ports.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    ensure!(
-        config.node_hostnames.len() == config.healthcheck_ports.len(),
-        "node_hostnames and healthcheck_ports must have the same length"
-    );
-    ensure!(
-        config.party_id < config.node_hostnames.len(),
-        "party_id {} out of bounds for node hostnames length {}",
-        config.party_id,
-        config.node_hostnames.len()
-    );
-
-    let endpoints = config
-        .node_hostnames
-        .iter()
-        .zip(config.healthcheck_ports.iter())
-        .enumerate()
-        .filter(|(idx, _)| *idx != config.party_id)
-        .map(|(_, (host, port))| format!("http://{}:{}/{}", host, port, endpoint))
-        .collect();
-
-    Ok(endpoints)
-}
-async fn validate_peer_health(config: &ServerCoordinationConfig) -> Result<()> {
-    let endpoints = other_node_endpoints(config, "health")?;
-    if endpoints.is_empty() {
-        return Ok(());
-    }
-
-    for endpoint in endpoints {
-        match reqwest::get(&endpoint).await {
-            Ok(response) if response.status().is_success() => {
-                match response.json::<ReadyProbeResponse>().await {
-                    Ok(probe) => {
-                        if !config.image_name.is_empty()
-                            && !probe.image_name.is_empty()
-                            && config.image_name != probe.image_name
-                        {
-                            tracing::warn!(
-                                url = endpoint,
-                                remote_image = probe.image_name,
-                                local_image = %config.image_name,
-                                "Peer is running a different image"
-                            );
-                        }
-                        if probe.shutting_down {
-                            tracing::warn!(url = endpoint, "Peer is reporting shutdown state");
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            url = endpoint,
-                            error = ?err,
-                            "Failed to parse ReadyProbeResponse"
-                        );
-                    }
-                }
-            }
-            Ok(response) => {
-                tracing::warn!(
-                    url = endpoint,
-                    status = ?response.status(),
-                    "Unexpected status from peer health endpoint"
-                );
-            }
-            Err(err) => {
-                tracing::warn!(
-                    url = endpoint,
-                    error = ?err,
-                    "Failed to query peer health endpoint"
-                );
-            }
-        }
-    }
-
-    Ok(())
 }
