@@ -59,15 +59,19 @@ impl<const SIZE: usize> Vector<SIZE> {
     /// The vector is processed in chunks of 4, where each chunk is converted to
     /// a GaloisRingElement and then secret-shared.
     ///
-    /// # Panics
-    /// Panics if SIZE is not divisible by 4
-    pub fn secret_share<R: CryptoRng + Rng>(&self, rng: &mut R) -> [SecretSharedVector<SIZE>; 3] {
-        assert_eq!(
-            SIZE % 4,
-            0,
-            "Vector size must be divisible by 4, got {}",
-            SIZE
-        );
+    /// # Errors
+    /// Returns an error if SIZE is not divisible by 4
+    pub fn secret_share<R: CryptoRng + Rng>(
+        &self,
+        rng: &mut R,
+    ) -> eyre::Result<[SecretSharedVector<SIZE>; 3]> {
+        #[allow(clippy::manual_is_multiple_of)]
+        if SIZE % 4 != 0 {
+            return Err(eyre::eyre!(
+                "Vector size must be divisible by 4, got {}",
+                SIZE
+            ));
+        }
 
         let mut shares = [
             SecretSharedVector::default(),
@@ -92,7 +96,7 @@ impl<const SIZE: usize> Vector<SIZE> {
             }
         }
 
-        shares
+        Ok(shares)
     }
 }
 
