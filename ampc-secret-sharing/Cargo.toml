@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 rand = { workspace = true }
+rand_distr = "0.4"
 serde = { workspace = true }
 num-traits = "0.2"
 bytemuck = { version = "1.14", features = ["derive"] }
