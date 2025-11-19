@@ -62,7 +62,7 @@ fn default_heartbeat_initial_retries() -> u64 {
 }
 
 fn default_http_query_retry_delay_ms() -> u64 {
-    1000
+    5000
 }
 
 fn default_startup_sync_timeout_secs() -> u64 {

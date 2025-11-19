@@ -1,8 +1,14 @@
+use crate::batch_sync::batch_sync_routes;
 use crate::config::ServerCoordinationConfig;
+use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
 use crate::task_monitor::TaskMonitor;
+use crate::BatchSyncSharedState;
 use axum::http::StatusCode;
-use eyre::{ensure, Result, WrapErr};
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
+use eyre::{ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
 use futures::FutureExt as _;
 use itertools::Itertools as _;
@@ -12,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReadyProbeResponse {
@@ -35,11 +41,114 @@ where
 
 /// Awaits until other MPC nodes respond to "ready" queries
 /// indicating that their coordination servers are running.
-///
-/// Note: The response to this query is expected initially to be `503 Service Unavailable`.
-/// Awaits until other MPC nodes respond to "ready" queries
-/// indicating that their coordination servers are running.
-///
+/// Initializes and starts HTTP server for coordinating healthcheck, readiness,
+/// and synchronization between AMPC nodes.
+/// Note: returns a reference to a readiness flag, an `AtomicBool`, which can later
+/// be set to indicate to other MPC nodes that this server is ready for operation.
+pub async fn start_coordination_server<T>(
+    config: &ServerCoordinationConfig,
+    task_monitor: &mut TaskMonitor,
+    shutdown_handler: &Arc<ShutdownHandler>,
+    my_state: &T,
+    batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
+) -> Arc<AtomicBool>
+where
+    T: Serialize + DeserializeOwned + Clone + Send + 'static,
+{
+    tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
+
+    let is_ready_flag = Arc::new(AtomicBool::new(false));
+
+    let health_shutdown_handler = Arc::clone(shutdown_handler);
+    let health_check_port = config
+        .get_own_healthcheck_port()
+        .expect("Failed to get healthcheck port for this server");
+
+    let _health_check_abort = task_monitor.spawn({
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let is_ready_flag = Arc::clone(&is_ready_flag);
+        let image_name = config.image_name.to_string();
+        let ready_probe_response = ReadyProbeResponse {
+            image_name: image_name.clone(),
+            shutting_down: false,
+            uuid: uuid.clone(),
+        };
+        let ready_probe_response_shutdown = ReadyProbeResponse {
+            image_name,
+            shutting_down: true,
+            uuid: uuid.clone(),
+        };
+        let serialized_response = serde_json::to_string(&ready_probe_response)
+            .expect("Serialization to JSON to probe response failed");
+        let serialized_response_shutdown = serde_json::to_string(&ready_probe_response_shutdown)
+            .expect("Serialization to JSON to probe response failed");
+        tracing::info!("Healthcheck probe response: {}", serialized_response);
+        let my_state = my_state.clone();
+        let batch_sync_shared_state = batch_sync_shared_state.clone();
+        async move {
+            let mut app = Router::new()
+                .route(
+                    "/health",
+                    get(move || {
+                        let shutdown_handler_clone = Arc::clone(&health_shutdown_handler);
+                        let serialized_response = serialized_response.clone();
+                        let serialized_response_shutdown = serialized_response_shutdown.clone();
+                        async move {
+                            if shutdown_handler_clone.is_shutting_down() {
+                                serialized_response_shutdown
+                            } else {
+                                serialized_response
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/ready",
+                    get({
+                        let is_ready_flag = Arc::clone(&is_ready_flag);
+                        move || async move {
+                            if is_ready_flag.load(Ordering::SeqCst) {
+                                "ready".into_response()
+                            } else {
+                                StatusCode::SERVICE_UNAVAILABLE.into_response()
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/startup-sync",
+                    get(move || {
+                        let my_state = my_state.clone();
+                        async move { serde_json::to_string(&my_state).unwrap() }
+                    }),
+                );
+
+            // Add batch sync routes if state is provided
+            if let Some(batch_sync_state) = batch_sync_shared_state {
+                app = app.merge(batch_sync_routes(batch_sync_state));
+            }
+
+            // Merge profiling routes
+            app = app.merge(pprof_routes());
+
+            let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
+                .await
+                .wrap_err("AMPC coordination server listener bind error")?;
+            axum::serve(listener, app)
+                .await
+                .wrap_err("AMPC coordination server listener launch error")?;
+
+            Ok::<(), Error>(())
+        }
+    });
+
+    tracing::info!(
+        "Healthcheck and Readiness server running on port {}.",
+        health_check_port
+    );
+
+    is_ready_flag
+}
 /// Note: The response to this query is expected initially to be `503 Service Unavailable`.
 pub async fn wait_for_others_unready(config: &ServerCoordinationConfig) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
