@@ -13,7 +13,7 @@ pub use batch_sync::{
     get_batch_sync_entries, get_batch_sync_states, BatchSyncEntries, BatchSyncEntriesResult,
     BatchSyncResult, BatchSyncSharedState, BatchSyncState,
 };
-pub use config::ServerCoordinationConfig;
+pub use config::{ServerCoordinationConfig, ServiceConfig, MetricsConfig, AwsConfig};
 pub use decryption::{decrypt_share, SharesDecodingError, SharesEncryptionKeyPairs};
 pub use server_coordination::{
     get_check_addresses, get_others_sync_state, init_heartbeat_task, set_node_ready,
@@ -26,6 +26,7 @@ pub use sqs::{
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
 pub use statistics::{
-    AnonStatsResultSource, Bucket2DResult, BucketResult, BucketStatistics, BucketStatistics2D,
+    AnonStatsResultSource, Bucket2DResult, BucketResult, BucketStatistics, BucketStatistics2D, Eye,
 };
 pub use task_monitor::TaskMonitor;
+
