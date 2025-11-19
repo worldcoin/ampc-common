@@ -49,6 +49,8 @@ pub async fn spawn_healthcheck_server_with_state(
                         image_name: state.image_name.as_ref().clone(),
                         uuid: state.uuid.as_ref().clone(),
                         shutting_down: state.is_shutting_down.load(Ordering::SeqCst),
+                        verified_peers: Default::default(),
+                        is_ready: false,
                     };
                     Json(response)
                 }
