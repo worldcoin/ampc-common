@@ -1,9 +1,9 @@
-use crate::batch_sync::{batch_sync_routes, BatchSyncSharedState};
+use crate::batch_sync::batch_sync_routes;
 use crate::config::ServerCoordinationConfig;
 use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
-use crate::startup_sync::StartupSyncState;
 use crate::task_monitor::TaskMonitor;
+use crate::BatchSyncSharedState;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
@@ -39,18 +39,22 @@ where
         .collect::<Vec<String>>()
 }
 
+/// Awaits until other MPC nodes respond to "ready" queries
+/// indicating that their coordination servers are running.
 /// Initializes and starts HTTP server for coordinating healthcheck, readiness,
 /// and synchronization between AMPC nodes.
-///
 /// Note: returns a reference to a readiness flag, an `AtomicBool`, which can later
 /// be set to indicate to other MPC nodes that this server is ready for operation.
-pub async fn start_coordination_server(
+pub async fn start_coordination_server<T>(
     config: &ServerCoordinationConfig,
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
-    my_state: &StartupSyncState,
+    my_state: &T,
     batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
-) -> Arc<AtomicBool> {
+) -> Arc<AtomicBool>
+where
+    T: Serialize + DeserializeOwned + Clone + Send + 'static,
+{
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
@@ -145,16 +149,11 @@ pub async fn start_coordination_server(
 
     is_ready_flag
 }
-
-/// Awaits until other MPC nodes respond to "ready" queries
-/// indicating that their coordination servers are running.
-///
 /// Note: The response to this query is expected initially to be `503 Service Unavailable`.
 pub async fn wait_for_others_unready(config: &ServerCoordinationConfig) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
 
     let connected_but_unready = try_get_endpoint_other_nodes(config, "ready").await?;
-
     let all_unready = connected_but_unready
         .iter()
         .all(|resp| resp.status() == StatusCode::SERVICE_UNAVAILABLE);
@@ -332,6 +331,7 @@ pub fn set_node_ready(is_ready_flag: Arc<AtomicBool>) {
 pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be ready");
 
+    // Check other nodes and wait until all nodes are ready.
     'outer: loop {
         'retry: {
             let connected_and_ready_res = try_get_endpoint_other_nodes(config, "ready").await;
@@ -354,7 +354,6 @@ pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<
     }
 
     tracing::info!("All nodes are ready.");
-
     Ok(())
 }
 
