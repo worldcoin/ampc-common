@@ -1,6 +1,7 @@
+use ampc_server_utils::config::{AwsConfig, ServiceConfig};
+use ampc_server_utils::ServerCoordinationConfig;
 use clap::Parser;
 use serde::{Deserialize, Deserializer, Serialize};
-use ampc_server_utils::config::{AwsConfig, ServiceConfig};
 
 #[derive(Debug, Clone, Parser)]
 pub struct Opt {
@@ -35,9 +36,6 @@ pub struct AnonStatsServerConfig {
     pub environment: String,
 
     #[serde(default)]
-    pub image_name: String,
-
-    #[serde(default)]
     pub results_topic_arn: String,
 
     #[serde(default = "default_n_buckets_1d")]
@@ -65,26 +63,11 @@ pub struct AnonStatsServerConfig {
     /// Database schema name.
     pub db_schema_name: String,
 
-    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
-    pub node_hostnames: Vec<String>,
-
-    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
-    pub healthcheck_ports: Vec<String>,
+    #[serde(default)]
+    pub server_coordination: Option<ServerCoordinationConfig>,
 
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub service_ports: Vec<String>,
-
-    #[serde(default = "default_http_query_retry_delay_ms")]
-    pub http_query_retry_delay_ms: u64,
-
-    #[serde(default = "default_startup_sync_timeout_secs")]
-    pub startup_sync_timeout_secs: u64,
-
-    #[serde(default = "default_heartbeat_interval_secs")]
-    pub heartbeat_interval_secs: u64,
-
-    #[serde(default = "default_heartbeat_initial_retries")]
-    pub heartbeat_initial_retries: u64,
 
     #[serde(default = "default_shutdown_last_results_sync_timeout_secs")]
     pub shutdown_last_results_sync_timeout_secs: u64,
@@ -110,22 +93,6 @@ fn default_max_sync_failures_before_reset() -> usize {
     3
 }
 
-fn default_http_query_retry_delay_ms() -> u64 {
-    250
-}
-
-fn default_startup_sync_timeout_secs() -> u64 {
-    180
-}
-
-fn default_heartbeat_interval_secs() -> u64 {
-    2
-}
-
-fn default_heartbeat_initial_retries() -> u64 {
-    10
-}
-
 fn default_shutdown_last_results_sync_timeout_secs() -> u64 {
     10
 }
@@ -141,7 +108,11 @@ impl AnonStatsServerConfig {
             )
             .build()?;
 
-        let config: AnonStatsServerConfig = settings.try_deserialize::<AnonStatsServerConfig>()?;
+        let mut config: AnonStatsServerConfig =
+            settings.try_deserialize::<AnonStatsServerConfig>()?;
+        if let Some(service_coordination) = &mut config.server_coordination {
+            config.party_id = service_coordination.party_id;
+        }
         Ok(config)
     }
 

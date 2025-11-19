@@ -31,7 +31,6 @@ impl Display for Eye {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AnonStatsResultSource {
