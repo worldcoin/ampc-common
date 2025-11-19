@@ -31,24 +31,6 @@ impl Display for Eye {
     }
 }
 
-impl Eye {
-    pub fn other(&self) -> Self {
-        match self {
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
-
-impl Display for Eye {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Left => write!(f, "left"),
-            Self::Right => write!(f, "right"),
-        }
-    }
-}
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
