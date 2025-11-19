@@ -154,9 +154,9 @@ pub async fn wait_for_others_unready(config: &ServerCoordinationConfig) -> Resul
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
 
     let connected_but_unready = try_get_endpoint_other_nodes(config, "ready").await?;
-    let all_unready = connected_but_unready
-        .iter()
-        .all(|resp| resp.status() == StatusCode::SERVICE_UNAVAILABLE);
+    let all_unready = connected_but_unready.iter().all(|resp| {
+        resp.status() == StatusCode::SERVICE_UNAVAILABLE || resp.status() == StatusCode::OK
+    });
 
     ensure!(all_unready, "One or more nodes were not unready.");
 
