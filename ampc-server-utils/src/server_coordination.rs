@@ -75,7 +75,7 @@ where
         let is_ready_flag = Arc::clone(&is_ready_flag);
         let verified_peers = Arc::clone(&verified_peers);
         let image_name = config.image_name.to_string();
-        
+
         // Pre-calculate parts of the response that don't change
         let base_response = ReadyProbeResponse {
             image_name: image_name.clone(),
@@ -84,10 +84,10 @@ where
             verified_peers: HashSet::new(),
             is_ready: false,
         };
-        
+
         let my_state = my_state.clone();
         let batch_sync_shared_state = batch_sync_shared_state.clone();
-        
+
         async move {
             let is_ready_flag_health = Arc::clone(&is_ready_flag);
             let is_ready_flag_ready = Arc::clone(&is_ready_flag);
@@ -104,7 +104,7 @@ where
                             response.shutting_down = shutdown_handler_clone.is_shutting_down();
                             response.verified_peers = verified_peers_clone.lock().await.clone();
                             response.is_ready = is_ready_flag_clone.load(Ordering::SeqCst);
-                            
+
                             serde_json::to_string(&response)
                                 .expect("Serialization to JSON to probe response failed")
                         }
@@ -168,36 +168,52 @@ pub async fn wait_for_others_unready(
 
     // We use "/health" to check state and verified peers.
     let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
-    
+
     let mut all_safe = true;
-    
+
     for resp in connected_health_resps {
         // We must consume the response to get bytes.
-        let bytes = resp.bytes().await.wrap_err("Failed to read bytes from health response")?;
-        let probe_response: ReadyProbeResponse = serde_json::from_slice(&bytes)
-            .wrap_err("Failed to deserialize ReadyProbeResponse")?;
-            
+        let bytes = resp
+            .bytes()
+            .await
+            .wrap_err("Failed to read bytes from health response")?;
+        let probe_response: ReadyProbeResponse =
+            serde_json::from_slice(&bytes).wrap_err("Failed to deserialize ReadyProbeResponse")?;
+
         // 1. Add their UUID to our list (so we can prove to them we saw them later)
-        my_verified_peers.lock().await.insert(probe_response.uuid.clone());
-        
+        my_verified_peers
+            .lock()
+            .await
+            .insert(probe_response.uuid.clone());
+
         // 2. Check status
         if !probe_response.is_ready {
             // They are unready (503 equivalent). Safe.
         } else {
-            // They are ready (200 equivalent). 
+            // They are ready (200 equivalent).
             // Check if they verified us.
             if probe_response.verified_peers.contains(my_uuid) {
                 // They verified us. Safe (Race condition handled).
-                tracing::info!("Peer {} is already ready but verified us. Accepting as race condition.", probe_response.uuid);
+                tracing::info!(
+                    "Peer {} is already ready but verified us. Accepting as race condition.",
+                    probe_response.uuid
+                );
             } else {
                 // They are ready but didn't verify us. BAD.
-                tracing::error!("Node {} is ready but did not verify our UUID {}", probe_response.uuid, my_uuid);
+                tracing::error!(
+                    "Node {} is ready but did not verify our UUID {}",
+                    probe_response.uuid,
+                    my_uuid
+                );
                 all_safe = false;
             }
         }
     }
 
-    ensure!(all_safe, "One or more nodes were not unready (and did not verify us).");
+    ensure!(
+        all_safe,
+        "One or more nodes were not unready (and did not verify us)."
+    );
 
     tracing::info!("All nodes are starting up (or validly raced ahead).");
 

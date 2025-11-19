@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use crate::server::config::AnonStatsServerConfig;
 use crate::server::health::{spawn_healthcheck_server_with_state, HealthServerState};
 use ampc_server_utils::{
@@ -6,6 +5,7 @@ use ampc_server_utils::{
     ServerCoordinationConfig,
 };
 use eyre::Result;
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
