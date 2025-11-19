@@ -9,9 +9,14 @@ use axum::routing::get;
 use axum::Router;
 use eyre::{eyre, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
+
+pub static CURRENT_BATCH_SHA: LazyLock<std::sync::Mutex<[u8; 32]>> =
+    LazyLock::new(|| std::sync::Mutex::new([0; 32]));
+pub static CURRENT_BATCH_VALID_ENTRIES: LazyLock<std::sync::Mutex<Vec<bool>>> =
+    LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
 /// Shared state for batch synchronization
 #[derive(Debug, Clone, Default)]
@@ -156,11 +161,18 @@ pub fn batch_sync_routes(batch_sync_shared_state: Arc<Mutex<BatchSyncSharedState
         .route(
             "/batch-sync-entries",
             get(move || async move {
-                (
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Batch sync entries not implemented in this version",
-                )
-                    .into_response()
+                let own_batch_sync_entries = get_own_batch_sync_entries().await;
+                match serde_json::to_string(&own_batch_sync_entries) {
+                    Ok(body) => (StatusCode::OK, body).into_response(),
+                    Err(e) => {
+                        tracing::error!("Failed to serialize batch sync entries: {:?}", e);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Serialization error: {}", e),
+                        )
+                            .into_response()
+                    }
+                }
             }),
         )
 }
@@ -415,4 +427,18 @@ pub async fn get_batch_sync_entries(
         }
     }
     Ok(states)
+}
+
+pub async fn get_own_batch_sync_entries() -> BatchSyncEntries {
+    let current_batch_valid_entries = CURRENT_BATCH_VALID_ENTRIES
+        .lock()
+        .expect("Failed to lock CURRENT_BATCH_VALID_ENTRIES");
+    let current_batch_hash = CURRENT_BATCH_SHA
+        .lock()
+        .expect("Failed to lock CURRENT_BATCH_SHA");
+
+    BatchSyncEntries {
+        valid_entries: current_batch_valid_entries.clone(),
+        batch_sha: current_batch_hash.to_owned(),
+    }
 }

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use crate::server::config::AnonStatsServerConfig;
 use crate::server::health::{spawn_healthcheck_server_with_state, HealthServerState};
 use ampc_server_utils::{
@@ -9,6 +10,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tokio::sync::Mutex;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -72,7 +74,9 @@ pub fn start_coordination_server(
 
 pub async fn wait_for_others_unready(config: &AnonStatsServerConfig) -> Result<()> {
     let coordination_config = build_coordination_config(config);
-    server_coordination::wait_for_others_unready(&coordination_config).await
+    let verified_peers = Arc::new(Mutex::new(HashSet::new()));
+    let uuid = Uuid::new_v4().to_string();
+    server_coordination::wait_for_others_unready(&coordination_config, &verified_peers, &uuid).await
 }
 
 pub async fn wait_for_others_ready(config: &AnonStatsServerConfig) -> Result<()> {

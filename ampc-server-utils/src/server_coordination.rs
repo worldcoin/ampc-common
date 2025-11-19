@@ -15,6 +15,7 @@ use itertools::Itertools as _;
 use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,6 +26,8 @@ pub struct ReadyProbeResponse {
     pub image_name: String,
     pub uuid: String,
     pub shutting_down: bool,
+    pub verified_peers: HashSet<String>,
+    pub is_ready: bool,
 }
 
 /// Build HTTP check addresses from hostnames, ports, and endpoint
@@ -45,73 +48,75 @@ where
 /// and synchronization between AMPC nodes.
 /// Note: returns a reference to a readiness flag, an `AtomicBool`, which can later
 /// be set to indicate to other MPC nodes that this server is ready for operation.
+/// Also returns a handle to the set of verified peers, and the UUID of this node.
 pub async fn start_coordination_server<T>(
     config: &ServerCoordinationConfig,
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
     my_state: &T,
     batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
-) -> Arc<AtomicBool>
+) -> (Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>, String)
 where
     T: Serialize + DeserializeOwned + Clone + Send + 'static,
 {
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
+    let verified_peers = Arc::new(Mutex::new(HashSet::new()));
 
     let health_shutdown_handler = Arc::clone(shutdown_handler);
     let health_check_port = config
         .get_own_healthcheck_port()
         .expect("Failed to get healthcheck port for this server");
 
+    let uuid = uuid::Uuid::new_v4().to_string();
     let _health_check_abort = task_monitor.spawn({
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = uuid.clone();
         let is_ready_flag = Arc::clone(&is_ready_flag);
+        let verified_peers = Arc::clone(&verified_peers);
         let image_name = config.image_name.to_string();
-        let ready_probe_response = ReadyProbeResponse {
+        
+        // Pre-calculate parts of the response that don't change
+        let base_response = ReadyProbeResponse {
             image_name: image_name.clone(),
             shutting_down: false,
             uuid: uuid.clone(),
+            verified_peers: HashSet::new(),
+            is_ready: false,
         };
-        let ready_probe_response_shutdown = ReadyProbeResponse {
-            image_name,
-            shutting_down: true,
-            uuid: uuid.clone(),
-        };
-        let serialized_response = serde_json::to_string(&ready_probe_response)
-            .expect("Serialization to JSON to probe response failed");
-        let serialized_response_shutdown = serde_json::to_string(&ready_probe_response_shutdown)
-            .expect("Serialization to JSON to probe response failed");
-        tracing::info!("Healthcheck probe response: {}", serialized_response);
+        
         let my_state = my_state.clone();
         let batch_sync_shared_state = batch_sync_shared_state.clone();
+        
         async move {
+            let is_ready_flag_health = Arc::clone(&is_ready_flag);
+            let is_ready_flag_ready = Arc::clone(&is_ready_flag);
+
             let mut app = Router::new()
                 .route(
                     "/health",
                     get(move || {
                         let shutdown_handler_clone = Arc::clone(&health_shutdown_handler);
-                        let serialized_response = serialized_response.clone();
-                        let serialized_response_shutdown = serialized_response_shutdown.clone();
+                        let verified_peers_clone = Arc::clone(&verified_peers);
+                        let is_ready_flag_clone = Arc::clone(&is_ready_flag_health);
+                        let mut response = base_response.clone();
                         async move {
-                            if shutdown_handler_clone.is_shutting_down() {
-                                serialized_response_shutdown
-                            } else {
-                                serialized_response
-                            }
+                            response.shutting_down = shutdown_handler_clone.is_shutting_down();
+                            response.verified_peers = verified_peers_clone.lock().await.clone();
+                            response.is_ready = is_ready_flag_clone.load(Ordering::SeqCst);
+                            
+                            serde_json::to_string(&response)
+                                .expect("Serialization to JSON to probe response failed")
                         }
                     }),
                 )
                 .route(
                     "/ready",
-                    get({
-                        let is_ready_flag = Arc::clone(&is_ready_flag);
-                        move || async move {
-                            if is_ready_flag.load(Ordering::SeqCst) {
-                                "ready".into_response()
-                            } else {
-                                StatusCode::SERVICE_UNAVAILABLE.into_response()
-                            }
+                    get(move || async move {
+                        if is_ready_flag_ready.load(Ordering::SeqCst) {
+                            "ready".into_response()
+                        } else {
+                            StatusCode::SERVICE_UNAVAILABLE.into_response()
                         }
                     }),
                 )
@@ -147,20 +152,54 @@ where
         health_check_port
     );
 
-    is_ready_flag
+    (is_ready_flag, verified_peers, uuid)
 }
+
 /// Note: The response to this query is expected initially to be `503 Service Unavailable`.
-pub async fn wait_for_others_unready(config: &ServerCoordinationConfig) -> Result<()> {
+/// However, due to race conditions where a peer might restart and become ready (200 OK)
+/// before we check it, we also accept 200 OK *IF* the peer can prove it saw us during its startup.
+/// This is verified by checking if the peer's `verified_peers` list contains our UUID.
+pub async fn wait_for_others_unready(
+    config: &ServerCoordinationConfig,
+    my_verified_peers: &Arc<Mutex<HashSet<String>>>,
+    my_uuid: &str,
+) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
 
-    let connected_but_unready = try_get_endpoint_other_nodes(config, "ready").await?;
-    let all_unready = connected_but_unready
-        .iter()
-        .all(|resp| resp.status() == StatusCode::SERVICE_UNAVAILABLE);
+    // We use "/health" to check state and verified peers.
+    let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
+    
+    let mut all_safe = true;
+    
+    for resp in connected_health_resps {
+        // We must consume the response to get bytes.
+        let bytes = resp.bytes().await.wrap_err("Failed to read bytes from health response")?;
+        let probe_response: ReadyProbeResponse = serde_json::from_slice(&bytes)
+            .wrap_err("Failed to deserialize ReadyProbeResponse")?;
+            
+        // 1. Add their UUID to our list (so we can prove to them we saw them later)
+        my_verified_peers.lock().await.insert(probe_response.uuid.clone());
+        
+        // 2. Check status
+        if !probe_response.is_ready {
+            // They are unready (503 equivalent). Safe.
+        } else {
+            // They are ready (200 equivalent). 
+            // Check if they verified us.
+            if probe_response.verified_peers.contains(my_uuid) {
+                // They verified us. Safe (Race condition handled).
+                tracing::info!("Peer {} is already ready but verified us. Accepting as race condition.", probe_response.uuid);
+            } else {
+                // They are ready but didn't verify us. BAD.
+                tracing::error!("Node {} is ready but did not verify our UUID {}", probe_response.uuid, my_uuid);
+                all_safe = false;
+            }
+        }
+    }
 
-    ensure!(all_unready, "One or more nodes were not unready.");
+    ensure!(all_safe, "One or more nodes were not unready (and did not verify us).");
 
-    tracing::info!("All nodes are starting up.");
+    tracing::info!("All nodes are starting up (or validly raced ahead).");
 
     Ok(())
 }
