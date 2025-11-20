@@ -241,7 +241,7 @@ impl BucketStatistics2D {
     }
 }
 
-impl fmt::Display for BucketStatistics2D {
+impl Display for BucketStatistics2D {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    source: {:?}", self.source)?;
@@ -270,13 +270,14 @@ impl BucketStatistics2D {
         match_distances_buffer_size: usize,
         n_buckets_per_side: usize,
         party_id: usize,
+        source: AnonStatsResultSource,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets_per_side * n_buckets_per_side),
             n_buckets_per_side,
             match_distances_buffer_size,
             party_id,
-            source: AnonStatsResultSource::Legacy,
+            source,
             start_time_utc_timestamp: Utc::now(),
             end_time_utc_timestamp: None,
             next_start_time_utc_timestamp: None,

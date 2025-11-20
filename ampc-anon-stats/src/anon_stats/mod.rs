@@ -216,7 +216,7 @@ pub async fn process_2d_anon_stats_job(
     }
 
     let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
-    let mut anon_stats = BucketStatistics2D::new(job_size, config.n_buckets_1d, config.party_id);
+    let mut anon_stats = BucketStatistics2D::new(job_size, config.n_buckets_1d, config.party_id, AnonStatsResultSource::Aggregator);
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
     anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
