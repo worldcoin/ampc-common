@@ -38,6 +38,9 @@ pub struct AnonStatsServerConfig {
     #[serde(default)]
     pub results_topic_arn: String,
 
+    #[serde(default)]
+    pub sns_buffer_bucket_name: String,
+
     #[serde(default = "default_n_buckets_1d")]
     /// Number of buckets to use in 1D anon stats computation.
     pub n_buckets_1d: usize,
