@@ -10,7 +10,7 @@ use itertools::Itertools;
 
 use crate::{AnonStatsOrigin, AnonStatsServerConfig};
 
-pub type FaceDistanceVec = Vec<Share<u16>>;
+pub type FaceDistance = Share<u16>;
 
 fn build_thresholds(config: &AnonStatsServerConfig) -> Vec<u16> {
     (config.face_threshold_start..=config.face_threshold_end)
@@ -20,7 +20,7 @@ fn build_thresholds(config: &AnonStatsServerConfig) -> Vec<u16> {
 
 pub async fn process_face_distance_job(
     session: &mut Session,
-    job: FaceDistanceVec,
+    job: Vec<FaceDistance>,
     _origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
 ) -> Result<BucketStatistics> {

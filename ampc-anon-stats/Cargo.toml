@@ -26,3 +26,4 @@ ampc-secret-sharing = { path = "../ampc-secret-sharing" }
 ampc-actor-utils = { path = "../ampc-actor-utils" }
 ampc-server-utils = { path = "../ampc-server-utils" }
 tokio = "1.48.0"
+futures-util = "0.3.31"
