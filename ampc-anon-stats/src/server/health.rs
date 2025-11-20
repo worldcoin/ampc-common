@@ -3,10 +3,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{routing::get, Json, Router};
 use eyre::{Context, Result};
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct HealthServerState {
@@ -14,6 +16,7 @@ pub struct HealthServerState {
     pub is_shutting_down: Arc<AtomicBool>,
     pub image_name: Arc<String>,
     pub uuid: Arc<String>,
+    pub verified_peers: Arc<Mutex<HashSet<String>>>,
 }
 
 impl HealthServerState {
@@ -22,12 +25,14 @@ impl HealthServerState {
         is_shutting_down: Arc<AtomicBool>,
         image_name: Arc<String>,
         uuid: Arc<String>,
+        verified_peers: Arc<Mutex<HashSet<String>>>,
     ) -> Self {
         Self {
             is_ready,
             is_shutting_down,
             image_name,
             uuid,
+            verified_peers,
         }
     }
 }
@@ -49,8 +54,8 @@ pub async fn spawn_healthcheck_server_with_state(
                         image_name: state.image_name.as_ref().clone(),
                         uuid: state.uuid.as_ref().clone(),
                         shutting_down: state.is_shutting_down.load(Ordering::SeqCst),
-                        verified_peers: Default::default(),
-                        is_ready: false,
+                        verified_peers: state.verified_peers.lock().await.clone(),
+                        is_ready: state.is_ready.load(Ordering::SeqCst),
                     };
                     Json(response)
                 }

@@ -3,6 +3,34 @@
 use eyre::Result;
 use serde::{Deserialize, Deserializer, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AwsConfig {
+    /// Useful when using something like LocalStack
+    pub endpoint: Option<String>,
+
+    #[serde(default)]
+    pub region: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    // Service name - used for logging, metrics and tracing
+    pub service_name: String,
+    // Traces
+    pub traces_endpoint: Option<String>,
+    // Metrics
+    pub metrics: Option<MetricsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    pub host: String,
+    pub port: u16,
+    pub queue_size: usize,
+    pub buffer_size: usize,
+    pub prefix: String,
+}
+
 /// Configuration for server coordination
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCoordinationConfig {

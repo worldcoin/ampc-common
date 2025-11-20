@@ -54,11 +54,12 @@ pub async fn run<T: NetworkConnection>(
             }
         },
         r = handle_inbound_traffic(reader, inbound_forwarder) => {
-            tracing::debug!("handle_inbound_traffic: {:?}",  r);
-            if r.is_err() {
+            if let Err(e) = &r {
+                tracing::warn!("handle_inbound_traffic error: {:?}", e);
                 err_ct.cancel();
                 Event::Error
             } else {
+                tracing::debug!("handle_inbound_traffic closed ok");
                 Event::ClosedOk
             }
         },
@@ -182,6 +183,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
                 | DescriptorByte::VecRing32
                 | DescriptorByte::VecRing64
                 | DescriptorByte::NetworkVec
+                | DescriptorByte::Bytes
         ) {
             reader.read_exact(&mut buf[1..5]).await?;
             buf_offset += 4;
