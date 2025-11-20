@@ -7,6 +7,7 @@ use ampc_actor_utils::{constants::MATCH_THRESHOLD_RATIO, protocol::ops::translat
 // Also check the submodules iris_1d and iris_2d for those dependencies.
 use itertools::Itertools;
 
+pub mod face;
 pub mod iris_1d;
 pub mod iris_2d;
 

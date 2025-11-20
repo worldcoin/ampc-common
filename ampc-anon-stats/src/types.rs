@@ -35,6 +35,7 @@ pub enum AnonStatsOrientation {
 pub enum AnonStatsContext {
     GPU = 0,
     HNSW = 1,
+    FACE = 2,
 }
 
 pub struct AnonStatsMapping<T> {

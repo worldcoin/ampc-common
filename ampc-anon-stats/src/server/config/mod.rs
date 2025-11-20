@@ -51,6 +51,18 @@ pub struct AnonStatsServerConfig {
     /// Interval, in seconds, between polling attempts.
     pub poll_interval_secs: u64,
 
+    #[serde(default = "default_face_threshold_start")]
+    /// Lower threshold for face anon stats histogram bins.
+    pub face_threshold_start: u16,
+
+    #[serde(default = "default_face_threshold_end")]
+    /// Upper threshold for face anon stats histogram bins.
+    pub face_threshold_end: u16,
+
+    #[serde(default = "default_face_threshold_step")]
+    /// Bin size for face anon stats histogram.
+    pub face_threshold_step: u16,
+
     #[serde(default = "default_max_sync_failures_before_reset")]
     /// Number of consecutive sync mismatches before clearing the local queue for an origin.
     pub max_sync_failures_before_reset: usize,
@@ -71,6 +83,18 @@ pub struct AnonStatsServerConfig {
 
     #[serde(default = "default_shutdown_last_results_sync_timeout_secs")]
     pub shutdown_last_results_sync_timeout_secs: u64,
+}
+
+fn default_face_threshold_start() -> u16 {
+    0
+}
+
+fn default_face_threshold_end() -> u16 {
+    5000
+}
+
+fn default_face_threshold_step() -> u16 {
+    100
 }
 
 fn default_n_buckets_1d() -> usize {
