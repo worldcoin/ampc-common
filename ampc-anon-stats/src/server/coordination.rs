@@ -1,11 +1,12 @@
 use crate::server::health::{spawn_healthcheck_server_with_state, HealthServerState};
 use ampc_server_utils::{task_monitor::TaskMonitor, ServerCoordinationConfig};
+use std::collections::HashSet;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tokio::sync::Mutex;
 use tracing::warn;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct CoordinationHandles {
@@ -35,6 +36,8 @@ impl CoordinationHandles {
 pub fn start_coordination_server(
     config: &ServerCoordinationConfig,
     task_monitor: &mut TaskMonitor,
+    verified_peers: Arc<Mutex<HashSet<String>>>,
+    uuid: String,
 ) -> CoordinationHandles {
     let ready_flag = Arc::new(AtomicBool::new(false));
     let shutting_down_flag = Arc::new(AtomicBool::new(false));
@@ -42,7 +45,8 @@ pub fn start_coordination_server(
         Arc::clone(&ready_flag),
         Arc::clone(&shutting_down_flag),
         Arc::new(config.image_name.clone()),
-        Arc::new(Uuid::new_v4().to_string()),
+        Arc::new(uuid),
+        verified_peers,
     );
 
     let port = config
