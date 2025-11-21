@@ -133,6 +133,7 @@ impl<C: CommonConfig> StartupSyncResult<C> {
                 other_config
             );
         }
+        tracing::info!("Common config is consistent across all nodes");
         Ok(())
     }
 }
