@@ -2,6 +2,12 @@ use eyre::{ensure, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 // TODO: add modifications
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupSyncState<C: CommonConfig> {
+    pub db_len: u64,
+    pub next_sns_sequence_num: Option<u128>,
+    pub common_config: C,
+}
 
 /// Trait that defines the requirements for a common config that can be synchronized across nodes.
 /// Each service (iris-mpc, face-ampc, etc.) can implement their own CommonConfig struct.
@@ -9,40 +15,13 @@ pub trait CommonConfig: Serialize + DeserializeOwned + PartialEq + std::fmt::Deb
 
 /// Default implementation of CommonConfig for services that want basic common config fields.
 /// Services can implement their own structs with additional fields by implementing the CommonConfig trait.
-///
-/// Example for iris-mpc (future use):
-/// ```ignore
-/// #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// pub struct IrisMpcCommonConfig {
-///     pub environment: String,
-///     pub results_topic_arn: String,
-///     pub input_queue_url: String,
-///     pub database_url: String,
-///     // Additional iris-mpc specific fields:
-///     pub max_modifications_lookback: usize,
-///     pub luc_enabled: bool,
-///     pub hawk_server_deletions_enabled: bool,
-///     // ... other fields
-/// }
-///
-/// impl CommonConfig for IrisMpcCommonConfig {}
-/// ```
+/// DefaultCommonConfig is a default implementation of CommonConfig for demonstration and testing purposes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefaultCommonConfig {
     pub environment: String,
-    pub results_topic_arn: String,
-    pub input_queue_url: String,
-    pub database_url: String,
 }
 
 impl CommonConfig for DefaultCommonConfig {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StartupSyncState<C: CommonConfig> {
-    pub db_len: u64,
-    pub next_sns_sequence_num: Option<u128>,
-    pub common_config: C,
-}
 
 impl<C: CommonConfig> Serialize for StartupSyncState<C> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -146,10 +125,6 @@ mod tests {
     fn test_max_sns_sequence_num() {
         let common_config = DefaultCommonConfig {
             environment: "test".to_string(),
-            results_topic_arn: "arn:aws:sns:us-east-1:123456789012:test-topic".to_string(),
-            input_queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
-                .to_string(),
-            database_url: "postgres://user:pass@localhost/test".to_string(),
         };
 
         // 1. Test with all Some sequence values
@@ -195,10 +170,6 @@ mod tests {
     fn test_max_sns_sequence_num_mixed_panic() {
         let common_config = DefaultCommonConfig {
             environment: "test".to_string(),
-            results_topic_arn: "arn:aws:sns:us-east-1:123456789012:test-topic".to_string(),
-            input_queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
-                .to_string(),
-            database_url: "postgres://user:pass@localhost/test".to_string(),
         };
 
         // Test the edge case where some nodes have None while others have Some
@@ -230,10 +201,6 @@ mod tests {
     fn test_check_common_config() {
         let common_config = DefaultCommonConfig {
             environment: "test".to_string(),
-            results_topic_arn: "arn:aws:sns:us-east-1:123456789012:test-topic".to_string(),
-            input_queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
-                .to_string(),
-            database_url: "postgres://user:pass@localhost/test".to_string(),
         };
 
         // Test with consistent configs
@@ -263,10 +230,6 @@ mod tests {
     fn test_check_common_config_inconsistent() {
         let common_config1 = DefaultCommonConfig {
             environment: "test".to_string(),
-            results_topic_arn: "arn:aws:sns:us-east-1:123456789012:test-topic".to_string(),
-            input_queue_url: "https://sqs.us-east-1.amazonaws.com/123456789012/test-queue"
-                .to_string(),
-            database_url: "postgres://user:pass@localhost/test".to_string(),
         };
 
         let mut common_config2 = common_config1.clone();
