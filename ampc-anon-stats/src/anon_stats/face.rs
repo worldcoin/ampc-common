@@ -8,20 +8,42 @@ use chrono::Utc;
 use eyre::Result;
 use itertools::Itertools;
 
-use crate::{AnonStatsOrigin, AnonStatsServerConfig};
+use crate::AnonStatsServerConfig;
 
+/// The type representing a face distance share, just a simple u16 share encoding a i16 holding the distance of two face vectors.
 pub type FaceDistance = Share<u16>;
 
+/// Build the thresholds vector from the configuration
+/// Essentially returns (start..=end).step_by(step)
 fn build_thresholds(config: &AnonStatsServerConfig) -> Vec<i16> {
     (config.face_threshold_start..=config.face_threshold_end)
         .step_by(config.face_threshold_step as usize)
         .collect()
 }
 
+/// Process a job of face distances and compute bucketed statistics.
+///
+/// # Arguments
+/// * `session` - The MPC session to use
+/// * `job` - The job to process, a vector of FaceDistance shares
+/// * `config` - The server configuration
+///
+/// The strategy to compute the bucketed statistics is as follows:
+/// * For each threshold, we compute the number of distances below that threshold.
+///     * To do this, we subtract the threshold from each distance share, and extract the MSB.
+///     * The MSB indicates whether the distance is below or above the threshold, and we sum these bits to get the count.
+///     * To sum the bits, we use first bit-inject them into a u32 [Share] datatype.
+///     * Finally we open the sums to get the counts for each threshold.
+/// * Then, we build the BucketStatistics structure from the opened counts.
+///     * Note that the counts are cumulative, so we need to convert them to non-cumulative by subtracting the previous count from the current count.
+///     * This also means that the thresholds defined using the config are used in pairs to define a bucket, with the first threshold being inclusive and the second exclusive.
+///
+/// The communication cost per FaceDistance is: ~4 bytes for extract_msb + 8/3 bytes for bit-inject OT 2-round (although one party here sends 4 bytes, and two send 2) = ~8.
+/// The total communication cost is num_thresholds * job.len() * ~8 bytes.
+/// For a job of 500k distances and 100 buckets, this is about 400 MB of communication.
 pub async fn process_face_distance_job(
     session: &mut Session,
     job: Vec<FaceDistance>,
-    _origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
 ) -> Result<BucketStatistics> {
     let thresholds = build_thresholds(config);
@@ -29,6 +51,7 @@ pub async fn process_face_distance_job(
     let job_size = job.len();
 
     let mut buckets = Vec::with_capacity(thresholds.len());
+    // TODO: This could be parallelized ove many sessions, but for now we do it sequentially, since anon stats are not expected to be a bottleneck.
     for &threshold in &thresholds {
         let mut bucket_distances = job.clone();
         bucket_distances.iter_mut().for_each(|share| {
@@ -73,6 +96,7 @@ pub mod test_helper {
 
     use crate::anon_stats::face::FaceDistance;
 
+    /// A struct holding ground truth distances and their corresponding shares for testing.
     pub struct TestDistances {
         pub distances: Vec<i16>,
         pub shares0: Vec<FaceDistance>,
@@ -81,6 +105,7 @@ pub mod test_helper {
     }
 
     impl TestDistances {
+        /// Generate ground truth distances and their corresponding shares for testing.
         pub fn generate_ground_truth_input(
             rng: &mut impl rand::Rng,
             num_distances: usize,
@@ -124,6 +149,7 @@ pub mod test_helper {
             }
         }
 
+        /// Compute ground truth bucket counts for the test data.
         pub fn ground_truth_buckets(&self, thresholds: &[i16]) -> Vec<BucketResult> {
             let mut buckets = vec![0; thresholds.len()];
             for &distance in &self.distances {
@@ -154,7 +180,7 @@ mod tests {
 
     use crate::{
         anon_stats::face::{build_thresholds, test_helper::TestDistances},
-        AnonStatsContext, AnonStatsOrientation, AnonStatsOrigin, AnonStatsServerConfig,
+        AnonStatsServerConfig,
     };
 
     #[tokio::test]
@@ -192,11 +218,6 @@ mod tests {
             shares1,
             shares2,
         } = ground_truth;
-        let anon_stats_origin = AnonStatsOrigin {
-            side: None,
-            orientation: AnonStatsOrientation::Normal,
-            context: AnonStatsContext::FACE,
-        };
 
         let mut tasks = vec![];
         for (party_id, (shares, net)) in [shares0, shares1, shares2]
@@ -215,7 +236,6 @@ mod tests {
                 let stats = crate::anon_stats::face::process_face_distance_job(
                     &mut session,
                     shares,
-                    &anon_stats_origin,
                     &config,
                 )
                 .await
