@@ -44,7 +44,7 @@ pub async fn process_2d_anon_stats_job(
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    let translated_thresholds = calculate_iris_threshold_a(config.n_buckets_1d);
+    let translated_thresholds = calculate_iris_threshold_a(config.n_buckets_2d);
 
     let bundle_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
     let bundle_right = job_data
@@ -85,7 +85,7 @@ pub async fn process_2d_anon_stats_job(
     // at the same time also do the summing
 
     let mut bucket_shares =
-        vec![RingElement::<u32>::default(); config.n_buckets_1d * config.n_buckets_1d];
+        vec![RingElement::<u32>::default(); config.n_buckets_2d * config.n_buckets_2d];
 
     // prepare the correlated randomness for the bucket sums
     // we want additive shares of 0
@@ -108,7 +108,12 @@ pub async fn process_2d_anon_stats_job(
     }
 
     let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
-    let mut anon_stats = BucketStatistics2D::new(job_size, config.n_buckets_1d, config.party_id);
+    let mut anon_stats = BucketStatistics2D::new(
+        job_size,
+        config.n_buckets_2d,
+        config.party_id,
+        AnonStatsResultSource::Aggregator,
+    );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
     anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
