@@ -16,6 +16,9 @@ pub trait Role {
 
 #[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[serde(bound = "")]
+/// A replicated share of a value in a ring.
+/// The value is shared among three parties, with each party holding two shares.
+/// The shares are represented as a pair of [RingElement], where `a` is the share held by party i and `b` is the share held by party i-1 (mod 3).
 pub struct Share<T: IntRing2k> {
     pub a: RingElement<T>,
     pub b: RingElement<T>,
