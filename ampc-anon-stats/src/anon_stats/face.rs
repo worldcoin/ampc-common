@@ -179,6 +179,9 @@ mod tests {
             server_coordination: None,
             service_ports: Vec::new(),
             shutdown_last_results_sync_timeout_secs: 10,
+            sns_buffer_bucket_name: "foo".to_string(),
+            n_buckets_2d: 0,
+            min_2d_job_size: 0,
         };
         let thresholds = build_thresholds(&config);
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 10000);
