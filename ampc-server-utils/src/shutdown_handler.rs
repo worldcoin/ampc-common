@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone, Debug)]
 pub struct ShutdownHandler {
     ct: CancellationToken,
+    network_ct: CancellationToken,
     n_batches_pending_completion: Arc<AtomicUsize>,
     last_results_sync_timeout: Duration,
 }
@@ -19,6 +20,7 @@ impl ShutdownHandler {
     pub fn new(shutdown_last_results_sync_timeout_secs: u64) -> Self {
         Self {
             ct: CancellationToken::new(),
+            network_ct: CancellationToken::new(),
             n_batches_pending_completion: Arc::new(AtomicUsize::new(0)),
             last_results_sync_timeout: Duration::from_secs(shutdown_last_results_sync_timeout_secs),
         }
@@ -36,8 +38,8 @@ impl ShutdownHandler {
         self.ct.cancelled().await
     }
 
-    pub fn get_cancellation_token(&self) -> CancellationToken {
-        self.ct.clone()
+    pub fn get_network_cancellation_token(&self) -> CancellationToken {
+        self.network_ct.clone()
     }
 
     pub async fn register_signal_handler(&self) {
@@ -74,6 +76,7 @@ impl ShutdownHandler {
             tokio::time::sleep(check_interval).await;
         }
 
+        self.network_ct.cancel();
         tracing::info!("Pending batches count reached zero.");
     }
 }
