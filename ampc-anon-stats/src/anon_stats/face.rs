@@ -198,6 +198,7 @@ mod tests {
             results_topic_arn: "foo".to_string(),
             n_buckets_1d: 0,
             min_1d_job_size: 0,
+            min_face_job_size: 0,
             poll_interval_secs: 10,
             max_sync_failures_before_reset: 10,
             db_url: "foo".to_string(),
