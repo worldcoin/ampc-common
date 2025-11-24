@@ -386,7 +386,7 @@ impl AnonStatsStore {
 
     /// Get available face-ampc anon stats entries from the DB for the given origin, up to the given limit.
     /// Returns a tuple of (ids, query_ids, Vec<FaceDistance>).
-    pub async fn get_available_anon_stats_face<T: for<'a> Deserialize<'a>>(
+    pub async fn get_available_anon_stats_face(
         &self,
         origin: AnonStatsOrigin,
         limit: usize,
