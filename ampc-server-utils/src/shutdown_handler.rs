@@ -76,7 +76,9 @@ impl ShutdownHandler {
             tokio::time::sleep(check_interval).await;
         }
 
-        self.network_ct.cancel();
+        if self.ct.is_cancelled() {
+            self.network_ct.cancel();
+        }
         tracing::info!("Pending batches count reached zero.");
     }
 }
