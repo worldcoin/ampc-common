@@ -59,7 +59,7 @@ pub struct AnonStatsServerConfig {
     pub min_1d_job_size_reauth: usize,
 
     #[serde(default = "default_min_2d_job_size")]
-    /// Minimum job size for 1D anon stats computation.
+    /// Minimum job size for 2D anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
 

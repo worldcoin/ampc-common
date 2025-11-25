@@ -57,8 +57,8 @@ impl TryFrom<i16> for AnonStatsOperation {
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
         match value {
-            x if x == AnonStatsOperation::Uniqueness as i16 => Ok(AnonStatsOperation::Uniqueness),
-            x if x == AnonStatsOperation::Reauth as i16 => Ok(AnonStatsOperation::Reauth),
+            0 => Ok(AnonStatsOperation::Uniqueness),
+            1 => Ok(AnonStatsOperation::Reauth),
             other => Err(eyre!("Unknown anon stats operation value {}", other)),
         }
     }

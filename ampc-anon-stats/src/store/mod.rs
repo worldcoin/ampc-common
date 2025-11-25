@@ -115,7 +115,8 @@ impl AnonStatsStore {
         if operation.is_some() {
             sql.push_str(" AND operation = $2");
         }
-        sql.push_str(" ORDER BY id ASC LIMIT $3");
+        let limit_param = if operation.is_some() { "$3" } else { "$2" };
+        sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit_param));
 
         let mut query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql).bind(i16::from(origin));
         if let Some(operation) = operation {
