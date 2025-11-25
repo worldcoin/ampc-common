@@ -5,7 +5,9 @@ pub mod types;
 
 pub use store::postgres::{AccessMode, PostgresClient};
 pub use store::AnonStatsStore;
-pub use types::{AnonStatsContext, AnonStatsMapping, AnonStatsOrientation, AnonStatsOrigin};
+pub use types::{
+    AnonStatsContext, AnonStatsMapping, AnonStatsOperation, AnonStatsOrientation, AnonStatsOrigin,
+};
 
 pub use crate::anon_stats::{
     lift_bundles_1d, lift_bundles_2d, process_1d_anon_stats_job, process_1d_lifted_anon_stats_job,

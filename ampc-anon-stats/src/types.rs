@@ -1,4 +1,6 @@
 pub(crate) use ampc_server_utils::statistics::Eye;
+use eyre::{eyre, Report};
+use std::convert::TryFrom;
 use std::hash::{Hash, Hasher};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,6 +37,31 @@ pub enum AnonStatsOrientation {
 pub enum AnonStatsContext {
     GPU = 0,
     HNSW = 1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(i16)]
+pub enum AnonStatsOperation {
+    Uniqueness = 0,
+    Reauth = 1,
+}
+
+impl From<AnonStatsOperation> for i16 {
+    fn from(value: AnonStatsOperation) -> Self {
+        value as i16
+    }
+}
+
+impl TryFrom<i16> for AnonStatsOperation {
+    type Error = Report;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            x if x == AnonStatsOperation::Uniqueness as i16 => Ok(AnonStatsOperation::Uniqueness),
+            x if x == AnonStatsOperation::Reauth as i16 => Ok(AnonStatsOperation::Reauth),
+            other => Err(eyre!("Unknown anon stats operation value {}", other)),
+        }
+    }
 }
 
 pub struct AnonStatsMapping<T> {

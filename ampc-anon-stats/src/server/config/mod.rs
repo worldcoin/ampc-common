@@ -54,10 +54,18 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_1d_job_size: usize,
 
+    #[serde(default = "default_min_1d_job_size_reauth")]
+    /// Minimum job size for REAUTH 1D anon stats computation.
+    pub min_1d_job_size_reauth: usize,
+
     #[serde(default = "default_min_2d_job_size")]
     /// Minimum job size for 1D anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
+
+    #[serde(default = "default_min_2d_job_size_reauth")]
+    /// Minimum job size for REAUTH 2D anon stats computation.
+    pub min_2d_job_size_reauth: usize,
 
     #[serde(default = "default_poll_interval_secs")]
     /// Interval, in seconds, between polling attempts.
@@ -99,6 +107,14 @@ fn default_min_1d_job_size() -> usize {
 
 fn default_min_2d_job_size() -> usize {
     1000
+}
+
+fn default_min_1d_job_size_reauth() -> usize {
+    default_min_1d_job_size()
+}
+
+fn default_min_2d_job_size_reauth() -> usize {
+    default_min_2d_job_size()
 }
 
 fn default_schema_name() -> String {
