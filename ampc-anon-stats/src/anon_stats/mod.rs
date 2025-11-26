@@ -3,8 +3,10 @@ use eyre::Result;
 // - AnonStatsResultSource, BucketStatistics, BucketStatistics2D from iris_mpc_common::helpers::statistics
 // - MATCH_THRESHOLD_RATIO from iris_mpc_common::iris_db::iris
 // For now, these remain as iris_mpc_common dependencies
+use crate::anon_stats::buckets::{BucketStatistics, BucketStatistics2D};
 use crate::server::config::AnonStatsServerConfig;
-use crate::{AnonStatsMapping, AnonStatsOrigin};
+use crate::types::AnonStatsResultSource;
+use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin};
 use ampc_actor_utils::{
     constants::MATCH_THRESHOLD_RATIO,
     execution::session::Session,
@@ -19,9 +21,9 @@ use ampc_actor_utils::{
     },
 };
 use ampc_secret_sharing::shares::{share::DistanceShare, RingElement};
-use ampc_server_utils::statistics::BucketStatistics;
-use ampc_server_utils::{AnonStatsResultSource, BucketStatistics2D};
 use itertools::{izip, Itertools};
+
+pub mod buckets;
 
 pub type DistanceBundle1D = Vec<DistanceShare<u16>>;
 pub type LiftedDistanceBundle1D = Vec<DistanceShare<u32>>;
@@ -89,6 +91,7 @@ pub async fn process_1d_anon_stats_job(
     job: AnonStatsMapping<DistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -108,10 +111,12 @@ pub async fn process_1d_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
+
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -120,6 +125,7 @@ pub async fn process_1d_lifted_anon_stats_job(
     job: AnonStatsMapping<LiftedDistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -138,10 +144,11 @@ pub async fn process_1d_lifted_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -149,6 +156,7 @@ pub async fn process_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<DistanceBundle2D>,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -221,9 +229,9 @@ pub async fn process_2d_anon_stats_job(
         config.n_buckets_2d,
         config.party_id,
         AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 

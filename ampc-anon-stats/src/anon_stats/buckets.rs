@@ -1,3 +1,5 @@
+use crate::types::{AnonStatsResultSource, Eye};
+use crate::AnonStatsOperation;
 use chrono::{
     serde::{ts_seconds, ts_seconds_option},
     DateTime, Utc,
@@ -5,44 +7,6 @@ use chrono::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Display, Formatter};
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
-pub enum Eye {
-    #[default]
-    Left,
-    Right,
-}
-
-impl Eye {
-    pub fn other(&self) -> Self {
-        match self {
-            Self::Left => Self::Right,
-            Self::Right => Self::Left,
-        }
-    }
-}
-
-impl Display for Eye {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Left => write!(f, "left"),
-            Self::Right => write!(f, "right"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AnonStatsResultSource {
-    Legacy,
-    Aggregator,
-}
-
-impl Default for AnonStatsResultSource {
-    fn default() -> Self {
-        Self::Legacy
-    }
-}
 
 // 1D anonymized statistics types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +31,8 @@ pub struct BucketStatistics {
     // The number of matches gathered before sending the statistics
     pub match_distances_buffer_size: usize,
     pub party_id: usize,
-    pub eye: Eye,
+    pub operation: AnonStatsOperation,
+    pub eye: Option<Eye>,
     #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
@@ -90,8 +55,8 @@ impl BucketStatistics {
     }
 }
 
-impl fmt::Display for BucketStatistics {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for BucketStatistics {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    eye: {:?}", self.eye)?;
         writeln!(f, "    source: {:?}", self.source)?;
@@ -117,7 +82,9 @@ impl BucketStatistics {
         match_distances_buffer_size: usize,
         n_buckets: usize,
         party_id: usize,
-        eye: Eye,
+        eye: Option<Eye>,
+        source: AnonStatsResultSource,
+        operation: Option<AnonStatsOperation>,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets),
@@ -125,7 +92,8 @@ impl BucketStatistics {
             eye,
             match_distances_buffer_size,
             party_id,
-            source: AnonStatsResultSource::Legacy,
+            source,
+            operation: operation.unwrap_or_default(),
             start_time_utc_timestamp: Utc::now(),
             end_time_utc_timestamp: None,
             next_start_time_utc_timestamp: None,
@@ -223,6 +191,7 @@ pub struct BucketStatistics2D {
     // The number of two-sided matches gathered before sending the statistics
     pub match_distances_buffer_size: usize,
     pub party_id: usize,
+    pub operation: AnonStatsOperation,
     #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
@@ -242,7 +211,7 @@ impl BucketStatistics2D {
 }
 
 impl Display for BucketStatistics2D {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    source: {:?}", self.source)?;
         writeln!(f, "    start_time_utc: {}", self.start_time_utc_timestamp)?;
@@ -271,6 +240,7 @@ impl BucketStatistics2D {
         n_buckets_per_side: usize,
         party_id: usize,
         source: AnonStatsResultSource,
+        operation: Option<AnonStatsOperation>,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets_per_side * n_buckets_per_side),
@@ -278,6 +248,7 @@ impl BucketStatistics2D {
             match_distances_buffer_size,
             party_id,
             source,
+            operation: operation.unwrap_or_default(),
             start_time_utc_timestamp: Utc::now(),
             end_time_utc_timestamp: None,
             next_start_time_utc_timestamp: None,
