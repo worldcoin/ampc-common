@@ -67,7 +67,8 @@ pub struct BucketStatistics {
     // The number of matches gathered before sending the statistics
     pub match_distances_buffer_size: usize,
     pub party_id: usize,
-    pub eye: Eye,
+    pub operation: Option<String>,
+    pub eye: Option<Eye>,
     #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
@@ -90,8 +91,8 @@ impl BucketStatistics {
     }
 }
 
-impl fmt::Display for BucketStatistics {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for BucketStatistics {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    eye: {:?}", self.eye)?;
         writeln!(f, "    source: {:?}", self.source)?;
@@ -117,7 +118,9 @@ impl BucketStatistics {
         match_distances_buffer_size: usize,
         n_buckets: usize,
         party_id: usize,
-        eye: Eye,
+        eye: Option<Eye>,
+        source: AnonStatsResultSource,
+        operation: Option<String>,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets),
@@ -125,7 +128,8 @@ impl BucketStatistics {
             eye,
             match_distances_buffer_size,
             party_id,
-            source: AnonStatsResultSource::Legacy,
+            source,
+            operation,
             start_time_utc_timestamp: Utc::now(),
             end_time_utc_timestamp: None,
             next_start_time_utc_timestamp: None,
@@ -223,6 +227,7 @@ pub struct BucketStatistics2D {
     // The number of two-sided matches gathered before sending the statistics
     pub match_distances_buffer_size: usize,
     pub party_id: usize,
+    pub operation: Option<String>,
     #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
@@ -242,7 +247,7 @@ impl BucketStatistics2D {
 }
 
 impl Display for BucketStatistics2D {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    source: {:?}", self.source)?;
         writeln!(f, "    start_time_utc: {}", self.start_time_utc_timestamp)?;
@@ -271,12 +276,14 @@ impl BucketStatistics2D {
         n_buckets_per_side: usize,
         party_id: usize,
         source: AnonStatsResultSource,
+        operation: Option<String>,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets_per_side * n_buckets_per_side),
             n_buckets_per_side,
             match_distances_buffer_size,
             party_id,
+            operation,
             source,
             start_time_utc_timestamp: Utc::now(),
             end_time_utc_timestamp: None,

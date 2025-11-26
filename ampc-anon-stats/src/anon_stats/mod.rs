@@ -89,6 +89,7 @@ pub async fn process_1d_anon_stats_job(
     job: AnonStatsMapping<DistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<String>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -108,8 +109,11 @@ pub async fn process_1d_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
+
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
     anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
@@ -120,6 +124,7 @@ pub async fn process_1d_lifted_anon_stats_job(
     job: AnonStatsMapping<LiftedDistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<String>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -138,7 +143,9 @@ pub async fn process_1d_lifted_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
     anon_stats.source = AnonStatsResultSource::Aggregator;
@@ -149,6 +156,7 @@ pub async fn process_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<DistanceBundle2D>,
     config: &AnonStatsServerConfig,
+    operation: Option<String>,
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -221,6 +229,7 @@ pub async fn process_2d_anon_stats_job(
         config.n_buckets_2d,
         config.party_id,
         AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
     anon_stats.source = AnonStatsResultSource::Aggregator;
