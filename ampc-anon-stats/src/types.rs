@@ -6,10 +6,11 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
+#[repr(i16)]
 pub enum AnonStatsOperation {
     #[default]
-    Uniqueness,
-    Reauth,
+    Uniqueness = 0,
+    Reauth = 1,
 }
 
 impl From<AnonStatsOperation> for i16 {
