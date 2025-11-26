@@ -561,6 +561,208 @@ where
     Ok(res)
 }
 
+/// Conducts a 3 party protocol to inject bits into shares of type T.
+/// The protocol is given in <https://eprint.iacr.org/2025/919.pdf>, see Section 6.2 and Protocol 22.
+///
+/// Protocol description:
+/// - At the start of the protocol, each party holds a share of each input bit.
+///   In particular, for each input bit b party P_i holds shares b_i, b_{i-1} (indices modulo 3)
+///   such that b = b_0 XOR b_1 XOR b_2.
+/// - The protocol runs in 3 rounds of communication trying to compute arithmetic shares of b as
+///
+///   b_0 XOR b_1 XOR b_2 = b_0 XOR b_1 + b_2 - 2 * (b_0 XOR b_1 ) * b_2,
+///
+///   where computations are done modulo 2^k for T being k-bit integer type.
+///
+/// Round 1: share b_0 XOR b_1
+///     1. Parties 0 and 1 generate random mask r_01 using their shared PRF.
+///     2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
+///     As a result, parties share b_0 XOR b_1 = r_01 + x + 0 as follows:
+///     - Party 0 holds shares (r_01, 0),
+///     - Party 1 holds shares (x, r_01),
+///     - Party 2 holds shares (0, x).
+///
+/// The following two rounds compute the product
+/// (b_0 XOR b_1 ) * b_2 = (x + r_01) * b_2 = (x * b_2) + (r_01 * b_2).
+/// These terms can be locally computed and shared by Party 2 and Party 0, respectively.
+///
+/// Round 2: share r_01 * b_2
+///     1. Parties 0 and 2 generate random mask r_02 using their shared PRF.
+///     2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
+///     As a result, parties share r_01 * b_2 = r_02 + 0 + y as follows:
+///     - Party 0 holds shares (r_02, y),
+///     - Party 1 holds shares (0, r_02),
+///     - Party 2 holds shares (y, 0).
+///
+/// Round 3: share x * b_2
+///     1. Parties 1 and 2 generate random mask r_12 using their shared PRF.
+///     2. Party 2 computes z = (x * b_2) - r_12 and sends it to Party 0.
+///     As a result, parties share x * b_2 = z + 0 + r_12 as follows:
+///     - Party 0 holds shares (z, 0),
+///     - Party 1 holds shares (0, r_12),
+///     - Party 2 holds shares (r_12, z).
+///
+/// The final arithmetic shares of b are computed locally by each party as
+///
+/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2]).
+///
+/// The shares of [b_2] are known to each party at the start of the protocol as follows:
+/// - Party 0 holds shares (0, b_2),
+/// - Party 1 holds shares (0, 0),
+/// - Party 2 holds shares (b_2, 0).
+///
+/// Rounds 1 and 2 can be computed in parallel.
+/// The resulting communication complexity is 2 rounds with each party sending 1 element of T per input bit.
+pub async fn bit_inject<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    input: VecShare<Bit>,
+) -> Result<VecShare<T>, Error>
+where
+    Standard: Distribution<T>,
+{
+    let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
+    let res = match role_index {
+        0 => {
+            // OT Helper
+            bit_inject_party0::<T>(session, input).await?
+        }
+        1 => {
+            // OT Receiver
+            bit_inject_party1::<T>(session, input).await?
+        }
+        2 => {
+            // OT Sender
+            bit_inject_party2::<T>(session, input).await?
+        }
+        _ => {
+            bail!("Cannot deal with roles outside of the set [0, 1, 2] in bit_inject_ot")
+        }
+    };
+    Ok(res)
+}
+
+/// Implementation of Party 0 in the bit-injection protocol description above.
+///
+/// Rounds 1 and 2 (computed in parallel):
+/// 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
+/// 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
+///
+/// Round 3:
+/// 1. Party 0 receives z from Party 2.
+///
+/// By the end of Round 3, Party 0 holds the following shares:
+/// - s1 = (r_01, 0) of [b_0 XOR b_1]
+/// - s2 = (0, b_2) of [b_2]
+/// - s3 = (r_02, y) of [r_01 * b_2]
+/// - s4 = (z, 0) of [x * b_2]
+///
+/// Local computation of the final shares:
+///
+/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// = s1 + s2 - 2 * (s3 + s4)
+async fn bit_inject_party0<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    input: VecShare<Bit>,
+) -> Result<VecShare<T>, Error>
+where
+    Standard: Distribution<T>,
+{
+    let len = input.len();
+    let prf = &mut session.prf;
+
+    // Prepare b2 shares
+    let b2: VecRingElement<T> = input
+        .iter()
+        .map(|bit_share| {
+            // b2 is the share of b owned by Party 0 at the start of the protocol
+            // Party 0 holds shares (0, b_2)
+            if bit_share.clone().get_b().convert().into() {
+                RingElement(T::one())
+            } else {
+                RingElement(T::zero())
+            }
+        })
+        .collect();
+
+    // Rounds 1 and 2 (computed in parallel):
+    // 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
+    let r_01: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
+        .collect();
+    let r_02: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
+        .collect();
+
+    // 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
+    let y = ((r_01.clone() * &b2)? - &r_02)?;
+    let network = &mut session.network_session;
+    network.send_ring_vec_next(&y).await?;
+
+    // Round 3:
+    // 1. Party 0 receives z from Party 2.
+    let z: VecRingElement<T> = network.receive_ring_vec_prev().await?;
+
+    // Pack shares
+    // By the end of Round 3, Party 0 holds the following shares:
+    // - s1 = (r_01, 0) of [b_0 XOR b_1]
+    let s1: Vec<Share<T>> = r_01
+        .into_iter()
+        .map(|a| Share::new(a, RingElement::zero()))
+        .collect();
+    // - s2 = (0, b_2) of [b_2]
+    let s2: Vec<Share<T>> = b2
+        .into_iter()
+        .map(|b| Share::new(RingElement::zero(), b))
+        .collect();
+    // - s3 = (r_02, y) of [r_01 * b_2]
+    let s3: Vec<Share<T>> = izip!(r_02, y).map(|(a, b)| Share::new(a, b)).collect();
+    // - s4 = (z, 0) of [x * b_2]
+    let s4: Vec<Share<T>> = z
+        .into_iter()
+        .map(|a| Share::new(a, RingElement::zero()))
+        .collect();
+
+    // Local computation of the final shares:
+    //
+    // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+    // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+    // = s1 + s2 - 2 * (s3 + s4)
+    Ok(VecShare::new_vec(
+        izip!(s1, s2, s3, s4)
+            .map(|(share1, share2, share3, share4)| {
+                let sum12 = share1 + share2;
+                let sum34 = share3 + share4;
+                let double_sum34 = sum34.clone() + sum34;
+                sum12 - double_sum34
+            })
+            .collect_vec(),
+    ))
+}
+
+async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    input: VecShare<Bit>,
+) -> Result<VecShare<T>, Error>
+where
+    Standard: Distribution<T>,
+{
+    // Implementation of Party 1 in the protocol description above.
+    unimplemented!()
+}
+
+async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    input: VecShare<Bit>,
+) -> Result<VecShare<T>, Error>
+where
+    Standard: Distribution<T>,
+{
+    // Implementation of Party 2 in the protocol description above.
+    unimplemented!()
+}
+
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 ///
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
