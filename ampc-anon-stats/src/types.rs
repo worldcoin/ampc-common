@@ -1,7 +1,67 @@
-pub(crate) use ampc_server_utils::statistics::Eye;
 use eyre::{eyre, Report};
+use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
+use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AnonStatsOperation {
+    #[default]
+    Uniqueness,
+    Reauth,
+}
+
+impl From<AnonStatsOperation> for i16 {
+    fn from(value: AnonStatsOperation) -> Self {
+        value as i16
+    }
+}
+
+impl TryFrom<i16> for AnonStatsOperation {
+    type Error = Report;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(AnonStatsOperation::Uniqueness),
+            1 => Ok(AnonStatsOperation::Reauth),
+            other => Err(eyre!("Unknown anon stats operation value {}", other)),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
+pub enum Eye {
+    #[default]
+    Left,
+    Right,
+}
+
+impl Eye {
+    pub fn other(&self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+impl Display for Eye {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Left => write!(f, "left"),
+            Self::Right => write!(f, "right"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AnonStatsResultSource {
+    #[default]
+    Legacy,
+    Aggregator,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct AnonStatsOrigin {
@@ -37,31 +97,6 @@ pub enum AnonStatsOrientation {
 pub enum AnonStatsContext {
     GPU = 0,
     HNSW = 1,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(i16)]
-pub enum AnonStatsOperation {
-    Uniqueness = 0,
-    Reauth = 1,
-}
-
-impl From<AnonStatsOperation> for i16 {
-    fn from(value: AnonStatsOperation) -> Self {
-        value as i16
-    }
-}
-
-impl TryFrom<i16> for AnonStatsOperation {
-    type Error = Report;
-
-    fn try_from(value: i16) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(AnonStatsOperation::Uniqueness),
-            1 => Ok(AnonStatsOperation::Reauth),
-            other => Err(eyre!("Unknown anon stats operation value {}", other)),
-        }
-    }
 }
 
 pub struct AnonStatsMapping<T> {
