@@ -117,7 +117,6 @@ pub async fn process_1d_anon_stats_job(
     );
 
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -150,7 +149,6 @@ pub async fn process_1d_lifted_anon_stats_job(
         operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -234,7 +232,6 @@ pub async fn process_2d_anon_stats_job(
         operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
