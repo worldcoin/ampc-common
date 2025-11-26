@@ -5,7 +5,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
 pub enum AnonStatsOperation {
     #[default]
     Uniqueness,
