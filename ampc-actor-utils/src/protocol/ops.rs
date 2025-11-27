@@ -4,7 +4,7 @@
 use crate::execution::session::SessionHandles;
 use crate::network::value::NetworkInt;
 use crate::protocol::binary::{
-    bit_inject_ot_2round, extract_msb_u16_batch, extract_msb_u32_batch, lift, open_bin,
+    bit_inject, extract_msb_u16_batch, extract_msb_u32_batch, lift, open_bin,
 };
 use crate::{
     execution::session::{NetworkSession, Session},
@@ -353,7 +353,7 @@ pub(crate) async fn oblivious_cross_compare_lifted(
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare(session, distances).await?;
     // inject bits to T shares
-    Ok(bit_inject_ot_2round(session, VecShare { shares: bits })
+    Ok(bit_inject(session, VecShare { shares: bits })
         .await?
         .inner())
 }
