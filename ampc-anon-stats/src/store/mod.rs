@@ -1,6 +1,10 @@
 pub mod postgres;
-use crate::store::postgres::{AccessMode, PostgresClient};
+use crate::{
+    anon_stats::face::FaceDistance,
+    store::postgres::{AccessMode, PostgresClient},
+};
 use eyre::Result;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -16,6 +20,7 @@ const ANON_STATS_1D_TABLE: &str = "anon_stats_1d";
 const ANON_STATS_1D_LIFTED_TABLE: &str = "anon_stats_1d_lifted";
 const ANON_STATS_2D_TABLE: &str = "anon_stats_2d";
 const ANON_STATS_2D_LIFTED_TABLE: &str = "anon_stats_2d_lifted";
+const ANON_STATS_FACE_TABLE: &str = "anon_stats_face";
 
 impl AnonStatsStore {
     pub async fn new(postgres_client: &PostgresClient) -> Result<Self> {
@@ -370,5 +375,107 @@ impl AnonStatsStore {
     ) -> Result<()> {
         self.insert_anon_stats_batch(ANON_STATS_2D_LIFTED_TABLE, anon_stats, origin, operation)
             .await
+    }
+
+    // ------------------- FACE -------------------- //
+
+    /// Insert face-ampc anon stats entries into the DB.
+    /// In contrast to the other insert methods, this takes a large slice of FaceDistance and inserts it into a single row as a serialized bundle. It also saves the size of the bundle.
+    /// The query id is saved as well, and used to sort the results when fetching them.
+    pub async fn insert_anon_stats_face(
+        &self,
+        anon_stats: &[FaceDistance],
+        query_id: i64,
+        origin: AnonStatsOrigin,
+    ) -> Result<()> {
+        let len = anon_stats.len();
+        tracing::info!("Inserting {len} anon stats into table 'anon_stats_face'",);
+        if anon_stats.is_empty() {
+            return Ok(());
+        }
+        let origin = i16::from(origin);
+        let bundle_bytes =
+            bincode::serialize(anon_stats).expect("Failed to serialize DistanceBundle");
+
+        sqlx::query("INSERT INTO anon_stats_face (query_id, bundle, bundle_size, origin) VALUES ($1, $2, $3, $4)").bind(query_id).bind(bundle_bytes).bind(len as i64).bind(origin).execute(&self.pool).await?;
+
+        Ok(())
+    }
+
+    /// Clear unprocessed face-ampc anon stats entries from the DB for the given origin.
+    pub async fn clear_unprocessed_anon_stats_face(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<u64> {
+        self.clear_unprocessed_anon_stats(ANON_STATS_FACE_TABLE, origin, operation)
+            .await
+    }
+    // Mark face-ampc anon stats entries as processed in the DB for the given ids.
+    pub async fn mark_anon_stats_processed_face(&self, ids: &[i64]) -> Result<()> {
+        self.mark_anon_stats_processed(ANON_STATS_FACE_TABLE, ids)
+            .await
+    }
+    /// Get number of available face-ampc anon stats entries from the DB for the given origin.
+    pub async fn num_available_anon_stats_face(&self, origin: AnonStatsOrigin) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            &[
+                r#"SELECT CAST(COALESCE(SUM(bundle_size), 0) as BIGINT) FROM "#,
+                ANON_STATS_FACE_TABLE,
+                r#" WHERE processed = FALSE and origin = $1
+            "#,
+            ]
+            .concat(),
+        )
+        .bind(i16::from(origin))
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.0)
+    }
+
+    /// Get available face-ampc anon stats entries from the DB for the given origin, up to the given limit.
+    /// Returns a tuple of (ids, query_ids, Vec<FaceDistance>).
+    pub async fn get_available_anon_stats_face(
+        &self,
+        origin: AnonStatsOrigin,
+        limit: usize,
+    ) -> Result<(Vec<i64>, Vec<i64>, Vec<FaceDistance>)> {
+        let mut stream = sqlx::query_as(
+            r#"
+            SELECT id, query_id, bundle, bundle_size FROM anon_stats_face
+            WHERE processed = FALSE and origin = $1
+            ORDER BY query_id ASC
+            "#,
+        )
+        .bind(i16::from(origin))
+        .fetch(&self.pool);
+
+        let mut ret = Vec::new();
+        let mut ids = Vec::new();
+        let mut query_ids = Vec::new();
+
+        let mut fetched = 0;
+
+        while let Some(row) = stream.try_next().await? {
+            let (id, query_id, bundle_bytes, bundle_size): (i64, i64, Vec<u8>, i64) = row;
+            let distances : Vec<FaceDistance> = bincode::deserialize(&bundle_bytes).map_err(|e| {
+                eyre::eyre!(
+                    "Failed to deserialize distance bundle from table {} for anon_stats id {}: {:?}",
+                    ANON_STATS_FACE_TABLE,
+                    id,
+                    e
+                )
+            })?;
+            fetched += bundle_size as usize;
+            ret.extend(distances);
+            query_ids.push(query_id);
+            ids.push(id);
+            if fetched >= limit {
+                break;
+            }
+        }
+
+        Ok((ids, query_ids, ret))
     }
 }

@@ -63,6 +63,11 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
 
+    #[serde(default = "default_min_face_job_size")]
+    /// Minimum job size for Face anon stats computation.
+    /// If the available job size is smaller than this, the party will wait until enough data is available.
+    pub min_face_job_size: usize,
+
     #[serde(default = "default_min_2d_job_size_reauth")]
     /// Minimum job size for REAUTH 2D anon stats computation.
     pub min_2d_job_size_reauth: usize,
@@ -70,6 +75,18 @@ pub struct AnonStatsServerConfig {
     #[serde(default = "default_poll_interval_secs")]
     /// Interval, in seconds, between polling attempts.
     pub poll_interval_secs: u64,
+
+    #[serde(default = "default_face_threshold_start")]
+    /// Lower threshold for face anon stats histogram bins.
+    pub face_threshold_start: i16,
+
+    #[serde(default = "default_face_threshold_end")]
+    /// Upper threshold for face anon stats histogram bins.
+    pub face_threshold_end: i16,
+
+    #[serde(default = "default_face_threshold_step")]
+    /// Bin size for face anon stats histogram.
+    pub face_threshold_step: usize,
 
     #[serde(default = "default_max_sync_failures_before_reset")]
     /// Number of consecutive sync mismatches before clearing the local queue for an origin.
@@ -93,6 +110,18 @@ pub struct AnonStatsServerConfig {
     pub shutdown_last_results_sync_timeout_secs: u64,
 }
 
+fn default_face_threshold_start() -> i16 {
+    0
+}
+
+fn default_face_threshold_end() -> i16 {
+    5000
+}
+
+fn default_face_threshold_step() -> usize {
+    100
+}
+
 fn default_n_buckets_1d() -> usize {
     10
 }
@@ -106,6 +135,10 @@ fn default_min_1d_job_size() -> usize {
 }
 
 fn default_min_2d_job_size() -> usize {
+    1000
+}
+
+fn default_min_face_job_size() -> usize {
     1000
 }
 
