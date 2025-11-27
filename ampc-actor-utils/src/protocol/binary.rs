@@ -780,9 +780,11 @@ where
             RingElement(b0_xor_b1) - r
         })
         .collect();
+    let network = &mut session.network_session;
+    network.send_ring_vec_next(&x).await?;
 
     // 3. Party 1 receives y from Party 0.
-    let y: VecRingElement<T> = session.network_session.receive_ring_vec_prev().await?;
+    let y: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
@@ -1370,4 +1372,91 @@ pub async fn extract_msb_u16_batch(
     }
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::execution::local::LocalRuntime;
+
+    use super::*;
+    use eyre::Result;
+    use rand::Rng;
+    use tokio::task::JoinSet;
+
+    async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
+    where
+        Standard: Distribution<T>,
+    {
+        let mut rng = rand::thread_rng();
+        let len = 10;
+
+        // Generate random bits and their shares
+        let bits: Vec<Bit> = (0..len).map(|_| rng.gen_bool(0.5).into()).collect();
+        let mut shares = (0..3).map(|_| VecShare::with_capacity(len)).collect_vec();
+
+        let mut r: Vec<bool> = vec![false; 3];
+        for bit in bits.iter() {
+            r[0] = rng.gen_bool(0.5);
+            r[1] = rng.gen_bool(0.5);
+            r[2] = bit.convert() ^ r[0] ^ r[1];
+            for i in 0..3 {
+                shares[i].push(Share::new(
+                    RingElement(Bit::from(r[i])),
+                    RingElement(Bit::from(r[(i + 2) % 3])),
+                ));
+            }
+        }
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = shares[i].clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                bit_inject::<T>(&mut session, shares_i).await
+            });
+        }
+        let res = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].len(), res[1].len());
+        assert_eq!(res[1].len(), res[2].len());
+
+        let mut result_bits = Vec::with_capacity(len);
+        for i in 0..len {
+            let bit = res[0].get_at(i).a + res[1].get_at(i).a + res[2].get_at(i).a;
+            if bit.is_one() {
+                result_bits.push(true.into());
+            } else if bit.is_zero() {
+                result_bits.push(false.into());
+            } else {
+                panic!("Invalid bit value {:?} at index {}", bit, i);
+            }
+        }
+
+        assert_eq!(bits, result_bits);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bit_inject_u16() -> Result<()> {
+        test_bit_inject_generic::<u16>().await
+    }
+
+    #[tokio::test]
+    async fn test_bit_inject_u32() -> Result<()> {
+        test_bit_inject_generic::<u32>().await
+    }
+
+    #[tokio::test]
+    async fn test_bit_inject_u64() -> Result<()> {
+        test_bit_inject_generic::<u64>().await
+    }
 }
