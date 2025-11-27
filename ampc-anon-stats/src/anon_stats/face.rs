@@ -52,7 +52,7 @@ pub async fn process_face_distance_job(
     let job_size = job.len();
 
     let mut buckets = Vec::with_capacity(thresholds.len());
-    // TODO: This could be parallelized ove many sessions, but for now we do it sequentially, since anon stats are not expected to be a bottleneck.
+    // TODO: This could be parallelized over many sessions, but for now we do it sequentially, since anon stats are not expected to be a bottleneck.
     for &threshold in &thresholds {
         let mut bucket_distances = job.clone();
         bucket_distances.iter_mut().for_each(|share| {
@@ -81,7 +81,8 @@ pub async fn process_face_distance_job(
     );
     stats.start_time_utc_timestamp = Utc::now();
 
-    // we want non-cumulative data, so we iterate over pairs of (current, next) and subtract the start of the end
+    // we want non-cumulative data, so we iterate over consecutive pairs of cumulative data and subtract the start from the end to the the actual bucket count
+    // This will create 1 less bucket than thresholds, which is what we want
     for ((bucket, threshold), (bucket_end, threshold_end)) in buckets_opened
         .into_iter()
         .zip_eq(thresholds.into_iter())
@@ -159,7 +160,7 @@ pub mod test_helper {
             let mut buckets = vec![0; thresholds.len()];
             for &distance in &self.distances {
                 for (i, &threshold) in thresholds.iter().enumerate() {
-                    if distance < threshold as i16 {
+                    if distance < threshold {
                         buckets[i] += 1;
                     }
                 }

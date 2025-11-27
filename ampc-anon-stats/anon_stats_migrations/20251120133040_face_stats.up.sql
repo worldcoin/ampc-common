@@ -7,3 +7,4 @@ CREATE TABLE IF NOT EXISTS anon_stats_face (
     processed BOOLEAN NOT NULL DEFAULT FALSE,
     origin SMALLINT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_anon_stats_face_query ON anon_stats_face(processed, origin, query_id);

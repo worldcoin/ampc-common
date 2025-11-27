@@ -420,8 +420,7 @@ impl AnonStatsStore {
     pub async fn num_available_anon_stats_face(&self, origin: AnonStatsOrigin) -> Result<i64> {
         let row: (i64,) = sqlx::query_as(
             &[
-                r#"
-            SELECT SUM(bundle_size) FROM "#,
+                r#"SELECT COALESCE(SUM(bundle_size), 0) FROM "#,
                 ANON_STATS_FACE_TABLE,
                 r#" WHERE processed = FALSE and origin = $1
             "#,
@@ -473,7 +472,6 @@ impl AnonStatsStore {
             query_ids.push(query_id);
             ids.push(id);
             if fetched >= limit {
-                ids.push(id);
                 break;
             }
         }
