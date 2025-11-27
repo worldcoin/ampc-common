@@ -8,7 +8,7 @@ use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::types::AnonStatsOrigin;
+use crate::types::{AnonStatsOperation, AnonStatsOrigin};
 
 #[derive(Clone, Debug)]
 pub struct AnonStatsStore {
@@ -51,41 +51,58 @@ impl AnonStatsStore {
         &self,
         table_name: &'static str,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
     ) -> Result<i64> {
-        let row: (i64,) = sqlx::query_as(
-            &[
-                r#"
-            SELECT COUNT(*) FROM "#,
-                table_name,
-                r#" WHERE processed = FALSE and origin = $1
-            "#,
-            ]
-            .concat(),
-        )
-        .bind(i16::from(origin))
-        .fetch_one(&self.pool)
-        .await?;
+        let mut sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1",
+            table_name
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
 
+        let mut query = sqlx::query_as::<_, (i64,)>(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+
+        let row = query.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
     /// Get number of available lifted anon stats entries from the DB for the given origin.
-    pub async fn num_available_anon_stats_1d(&self, origin: AnonStatsOrigin) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_1D_TABLE, origin)
+    pub async fn num_available_anon_stats_1d(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        self.num_available_anon_stats(ANON_STATS_1D_TABLE, origin, operation)
             .await
     }
     /// Get number of available lifted anon stats entries from the DB for the given origin.
-    pub async fn num_available_anon_stats_1d_lifted(&self, origin: AnonStatsOrigin) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin)
+    pub async fn num_available_anon_stats_1d_lifted(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        self.num_available_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin, operation)
             .await
     }
     /// Get number of available lifted anon stats entries from the DB for the given origin.
-    pub async fn num_available_anon_stats_2d(&self, origin: AnonStatsOrigin) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_2D_TABLE, origin)
+    pub async fn num_available_anon_stats_2d(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        self.num_available_anon_stats(ANON_STATS_2D_TABLE, origin, operation)
             .await
     }
     /// Get number of available lifted anon stats entries from the DB for the given origin.
-    pub async fn num_available_anon_stats_2d_lifted(&self, origin: AnonStatsOrigin) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin)
+    pub async fn num_available_anon_stats_2d_lifted(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        self.num_available_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin, operation)
             .await
     }
 
@@ -93,24 +110,26 @@ impl AnonStatsStore {
         &self,
         table_name: &'static str,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        let res: Vec<(i64, i64, Vec<u8>)> = sqlx::query_as(
-            &[
-                r#"
-            SELECT id, match_id, bundle FROM "#,
-                table_name,
-                r#" WHERE processed = FALSE and origin = $1
-            ORDER BY id ASC
-            LIMIT $2
-            "#,
-            ]
-            .concat(),
-        )
-        .bind(i16::from(origin))
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut sql = format!(
+            "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1",
+            table_name
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        let limit_param = if operation.is_some() { "$3" } else { "$2" };
+        sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit_param));
+
+        let mut query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        query = query.bind(limit as i64);
+
+        let res: Vec<(i64, i64, Vec<u8>)> = query.fetch_all(&self.pool).await?;
 
         let (ids, distance_bundles) = res
             .into_iter()
@@ -135,9 +154,10 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_1d<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        self.get_available_anon_stats(ANON_STATS_1D_TABLE, origin, limit)
+        self.get_available_anon_stats(ANON_STATS_1D_TABLE, origin, operation, limit)
             .await
     }
     /// Get available lifted anon stats entries from the DB for the given origin, up to the given limit.
@@ -145,9 +165,10 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_1d_lifted<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        self.get_available_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin, limit)
+        self.get_available_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin, operation, limit)
             .await
     }
     /// Get available anon stats entries from the DB for the given origin, up to the given limit.
@@ -155,9 +176,10 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_2d<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        self.get_available_anon_stats(ANON_STATS_2D_TABLE, origin, limit)
+        self.get_available_anon_stats(ANON_STATS_2D_TABLE, origin, operation, limit)
             .await
     }
     /// Get available lifted anon stats entries from the DB for the given origin, up to the given limit.
@@ -165,9 +187,10 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_2d_lifted<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        self.get_available_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin, limit)
+        self.get_available_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin, operation, limit)
             .await
     }
 
@@ -208,44 +231,56 @@ impl AnonStatsStore {
         &self,
         table_name: &'static str,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
     ) -> Result<u64> {
-        let result = sqlx::query(
-            &[
-                "DELETE FROM ",
-                table_name,
-                r#" WHERE processed = FALSE AND origin = $1"#,
-            ]
-            .concat(),
-        )
-        .bind(i16::from(origin))
-        .execute(&self.pool)
-        .await?;
+        let mut sql = format!(
+            "DELETE FROM {} WHERE processed = FALSE AND origin = $1",
+            table_name
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        let mut query = sqlx::query(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
 
-    pub async fn clear_unprocessed_anon_stats_1d(&self, origin: AnonStatsOrigin) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_1D_TABLE, origin)
+    pub async fn clear_unprocessed_anon_stats_1d(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<u64> {
+        self.clear_unprocessed_anon_stats(ANON_STATS_1D_TABLE, origin, operation)
             .await
     }
 
     pub async fn clear_unprocessed_anon_stats_1d_lifted(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
     ) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin)
+        self.clear_unprocessed_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin, operation)
             .await
     }
 
-    pub async fn clear_unprocessed_anon_stats_2d(&self, origin: AnonStatsOrigin) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE, origin)
+    pub async fn clear_unprocessed_anon_stats_2d(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<u64> {
+        self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE, origin, operation)
             .await
     }
 
     pub async fn clear_unprocessed_anon_stats_2d_lifted(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
     ) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin)
+        self.clear_unprocessed_anon_stats(ANON_STATS_2D_LIFTED_TABLE, origin, operation)
             .await
     }
 
@@ -256,6 +291,7 @@ impl AnonStatsStore {
         table_name: &'static str,
         anon_stats: &[(i64, T)],
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
         tracing::info!(
             "Inserting {} anon stats into table {}",
@@ -267,6 +303,7 @@ impl AnonStatsStore {
             return Ok(());
         }
         let origin = i16::from(origin);
+        let operation = i16::from(operation);
         let mut tx = self.pool.begin().await?;
         for chunk in anon_stats.chunks(Self::ANON_STATS_INSERT_BATCH_SIZE) {
             let mapped_chunk = chunk.iter().map(|(id, bundle)| {
@@ -275,12 +312,18 @@ impl AnonStatsStore {
                 (id, bundle_bytes)
             });
             let mut query = sqlx::QueryBuilder::new(
-                ["INSERT INTO ", table_name, r#" (match_id, bundle, origin)"#].concat(),
+                [
+                    "INSERT INTO ",
+                    table_name,
+                    r#" (match_id, bundle, origin, operation)"#,
+                ]
+                .concat(),
             );
             query.push_values(mapped_chunk, |mut query, (id, bytes)| {
                 query.push_bind(id);
                 query.push_bind(bytes);
                 query.push_bind(origin);
+                query.push_bind(operation);
             });
 
             let res = query.build().execute(&mut *tx).await?;
@@ -301,32 +344,36 @@ impl AnonStatsStore {
         &self,
         anon_stats: &[(i64, T)],
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_1D_TABLE, anon_stats, origin)
+        self.insert_anon_stats_batch(ANON_STATS_1D_TABLE, anon_stats, origin, operation)
             .await
     }
     pub async fn insert_anon_stats_batch_1d_lifted<T: Serialize>(
         &self,
         anon_stats: &[(i64, T)],
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_1D_LIFTED_TABLE, anon_stats, origin)
+        self.insert_anon_stats_batch(ANON_STATS_1D_LIFTED_TABLE, anon_stats, origin, operation)
             .await
     }
     pub async fn insert_anon_stats_batch_2d<T: Serialize>(
         &self,
         anon_stats: &[(i64, T)],
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_2D_TABLE, anon_stats, origin)
+        self.insert_anon_stats_batch(ANON_STATS_2D_TABLE, anon_stats, origin, operation)
             .await
     }
     pub async fn insert_anon_stats_batch_2d_lifted<T: Serialize>(
         &self,
         anon_stats: &[(i64, T)],
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_2D_LIFTED_TABLE, anon_stats, origin)
+        self.insert_anon_stats_batch(ANON_STATS_2D_LIFTED_TABLE, anon_stats, origin, operation)
             .await
     }
 
@@ -356,8 +403,12 @@ impl AnonStatsStore {
     }
 
     /// Clear unprocessed face-ampc anon stats entries from the DB for the given origin.
-    pub async fn clear_unprocessed_anon_stats_face(&self, origin: AnonStatsOrigin) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_FACE_TABLE, origin)
+    pub async fn clear_unprocessed_anon_stats_face(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<u64> {
+        self.clear_unprocessed_anon_stats(ANON_STATS_FACE_TABLE, origin, operation)
             .await
     }
     // Mark face-ampc anon stats entries as processed in the DB for the given ids.

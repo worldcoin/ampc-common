@@ -1,6 +1,7 @@
 use crate::anon_stats::calculate_iris_threshold_a;
 use crate::server::config::AnonStatsServerConfig;
-use crate::{AnonStatsMapping, AnonStatsOrigin};
+use crate::types::AnonStatsResultSource;
+use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin, BucketStatistics};
 use ampc_actor_utils::{
     constants::MATCH_THRESHOLD_RATIO,
     execution::session::Session,
@@ -10,7 +11,6 @@ use ampc_actor_utils::{
     },
 };
 use ampc_secret_sharing::shares::DistanceShare;
-use ampc_server_utils::{AnonStatsResultSource, BucketStatistics};
 use eyre::Result;
 use itertools::Itertools;
 
@@ -55,6 +55,7 @@ pub async fn process_1d_anon_stats_job(
     job: AnonStatsMapping<DistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -74,10 +75,12 @@ pub async fn process_1d_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
+
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -86,6 +89,7 @@ pub async fn process_1d_lifted_anon_stats_job(
     job: AnonStatsMapping<LiftedDistanceBundle1D>,
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -104,10 +108,11 @@ pub async fn process_1d_lifted_anon_stats_job(
         job_size,
         config.n_buckets_1d,
         config.party_id,
-        origin.side.expect("1d stats need a side"),
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
@@ -115,7 +120,7 @@ pub mod test_helper {
     use ampc_secret_sharing::shares::{share::DistanceShare, RingElement, Share};
     use itertools::Itertools;
 
-    use crate::anon_stats::iris_1d::DistanceBundle1D;
+    use crate::DistanceBundle1D;
 
     pub struct TestDistances {
         pub distances: Vec<Vec<[i16; 2]>>,

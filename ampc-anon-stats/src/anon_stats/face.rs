@@ -3,12 +3,12 @@ use ampc_actor_utils::protocol::binary::{bit_inject_ot_2round, extract_msb_u16_b
 use ampc_actor_utils::protocol::ops::{open_ring, sub_pub};
 use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::{RingElement, Share};
-use ampc_server_utils::{AnonStatsResultSource, BucketResult, BucketStatistics, Eye};
 use chrono::Utc;
 use eyre::Result;
 use itertools::Itertools;
 
-use crate::AnonStatsServerConfig;
+use crate::types::AnonStatsResultSource;
+use crate::{AnonStatsOperation, AnonStatsServerConfig, BucketResult, BucketStatistics};
 
 /// The type representing a face distance share, just a simple u16 share encoding a i16 holding the distance of two face vectors.
 pub type FaceDistance = Share<u16>;
@@ -45,6 +45,7 @@ pub async fn process_face_distance_job(
     session: &mut Session,
     job: Vec<FaceDistance>,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
     let thresholds = build_thresholds(config);
     let n_buckets = thresholds.len();
@@ -70,9 +71,14 @@ pub async fn process_face_distance_job(
     let buckets_opened = open_ring(session, &buckets).await?;
 
     // build a BucketStatistics from this
-    // TODO: the BucketStatistics is almost reusable, except for the Eye field which does not make sense here.
-    let mut stats = BucketStatistics::new(job_size, n_buckets, config.party_id, Eye::Left);
-    stats.source = AnonStatsResultSource::Aggregator;
+    let mut stats = BucketStatistics::new(
+        job_size,
+        n_buckets,
+        config.party_id,
+        None,
+        AnonStatsResultSource::Aggregator,
+        operation,
+    );
     stats.start_time_utc_timestamp = Utc::now();
 
     // we want non-cumulative data, so we iterate over pairs of (current, next) and subtract the start of the end
@@ -92,9 +98,8 @@ pub async fn process_face_distance_job(
 
 pub mod test_helper {
     use ampc_secret_sharing::{RingElement, Share};
-    use ampc_server_utils::BucketResult;
 
-    use crate::anon_stats::face::FaceDistance;
+    use crate::{anon_stats::face::FaceDistance, BucketResult};
 
     /// A struct holding ground truth distances and their corresponding shares for testing.
     pub struct TestDistances {
@@ -209,6 +214,8 @@ mod tests {
             sns_buffer_bucket_name: "foo".to_string(),
             n_buckets_2d: 0,
             min_2d_job_size: 0,
+            min_1d_job_size_reauth: 0,
+            min_2d_job_size_reauth: 0,
         };
         let thresholds = build_thresholds(&config);
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 10000);
@@ -238,6 +245,7 @@ mod tests {
                     &mut session,
                     shares,
                     &config,
+                    None,
                 )
                 .await
                 .unwrap();

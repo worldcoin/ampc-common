@@ -7,7 +7,6 @@ use ampc_actor_utils::{
     },
 };
 use ampc_secret_sharing::RingElement;
-use ampc_server_utils::{AnonStatsResultSource, BucketStatistics2D};
 use eyre::Result;
 use itertools::{izip, Itertools};
 
@@ -16,7 +15,8 @@ use crate::{
         calculate_iris_threshold_a,
         iris_1d::{lift_bundles_1d, DistanceBundle1D, LiftedDistanceBundle1D},
     },
-    AnonStatsMapping, AnonStatsServerConfig,
+    types::AnonStatsResultSource,
+    AnonStatsMapping, AnonStatsOperation, AnonStatsServerConfig, BucketStatistics2D,
 };
 
 pub type DistanceBundle2D = (DistanceBundle1D, DistanceBundle1D);
@@ -41,6 +41,7 @@ pub async fn process_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<DistanceBundle2D>,
     config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -113,17 +114,18 @@ pub async fn process_2d_anon_stats_job(
         config.n_buckets_2d,
         config.party_id,
         AnonStatsResultSource::Aggregator,
+        operation,
     );
     anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
-    anon_stats.source = AnonStatsResultSource::Aggregator;
     Ok(anon_stats)
 }
 
 pub mod test_helper {
-    use crate::anon_stats::iris_2d::DistanceBundle2D;
     use ampc_secret_sharing::shares::{share::DistanceShare, RingElement};
     use ampc_secret_sharing::Share;
     use itertools::Itertools;
+
+    use crate::DistanceBundle2D;
 
     pub struct TestDistances {
         #[allow(clippy::type_complexity)]
