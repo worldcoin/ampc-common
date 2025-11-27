@@ -11,7 +11,7 @@ use ampc_secret_sharing::shares::{
     vecshare::{SliceShare, VecShare},
 };
 use eyre::{bail, eyre, Error, Result};
-use itertools::{izip, Itertools};
+use itertools::{izip, repeat_n, Itertools};
 use num_traits::{One, Zero};
 use rand::{distributions::Standard, prelude::Distribution, Rng};
 use std::{cell::RefCell, ops::SubAssign};
@@ -590,17 +590,17 @@ where
 ///     1. Parties 0 and 2 generate random mask r_02 using their shared PRF.
 ///     2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
 ///     As a result, parties share r_01 * b_2 = r_02 + 0 + y as follows:
-///     - Party 0 holds shares (r_02, y),
-///     - Party 1 holds shares (0, r_02),
-///     - Party 2 holds shares (y, 0).
+///     - Party 0 holds shares (y, r_02),
+///     - Party 1 holds shares (0, y),
+///     - Party 2 holds shares (r_02, 0).
 ///
 /// Round 3: share x * b_2
 ///     1. Parties 1 and 2 generate random mask r_12 using their shared PRF.
 ///     2. Party 2 computes z = (x * b_2) - r_12 and sends it to Party 0.
 ///     As a result, parties share x * b_2 = z + 0 + r_12 as follows:
-///     - Party 0 holds shares (z, 0),
-///     - Party 1 holds shares (0, r_12),
-///     - Party 2 holds shares (r_12, z).
+///     - Party 0 holds shares (0, z),
+///     - Party 1 holds shares (r_12, 0),
+///     - Party 2 holds shares (z, r_12).
 ///
 /// The final arithmetic shares of b are computed locally by each party as
 ///
@@ -642,11 +642,16 @@ where
     Ok(res)
 }
 
+/// Returns an iterator that yields `len` zero RingElements of type T.
+fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
+    repeat_n(RingElement::<T>::zero(), len)
+}
+
 /// Implementation of Party 0 in the bit-injection protocol description above.
 ///
 /// Rounds 1 and 2 (computed in parallel):
 /// 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
-/// 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
+/// 2. Party 0 sends y = (r_01 * b_2) - r_02 it to Party 1.
 ///
 /// Round 3:
 /// 1. Party 0 receives z from Party 2.
@@ -654,8 +659,8 @@ where
 /// By the end of Round 3, Party 0 holds the following shares:
 /// - s1 = (r_01, 0) of [b_0 XOR b_1]
 /// - s2 = (0, b_2) of [b_2]
-/// - s3 = (r_02, y) of [r_01 * b_2]
-/// - s4 = (z, 0) of [x * b_2]
+/// - s3 = (y, r_02) of [r_01 * b_2]
+/// - s4 = (0, z) of [x * b_2]
 ///
 /// Local computation of the final shares:
 ///
@@ -707,23 +712,13 @@ where
     // Pack shares
     // By the end of Round 3, Party 0 holds the following shares:
     // - s1 = (r_01, 0) of [b_0 XOR b_1]
-    let s1: Vec<Share<T>> = r_01
-        .into_iter()
-        .map(|a| Share::new(a, RingElement::zero()))
-        .collect();
+    let s1 = VecShare::from_iter_ab(r_01.into_iter(), zero_iter(len));
     // - s2 = (0, b_2) of [b_2]
-    let s2: Vec<Share<T>> = b2
-        .into_iter()
-        .map(|b| Share::new(RingElement::zero(), b))
-        .collect();
-    // - s3 = (r_02, y) of [r_01 * b_2]
-    let s3: Vec<Share<T>> = izip!(r_02, y).map(|(a, b)| Share::new(a, b)).collect();
-    // - s4 = (z, 0) of [x * b_2]
-    let s4: Vec<Share<T>> = z
-        .into_iter()
-        .map(|a| Share::new(a, RingElement::zero()))
-        .collect();
-
+    let s2 = VecShare::from_iter_ab(zero_iter(len), b2.into_iter());
+    // - s3 = (y, r_02) of [r_01 * b_2]
+    let s3 = VecShare::from_iter_ab(y.into_iter(), r_02.into_iter());
+    // - s4 = (0, z) of [x * b_2]
+    let s4 = VecShare::from_iter_ab(zero_iter(len), z.into_iter());
     // Local computation of the final shares:
     //
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
@@ -741,6 +736,27 @@ where
     ))
 }
 
+/// Implementation of Party 1 in the bit-injection protocol description above.
+///
+/// Rounds 1 and 2 (computed in parallel):
+/// 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
+/// 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
+/// 3. Party 1 receives y from Party 0.
+///
+/// Round 3:
+/// 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
+///
+/// By the end of Round 3, Party 1 holds the following shares:
+/// - s1 = (x, r_01) of [b_0 XOR b_1]
+/// - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
+/// - s3 = (0, y) of [r_01 * b_2]
+/// - s4 = (r_12, 0) of [x * b_2]
+///
+/// Local computation of the final shares:
+///
+/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// = s1 - 2 * (s3 + s4)
 async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<Bit>,
@@ -748,10 +764,78 @@ async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
 where
     Standard: Distribution<T>,
 {
-    // Implementation of Party 1 in the protocol description above.
-    unimplemented!()
+    let len = input.len();
+    let prf = &mut session.prf;
+
+    //Rounds 1 and 2 (computed in parallel):
+    // 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
+    let r_01: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
+        .collect();
+
+    // 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
+    let x: VecRingElement<T> = izip!(input, r_01.0.iter())
+        .map(|(bit_share, r)| {
+            let b0_xor_b1 = T::from((bit_share.a ^ bit_share.b).convert().convert());
+            RingElement(b0_xor_b1) - r
+        })
+        .collect();
+
+    // 3. Party 1 receives y from Party 0.
+    let y: VecRingElement<T> = session.network_session.receive_ring_vec_prev().await?;
+
+    // Round 3:
+    // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
+    let r_12: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
+        .collect();
+
+    // Pack shares
+    // By the end of Round 3, Party 1 holds the following shares:
+    // - s1 = (x, r_01) of [b_0 XOR b_1]
+    let s1 = VecShare::from_iter_ab(x.into_iter(), r_01.into_iter());
+    // - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
+    // - s3 = (0, y) of [r_01 * b_2]
+    let s3 = VecShare::from_iter_ab(zero_iter(len), y.into_iter());
+    // - s4 = (r_12, 0) of [x * b_2]
+    let s4 = VecShare::from_iter_ab(r_12.into_iter(), zero_iter(len));
+
+    // Local computation of the final shares:
+    // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+    // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+    // = s1 - 2 * (s3 + s4)
+    Ok(VecShare::new_vec(
+        izip!(s1, s3, s4)
+            .map(|(share1, share3, share4)| {
+                let sum34 = share3 + share4;
+                let double_sum34 = sum34.clone() + sum34;
+                share1 - double_sum34
+            })
+            .collect_vec(),
+    ))
 }
 
+/// Implementation of Party 2 in the bit-injection protocol description above.
+///
+/// Rounds 1 and 2 (computed in parallel):
+///     1. Party 2 receives x from Party 1.
+///     2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
+///
+/// Round 3:
+///     1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
+///     2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
+///
+/// By the end of Round 3, Party 2 holds the following shares:
+/// - s1 = (0, x) of [b_0 XOR b_1]
+/// - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
+/// - s3 = (r_02, 0) of [r_01 * b_2]
+/// - s4 = (z, r_12) of [x * b_2]
+///
+/// Local computation of the final shares:
+///
+/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<Bit>,
@@ -759,8 +843,64 @@ async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
 where
     Standard: Distribution<T>,
 {
-    // Implementation of Party 2 in the protocol description above.
-    unimplemented!()
+    let len = input.len();
+    let prf = &mut session.prf;
+    // Rounds 1 and 2 (computed in parallel):
+    // 1. Party 2 receives x from Party 1.
+    let network = &mut session.network_session;
+    let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
+
+    // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
+    let r_02: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
+        .collect();
+
+    // Round 3:
+    // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
+    let r_12: VecRingElement<T> = (0..len)
+        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
+        .collect();
+
+    // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
+    let b2: VecRingElement<T> = input
+        .iter()
+        .map(|bit_share| {
+            // b2 is the share of b owned by Party 2 at the start of the protocol
+            // Party 2 holds shares (b_2, 0)
+            if bit_share.clone().get_a().convert().into() {
+                RingElement(T::one())
+            } else {
+                RingElement(T::zero())
+            }
+        })
+        .collect();
+    let z = ((x.clone() * &b2)? - &r_12)?;
+    network.send_ring_vec_next(&z).await?;
+
+    // By the end of Round 3, Party 2 holds the following shares:
+    // - s1 = (0, x) of [b_0 XOR b_1]
+    let s1 = VecShare::from_iter_ab(zero_iter(len), x.into_iter());
+    // - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
+    let s2 = VecShare::from_iter_ab(b2.into_iter(), zero_iter(len));
+    // - s3 = (r_02, 0) of [r_01 * b_2]
+    let s3 = VecShare::from_iter_ab(r_02.into_iter(), zero_iter(len));
+    // - s4 = (z, r_12) of [x * b_2]
+    let s4 = VecShare::from_iter_ab(z.into_iter(), r_12.into_iter());
+
+    // Local computation of the final shares:
+    // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+    // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+    // = s1 + s2 - 2 * (s3 + s4)
+    Ok(VecShare::new_vec(
+        izip!(s1, s2, s3, s4)
+            .map(|(share1, share2, share3, share4)| {
+                let sum12 = share1 + share2;
+                let sum34 = share3 + share4;
+                let double_sum34 = sum34.clone() + sum34;
+                sum12 - double_sum34
+            })
+            .collect_vec(),
+    ))
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
