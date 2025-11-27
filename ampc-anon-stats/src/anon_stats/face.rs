@@ -17,7 +17,7 @@ pub type FaceDistance = Share<u16>;
 /// Essentially returns (start..=end).step_by(step)
 fn build_thresholds(config: &AnonStatsServerConfig) -> Vec<i16> {
     (config.face_threshold_start..=config.face_threshold_end)
-        .step_by(config.face_threshold_step as usize)
+        .step_by(config.face_threshold_step)
         .collect()
 }
 
