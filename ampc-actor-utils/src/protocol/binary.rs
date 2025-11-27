@@ -415,18 +415,9 @@ where
 {
     let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let res = match role_index {
-        0 => {
-            // OT Helper
-            bit_inject_party0::<T>(session, input).await?
-        }
-        1 => {
-            // OT Receiver
-            bit_inject_party1::<T>(session, input).await?
-        }
-        2 => {
-            // OT Sender
-            bit_inject_party2::<T>(session, input).await?
-        }
+        0 => bit_inject_party0::<T>(session, input).await?,
+        1 => bit_inject_party1::<T>(session, input).await?,
+        2 => bit_inject_party2::<T>(session, input).await?,
         _ => {
             bail!("Cannot deal with roles outside of the set [0, 1, 2] in bit_inject_ot")
         }
@@ -504,13 +495,13 @@ where
     // Pack shares
     // By the end of Round 3, Party 0 holds the following shares:
     // - s1 = (r_01, 0) of [b_0 XOR b_1]
-    let s1 = VecShare::from_iter_ab(r_01.into_iter(), zero_iter(len));
+    let s1 = Share::iter_from_iter_ab(r_01.into_iter(), zero_iter(len));
     // - s2 = (0, b_2) of [b_2]
-    let s2 = VecShare::from_iter_ab(zero_iter(len), b2.into_iter());
+    let s2 = Share::iter_from_iter_ab(zero_iter(len), b2.into_iter());
     // - s3 = (y, r_02) of [r_01 * b_2]
-    let s3 = VecShare::from_iter_ab(y.into_iter(), r_02.into_iter());
+    let s3 = Share::iter_from_iter_ab(y.into_iter(), r_02.into_iter());
     // - s4 = (0, z) of [x * b_2]
-    let s4 = VecShare::from_iter_ab(zero_iter(len), z.into_iter());
+    let s4 = Share::iter_from_iter_ab(zero_iter(len), z.into_iter());
     // Local computation of the final shares:
     //
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
@@ -518,11 +509,10 @@ where
     // = s1 + s2 - 2 * (s3 + s4)
     Ok(VecShare::new_vec(
         izip!(s1, s2, s3, s4)
-            .map(|(share1, share2, share3, share4)| {
-                let sum12 = share1 + share2;
-                let sum34 = share3 + share4;
-                let double_sum34 = sum34.clone() + sum34;
-                sum12 - double_sum34
+            .map(|(s1, s2, s3, s4)| {
+                let sum12 = s1 + &s2;
+                let sum34 = s3 + &s4;
+                sum12 - &sum34 - &sum34
             })
             .collect_vec(),
     ))
@@ -580,19 +570,17 @@ where
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
-    let r_12: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
-        .collect();
+    let r_12 = (0..len).map(|_| prf.get_my_prf().gen::<RingElement<T>>());
 
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
     // - s1 = (x, r_01) of [b_0 XOR b_1]
-    let s1 = VecShare::from_iter_ab(x.into_iter(), r_01.into_iter());
+    let s1 = Share::iter_from_iter_ab(x.into_iter(), r_01.into_iter());
     // - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
     // - s3 = (0, y) of [r_01 * b_2]
-    let s3 = VecShare::from_iter_ab(zero_iter(len), y.into_iter());
+    let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
     // - s4 = (r_12, 0) of [x * b_2]
-    let s4 = VecShare::from_iter_ab(r_12.into_iter(), zero_iter(len));
+    let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
@@ -600,10 +588,9 @@ where
     // = s1 - 2 * (s3 + s4)
     Ok(VecShare::new_vec(
         izip!(s1, s3, s4)
-            .map(|(share1, share3, share4)| {
-                let sum34 = share3 + share4;
-                let double_sum34 = sum34.clone() + sum34;
-                share1 - double_sum34
+            .map(|(s1, s3, s4)| {
+                let sum34 = s3 + &s4;
+                s1 - &sum34 - &sum34
             })
             .collect_vec(),
     ))
@@ -645,15 +632,13 @@ where
     let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
-    let r_02: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
-        .collect();
+    let my_prf = &mut prf.my_prf;
+    let r_02 = (0..len).map(|_| my_prf.gen::<RingElement<T>>());
 
     // Round 3:
     // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
-    let r_12: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    let prev_prf = &mut prf.prev_prf;
+    let r_12: VecRingElement<T> = (0..len).map(|_| prev_prf.gen::<RingElement<T>>()).collect();
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
     let b2: VecRingElement<T> = input
@@ -673,13 +658,13 @@ where
 
     // By the end of Round 3, Party 2 holds the following shares:
     // - s1 = (0, x) of [b_0 XOR b_1]
-    let s1 = VecShare::from_iter_ab(zero_iter(len), x.into_iter());
+    let s1 = Share::iter_from_iter_ab(zero_iter(len), x.into_iter());
     // - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
-    let s2 = VecShare::from_iter_ab(b2.into_iter(), zero_iter(len));
+    let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
     // - s3 = (r_02, 0) of [r_01 * b_2]
-    let s3 = VecShare::from_iter_ab(r_02.into_iter(), zero_iter(len));
+    let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
     // - s4 = (z, r_12) of [x * b_2]
-    let s4 = VecShare::from_iter_ab(z.into_iter(), r_12.into_iter());
+    let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
@@ -687,11 +672,10 @@ where
     // = s1 + s2 - 2 * (s3 + s4)
     Ok(VecShare::new_vec(
         izip!(s1, s2, s3, s4)
-            .map(|(share1, share2, share3, share4)| {
-                let sum12 = share1 + share2;
-                let sum34 = share3 + share4;
-                let double_sum34 = sum34.clone() + sum34;
-                sum12 - double_sum34
+            .map(|(s1, s2, s3, s4)| {
+                let sum12 = s1 + &s2;
+                let sum34 = s3 + &s4;
+                sum12 - &sum34 - &sum34
             })
             .collect_vec(),
     ))
