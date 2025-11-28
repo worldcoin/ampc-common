@@ -19,6 +19,7 @@ aws-sdk-s3 = { version = "1.65.0", default-features = false }
 aws-sdk-secretsmanager = { version = "1.47.0", default-features = false }
 aws-sdk-sns = { version = "1.44.0" }
 aws-sdk-sqs = { version = "1.36.0" }
+chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 base64 = "0.22.1"
 eyre = "0.6"

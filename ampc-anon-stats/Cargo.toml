@@ -7,6 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+chrono = { workspace = true }
 eyre = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,4 +26,4 @@ ampc-secret-sharing = { path = "../ampc-secret-sharing" }
 ampc-actor-utils = { path = "../ampc-actor-utils" }
 ampc-server-utils = { path = "../ampc-server-utils" }
 tokio = "1.48.0"
-chrono = "0.4.42"
+futures-util = "0.3.31"
