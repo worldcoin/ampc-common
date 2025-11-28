@@ -1,5 +1,5 @@
 use ampc_actor_utils::execution::session::Session;
-use ampc_actor_utils::protocol::binary::{bit_inject_ot_2round, extract_msb_u16_batch};
+use ampc_actor_utils::protocol::binary::{bit_inject, extract_msb_u16_batch};
 use ampc_actor_utils::protocol::ops::{open_ring, sub_pub};
 use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::{RingElement, Share};
@@ -60,7 +60,7 @@ pub async fn process_face_distance_job(
         });
 
         let bits = extract_msb_u16_batch(session, &bucket_distances).await?;
-        let sums: VecShare<u32> = bit_inject_ot_2round(session, VecShare::new_vec(bits)).await?;
+        let sums: VecShare<u32> = bit_inject(session, VecShare::new_vec(bits)).await?;
         let sums = sums.inner();
         let sum = sums
             .into_iter()
