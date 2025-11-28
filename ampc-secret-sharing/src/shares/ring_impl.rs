@@ -112,6 +112,22 @@ impl<T: IntRing2k> Sub<&Self> for VecRingElement<T> {
     }
 }
 
+impl<T: IntRing2k> Mul<&Self> for VecRingElement<T> {
+    type Output = Result<Self, eyre::Error>;
+
+    /// Component-wise multiplication
+    fn mul(self, rhs: &Self) -> Self::Output {
+        if self.0.len() != rhs.0.len() {
+            eyre::bail!("Multiplying vectors of different lengths");
+        }
+
+        let prod = itertools::izip!(self.0, rhs.0.iter())
+            .map(|(a, b)| a * b)
+            .collect();
+        Ok(VecRingElement(prod))
+    }
+}
+
 pub struct BitIter<'a, T: IntRing2k> {
     bits: &'a RingElement<T>,
     index: usize,

@@ -59,6 +59,13 @@ impl<T: IntRing2k> Share<T> {
     pub fn get_ab_ref(&self) -> (RingElement<T>, RingElement<T>) {
         (self.a, self.b)
     }
+
+    pub fn iter_from_iter_ab(
+        a: impl Iterator<Item = RingElement<T>>,
+        b: impl Iterator<Item = RingElement<T>>,
+    ) -> impl Iterator<Item = Share<T>> {
+        a.zip(b).map(|(a_, b_)| Share::new(a_, b_))
+    }
 }
 
 impl<T: IntRing2k> Add<&Self> for Share<T> {
