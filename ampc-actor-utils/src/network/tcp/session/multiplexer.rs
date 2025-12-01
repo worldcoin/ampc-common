@@ -6,7 +6,7 @@ use crate::fast_metrics::FastHistogram;
 use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
-    sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
 use crate::{
@@ -104,9 +104,8 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
         buf.extend_from_slice(&session_id.0.to_le_bytes());
         msg.serialize(&mut buf);
 
-        // Try to fill the buffer with more messages, up to num_sessions, BUFFER_CAPACITY or two attempts.
+        // Try to fill the buffer with more messages, up to num_sessions or BUFFER_CAPACITY.
         let loop_start_time = Instant::now();
-        let mut retried = false;
         while buffered_msgs < num_sessions {
             match outbound_rx.try_recv() {
                 Ok((session_id, msg)) => {
@@ -116,10 +115,6 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
                     if buf.len() >= BUFFER_CAPACITY {
                         break;
                     }
-                }
-                Err(TryRecvError::Empty) if !retried => {
-                    retried = true;
-                    tokio::task::yield_now().await;
                 }
                 _ => break,
             }
