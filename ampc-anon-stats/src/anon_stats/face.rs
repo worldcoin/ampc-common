@@ -94,6 +94,8 @@ pub async fn process_face_distance_job(
         });
     }
 
+    stats.end_time_utc_timestamp = Some(Utc::now());
+
     Ok(stats)
 }
 
