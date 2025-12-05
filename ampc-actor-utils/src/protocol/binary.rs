@@ -761,6 +761,120 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     Ok(x_a)
 }
 
+/// Splits every share in `input` into two shares such that their sum is equal to a secret share of the originally secret shared value. In other words, if `v` is the input secret share of a value `x`, the function produces two secret shares `s1` and `s2` such that `s1 + s2` is a secret share of `x`.
+///
+/// The protocol follows the description of Protocol 18 from <https://eprint.iacr.org/2025/919.pdf>, see Section 6.1.
+///
+/// Protocol description:
+/// - At the start of the protocol
+///     - party `P_i` holds an input share `(a, b)`,
+///     - party `P_{i+1}` holds an input share `(c, a)`,
+///     - party `P_{i-1}` holds an input share `(b, c)`,
+/// 1. The input shares are split into 3 pieces of (approximately) equal size: `v_0`, `v_1`, `v_2`. Those pieces are secret shares of the slices `x_0`, `x_1`, `x_2` of the original secret shared valued vector `x`
+/// 2. Each party `P_i` processes piece `v_i` as follows:
+///     - Every share in `v_i` is split into its `a` and `b` components.
+///     - `P_i` generates randomness `r_prev` shared with the previous party, `P_{i-1}`.
+///     - `P_i` computes `t = a + b - r_prev` and sends `t` to the next party, `P_{i+1}`.
+///     - `P_i` sets its first output share `s_1_i` to `(t, r_prev)` and its second output share `s_2_i` to `(0, 0)`.
+/// 3. Each party `P_i` processes piece `v_{i-1}` as follows:
+///    - `P_i` extracts the `c` components of the shares in `v_{i-1}`.
+///    - `P_i` receives `t` from the previous party, `P_{i-1}`.
+///    - `P_i` sets its first output share `s_1_i` to `(0, t)` and its second output share `s_2_i` to `(c, 0)`.
+/// 4. Each party `P_i` processes piece `v_{i+1}` as follows:
+///    - `P_i` extracts the `c` components of the shares in `v_{i+1}`.
+///    - `P_i` generates randomness `r_next` shared with the next party, `P_{i+1}`.
+///    - `P_i` sets its first output share `s_1_i` to `(r_next, 0)` and its second output share `s_2_i` to `(0, c)`.
+/// 5. The output shares `s_1` and `s_2` are constructed by concatenating `s_1_0`, `s_1_1`, and `s_1_2`, and `s_2_0`, `s_2_1`, and `s_2_2`, respectively.
+///
+/// Why it works?
+/// For each input piece `v_i`, the output shares are constructed such that:
+/// - `P_i` has shares `s1 = (t, r_prev)` and `s2 = (0, 0)`
+/// - `P_{i+1}` has shares `s1 = (0, t)` and `s2 = (c, 0)`
+/// - `P_{i-1}` has shares `s1 = (r_next, 0)` and `s2 = (0, c)`
+///
+/// Summing these shares gives and then opening the result yields:
+///
+/// `t + c + r_next = (a + b - r_prev) + c + r_next`
+///
+/// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel out in the sum, resulting in:
+///
+/// `a + b + c = x_i`
+pub async fn two_way_split<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    input: VecShare<T>,
+) -> Result<(VecShare<T>, VecShare<T>), Error>
+where
+    Standard: Distribution<T>,
+{
+    // Split input into 3 pieces
+    let len = input.len();
+    let piece_len = len.div_ceil(3);
+    let party_index = session.own_role().index();
+    let network = &mut session.network_session;
+    let mut input_iter = input.iter();
+    let mut s1_a = Vec::with_capacity(len);
+    let mut s1_b = Vec::with_capacity(len);
+    let mut s2_a = Vec::with_capacity(len);
+    let mut s2_b = Vec::with_capacity(len);
+    for chunk_id in 0..3 {
+        if input_iter.len() == 0 {
+            break;
+        }
+        if chunk_id == party_index {
+            let my_chunk = input_iter.by_ref().take(piece_len);
+            // Share my chunk
+            // Split into a and b components
+            let (a, b): (VecRingElement<_>, VecRingElement<_>) =
+                my_chunk.map(|share| (share.a, share.b)).unzip();
+            // Generate randomness shared between the current party and the previous party
+            let r_prev: VecRingElement<T> = (0..a.len())
+                .map(|_| session.prf.get_prev_prf().gen::<RingElement<T>>())
+                .collect();
+            // t = a + b - r_prev
+            let t = ((a + b)? - &r_prev)?;
+            // Send t to the next party
+            network.send_ring_vec_next(&t).await?;
+            // Collect first shares (t, r_prev)
+            let chunk_len = t.len();
+            s1_a.extend(t);
+            s1_b.extend(r_prev);
+            // Collect second shares (0, 0)
+            s2_a.extend(zero_iter(chunk_len));
+            s2_b.extend(zero_iter(chunk_len));
+        } else if (chunk_id + 1) % 3 == party_index {
+            let next_chunk = input_iter.by_ref().take(piece_len);
+            // Extract the first component of the shares
+            let c: VecRingElement<T> = next_chunk.map(|share| share.a).collect();
+            // Receive t from the previous party
+            let t: VecRingElement<T> = network.receive_ring_vec_prev().await?;
+            // Collect first shares (0, t)
+            let chunk_len = t.len();
+            s1_a.extend(zero_iter(chunk_len));
+            s1_b.extend(t);
+            // Collect second shares (c, 0)
+            s2_a.extend(c);
+            s2_b.extend(zero_iter(chunk_len));
+        } else {
+            let prev_chunk = input_iter.by_ref().take(piece_len);
+            // Extract the second component of the shares
+            let c: VecRingElement<T> = prev_chunk.map(|share| share.b).collect();
+            // Generate randomness shared between the current party and the next party
+            let r_next: VecRingElement<T> = (0..c.len())
+                .map(|_| session.prf.get_my_prf().gen::<RingElement<T>>())
+                .collect();
+            // Collect first shares (r_next, 0)
+            let chunk_len = c.len();
+            s1_a.extend(r_next);
+            s1_b.extend(zero_iter(chunk_len));
+            // Collect second shares (0, c)
+            s2_a.extend(zero_iter(chunk_len));
+            s2_b.extend(c);
+        }
+    }
+
+    Ok((VecShare::from_ab(s1_a, s1_b), VecShare::from_ab(s2_a, s2_b)))
+}
+
 /// Returns the MSB of the sum of three integers using the binary ripple-carry adder.
 /// Input integers are given in binary form.
 ///
