@@ -3,6 +3,7 @@ use crate::{
     execution::session::{Session, SessionHandles},
     network::value::{NetworkInt, NetworkValue},
 };
+use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
     bit::Bit,
     int_ring::IntRing2k,
@@ -1098,7 +1099,7 @@ where
 /// The only difference is that the binary circuit returns only the MSB of the sum.
 ///
 /// The generic T type is only used to batch bits and has no relation to the underlying type of the input arithmetic shares.
-async fn extract_msb<T: IntRing2k + NetworkInt>(
+async fn extract_msb_from_sum<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x: Vec<VecShare<T>>,
 ) -> Result<VecShare<T>, Error>
@@ -1134,18 +1135,23 @@ where
 
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
 #[allow(dead_code)]
-async fn extract_msb_u32(session: &mut Session, x_: VecShare<u32>) -> Result<VecShare<u64>, Error> {
+async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
+where
+    T: IntRing2k + NetworkInt,
+    VecShare<T>: Transpose64,
+{
     let x = x_.transpose_pack_u64();
-    extract_msb::<u64>(session, x).await
+    extract_msb_from_sum(session, x).await
 }
 
 /// Extracts the MSB of the secret shared input value.
 #[allow(dead_code)]
-pub async fn single_extract_msb_u32(
-    session: &mut Session,
-    x: Share<u32>,
-) -> Result<Share<Bit>, Error> {
-    let (a, b) = extract_msb_u32(session, VecShare::new_vec(vec![x]))
+pub async fn single_extract_msb<T>(session: &mut Session, x: Share<T>) -> Result<Share<Bit>, Error>
+where
+    T: IntRing2k + NetworkInt,
+    VecShare<T>: Transpose64,
+{
+    let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
         .get_at(0)
         .get_ab();
@@ -1156,14 +1162,15 @@ pub async fn single_extract_msb_u32(
 /// Extracts the secret shared MSBs of the secret shared input values.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
-pub async fn extract_msb_u32_batch(
-    session: &mut Session,
-    x: &[Share<u32>],
-) -> Result<Vec<Share<Bit>>> {
+pub async fn extract_msb_batch<T>(session: &mut Session, x: &[Share<T>]) -> Result<Vec<Share<Bit>>>
+where
+    T: IntRing2k + NetworkInt,
+    VecShare<T>: Transpose64,
+{
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
 
-    let packed_bits = extract_msb_u32(session, VecShare::new_vec(x.to_vec())).await?;
+    let packed_bits = extract_msb(session, VecShare::new_vec(x.to_vec())).await?;
 
     'outer: for bit_batch in packed_bits.into_iter() {
         let (a, b) = bit_batch.get_ab();
@@ -1233,35 +1240,6 @@ pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Ve
     izip!(shares.iter(), b_from_previous.iter())
         .map(|(s, prev_b)| Ok((s.a ^ s.b ^ prev_b).convert()))
         .collect::<Result<Vec<_>>>()
-}
-
-/// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
-async fn extract_msb_u16(session: &mut Session, x_: VecShare<u16>) -> Result<VecShare<u64>, Error> {
-    let x = x_.transpose_pack_u64();
-    extract_msb::<u64>(session, x).await
-}
-
-/// Extracts the MSB of the secret shared input value.
-pub async fn extract_msb_u16_batch(
-    session: &mut Session,
-    x: &[Share<u16>],
-) -> Result<Vec<Share<Bit>>> {
-    let res_len = x.len();
-    let mut res = Vec::with_capacity(res_len);
-
-    let packed_bits = extract_msb_u16(session, VecShare::new_vec(x.to_vec())).await?;
-
-    'outer: for bit_batch in packed_bits.into_iter() {
-        let (a, b) = bit_batch.get_ab();
-        for i in 0..64 {
-            res.push(Share::new(a.get_bit_as_bit(i), b.get_bit_as_bit(i)));
-            if res.len() == res_len {
-                break 'outer;
-            }
-        }
-    }
-
-    Ok(res)
 }
 
 #[cfg(test)]

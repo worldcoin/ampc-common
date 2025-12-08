@@ -1,6 +1,6 @@
 use crate::protocol::binary::bit_inject;
 use crate::protocol::ops::{min_of_pair_batch, B};
-use crate::{execution::session::Session, protocol::binary::extract_msb_u32_batch};
+use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::Share;
@@ -27,7 +27,7 @@ pub async fn compare_against_thresholds_batched(
         .collect_vec();
 
     tracing::info!("compare_threshold_buckets diffs length: {}", diffs.len());
-    let msbs = extract_msb_u32_batch(session, &diffs).await?;
+    let msbs = extract_msb_batch(session, &diffs).await?;
     let msbs = VecShare::new_vec(msbs);
     tracing::info!("msbs extracted, now bit_injecting");
     // bit_inject all MSBs into u32 to be able to add them up

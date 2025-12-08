@@ -1,5 +1,13 @@
 use super::{ring_impl::RingElement, share::Share, vecshare::VecShare};
 
+pub trait Transpose64 {
+    fn transpose_pack_u64(self) -> Vec<VecShare<u64>>;
+}
+
+pub trait Transpose128 {
+    fn transpose_pack_u128(self) -> Vec<VecShare<u128>>;
+}
+
 impl VecShare<u16> {
     fn share64_from_share16s(
         a: &Share<u16>,
@@ -126,17 +134,15 @@ impl VecShare<u16> {
 
         res
     }
+}
 
-    pub fn transpose_pack_u64(self) -> Vec<VecShare<u64>> {
-        self.transpose_pack_u64_with_len::<{ u16::BITS as usize }>()
-    }
-
-    pub fn transpose_pack_u64_with_len<const L: usize>(mut self) -> Vec<VecShare<u64>> {
+impl Transpose64 for VecShare<u16> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, Share::default());
 
-        let mut res = (0..L)
+        let mut res = (0..16)
             .map(|_| VecShare::new_vec(vec![Share::default(); len]))
             .collect::<Vec<_>>();
 
@@ -146,20 +152,18 @@ impl VecShare<u16> {
                 des.shares[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), L);
+        debug_assert_eq!(res.len(), 16);
         res
     }
+}
 
-    pub fn transpose_pack_u128(self) -> Vec<VecShare<u128>> {
-        self.transpose_pack_u128_with_len::<{ u16::BITS as usize }>()
-    }
-
-    pub fn transpose_pack_u128_with_len<const L: usize>(mut self) -> Vec<VecShare<u128>> {
+impl Transpose128 for VecShare<u16> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, Share::default());
 
-        let mut res = (0..L)
+        let mut res = (0..16)
             .map(|_| VecShare::new_vec(vec![Share::default(); len]))
             .collect::<Vec<_>>();
 
@@ -169,7 +173,7 @@ impl VecShare<u16> {
                 des.shares[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), L);
+        debug_assert_eq!(res.len(), 16);
         res
     }
 }
@@ -267,11 +271,13 @@ impl VecShare<u32> {
 
         res
     }
+}
 
+impl Transpose64 for VecShare<u32> {
     /// Transposes `u32` shares into slices of bits and packs them into `u64` shares.
     /// The result is a vector of `VecShare<u64>` with 32 elements corresponding to each bit.
     /// The length of each `VecShare<u64>` is ceil(length of self / 64).
-    pub fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, Share::default());
@@ -289,11 +295,13 @@ impl VecShare<u32> {
         debug_assert_eq!(res.len(), 32);
         res
     }
+}
 
+impl Transpose128 for VecShare<u32> {
     /// Transposes `u32` shares into slices of bits and packs them into `u128` shares.
     /// The result is a vector of `VecShare<u128>` with 32 elements corresponding to each bit.
     /// The length of each `VecShare<u128>` is ceil(length of self / 128).
-    pub fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, Share::default());
@@ -375,17 +383,15 @@ impl VecShare<u64> {
             m = m ^ (m << j);
         }
     }
+}
 
-    pub fn transpose_pack_u64(self) -> Vec<VecShare<u64>> {
-        self.transpose_pack_u64_with_len::<{ u64::BITS as usize }>()
-    }
-
-    pub fn transpose_pack_u64_with_len<const L: usize>(mut self) -> Vec<VecShare<u64>> {
+impl Transpose64 for VecShare<u64> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, Share::default());
 
-        let mut res = (0..L)
+        let mut res = (0..64)
             .map(|_| VecShare::new_vec(vec![Share::default(); len]))
             .collect::<Vec<_>>();
 
@@ -395,20 +401,18 @@ impl VecShare<u64> {
                 des.shares[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), L);
+        debug_assert_eq!(res.len(), 64);
         res
     }
+}
 
-    pub fn transpose_pack_u128(self) -> Vec<VecShare<u128>> {
-        self.transpose_pack_u128_with_len::<{ u64::BITS as usize }>()
-    }
-
-    pub fn transpose_pack_u128_with_len<const L: usize>(mut self) -> Vec<VecShare<u128>> {
+impl Transpose128 for VecShare<u64> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, Share::default());
 
-        let mut res = (0..L)
+        let mut res = (0..64)
             .map(|_| VecShare::new_vec(vec![Share::default(); len]))
             .collect::<Vec<_>>();
 
@@ -418,7 +422,7 @@ impl VecShare<u64> {
                 des.shares[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), L);
+        debug_assert_eq!(res.len(), 64);
         res
     }
 }
