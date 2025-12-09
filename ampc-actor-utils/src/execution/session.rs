@@ -9,7 +9,7 @@ use crate::{
 use ampc_secret_sharing::shares::ring_impl::VecRingElement;
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, sync::Arc, time::Duration};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub u32);
@@ -49,6 +49,7 @@ impl NetworkSession {
     }
 
     async fn receive(&mut self, sender: &Identity) -> Result<NetworkValue> {
+        tokio::time::sleep(Duration::from_millis(10)).await;
         self.networking.receive(sender).await
     }
 
