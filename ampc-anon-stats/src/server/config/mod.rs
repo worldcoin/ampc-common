@@ -77,17 +77,14 @@ pub struct AnonStatsServerConfig {
     /// Interval, in seconds, between polling attempts.
     pub poll_interval_secs: u64,
 
-    #[serde(default = "default_face_threshold_start")]
-    /// Lower threshold for face anon stats histogram bins.
-    pub face_threshold_start: i16,
-
-    #[serde(default = "default_face_threshold_end")]
-    /// Upper threshold for face anon stats histogram bins.
-    pub face_threshold_end: i16,
-
-    #[serde(default = "default_face_threshold_step")]
-    /// Bin size for face anon stats histogram.
-    pub face_threshold_step: usize,
+    #[serde(
+        default = "default_face_bucket_thresholds",
+        deserialize_with = "deserialize_yaml_json_i16"
+    )]
+    /// Borders of the buckets for face anon stats computation.
+    /// Passed as a String that internally is a JSON array of the bucket borders.
+    /// Example: "[-1000,0,1000,2000]" defines 3 buckets: [-1000,0), [0,1000), [1000,2000)
+    pub face_bucket_thresholds: Vec<i16>,
 
     #[serde(default = "default_max_sync_failures_before_reset")]
     /// Number of consecutive sync mismatches before clearing the local queue for an origin.
@@ -114,16 +111,8 @@ pub struct AnonStatsServerConfig {
     pub tls: Option<TlsConfig>,
 }
 
-fn default_face_threshold_start() -> i16 {
-    0
-}
-
-fn default_face_threshold_end() -> i16 {
-    5000
-}
-
-fn default_face_threshold_step() -> usize {
-    100
+fn default_face_bucket_thresholds() -> Vec<i16> {
+    (-2000..4000).step_by(100).collect()
 }
 
 fn default_n_buckets_1d() -> usize {
@@ -206,4 +195,29 @@ where
 {
     let value: String = Deserialize::deserialize(deserializer)?;
     serde_json::from_str(&value).map_err(serde::de::Error::custom)
+}
+
+fn deserialize_yaml_json_i16<'de, D>(deserializer: D) -> eyre::Result<Vec<i16>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = Deserialize::deserialize(deserializer)?;
+    serde_json::from_str(&value).map_err(serde::de::Error::custom)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use crate::server::config::deserialize_yaml_json_i16;
+
+    #[derive(Deserialize)]
+    struct TestString(#[serde(deserialize_with = "deserialize_yaml_json_i16")] Vec<i16>);
+
+    #[test]
+    fn test_deser_i16_vec() {
+        let s = r#""[-1000,0,1000,2000]""#;
+        let v = serde_json::from_str::<TestString>(s).unwrap().0;
+        assert_eq!(v, vec![-1000, 0, 1000, 2000]);
+    }
 }
