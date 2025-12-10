@@ -762,7 +762,7 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     Ok(x_a)
 }
 
-/// Splits every share in `input` into two shares such that their sum is equal to a secret share of the originally secret shared value. In other words, if `v` is the input secret share of a value `x`, the function produces two secret shares `s1` and `s2` such that `s1 + s2` is a secret share of `x`.
+/// Splits every share in `input` into two binary shares such that their sum is equal to a secret share of the originally secret shared value. In other words, if `v` is the input secret share of a value `x`, the function produces two secret shared binary strings `s1` and `s2` such that `s1 + s2` is a secret share of `x`.
 ///
 /// The protocol follows the description of Protocol 18 from <https://eprint.iacr.org/2025/919.pdf>, see Section 6.1.
 ///
@@ -775,7 +775,7 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 /// 2. Each party `P_i` processes piece `v_i` as follows:
 ///     - Every share in `v_i` is split into its `a` and `b` components.
 ///     - `P_i` generates randomness `r_prev` shared with the previous party, `P_{i-1}`.
-///     - `P_i` computes `t = a + b - r_prev` and sends `t` to the next party, `P_{i+1}`.
+///     - `P_i` computes `t = (a + b) XOR r_prev` and sends `t` to the next party, `P_{i+1}`.
 ///     - `P_i` sets its first output share `s_1_i` to `(t, r_prev)` and its second output share `s_2_i` to `(0, 0)`.
 /// 3. Each party `P_i` processes piece `v_{i-1}` as follows:
 ///    - `P_i` extracts the `c` components of the shares in `v_{i-1}`.
@@ -793,11 +793,11 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 /// - `P_{i+1}` has shares `s1 = (0, t)` and `s2 = (c, 0)`
 /// - `P_{i-1}` has shares `s1 = (r_next, 0)` and `s2 = (0, c)`
 ///
-/// Summing these shares gives and then opening the result yields:
+/// XORing these shares and then opening the result yields:
 ///
-/// `t + c + r_next = (a + b - r_prev) + c + r_next`
+/// `(t XOR r_next) + c = ((a + b) XOR r_prev XOR r_next) + c`
 ///
-/// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel out in the sum, resulting in:
+/// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel each other out resulting in:
 ///
 /// `a + b + c = x_i`
 pub async fn two_way_split<T: IntRing2k + NetworkInt>(
@@ -831,8 +831,8 @@ where
             let r_prev: VecRingElement<T> = (0..a.len())
                 .map(|_| session.prf.get_prev_prf().gen::<RingElement<T>>())
                 .collect();
-            // t = a + b - r_prev
-            let t = ((a + b)? - &r_prev)?;
+            // t = a + b XOR r_prev
+            let t = ((a + b)? ^ &r_prev)?;
             // Send t to the next party
             network.send_ring_vec_next(&t).await?;
             // Collect first shares (t, r_prev)
@@ -876,142 +876,82 @@ where
     Ok((VecShare::from_ab(s1_a, s1_b), VecShare::from_ab(s2_a, s2_b)))
 }
 
-/// Returns the MSB of the sum of three integers using the binary ripple-carry adder.
+/// Returns the MSB of the sum of two integers using the binary ripple-carry adder.
 /// Input integers are given in binary form.
 ///
 /// NOTE: This adder has a linear multiplicative depth, which is way worse than the logarithmic depth of the parallel prefix adder below.
 /// However, its throughput is almost two times better.
 #[allow(dead_code)]
 #[cfg(feature = "ripple_carry_adder")]
-async fn binary_add_3_get_msb<T: IntRing2k + NetworkInt>(
+async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
-    mut x3: Vec<VecShare<T>>,
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
 {
-    let len = x1.len();
-    if len != x2.len() || len != x3.len() {
-        bail!(
-            "Inputs have different length {} {} {}",
-            len,
-            x2.len(),
-            x3.len()
-        );
+    if x1.len() != x2.len() {
+        bail!("Inputs have different length {} {}", x1.len(), x2.len());
     };
 
-    // Let x1, x2, x3 are integers modulo 2^k.
-    //
-    // Full adder where x3 plays the role of an input carry yields
-    // c = (x1 AND x2) XOR (x3 AND (x1 XOR x2)) and
-    // s = x1 XOR x2 XOR x3
-    // Note that x1 + x2 + x3 = 2 * c + s mod 2^k
-    let mut x2x3 = x2;
-    transposed_pack_xor_assign(&mut x2x3, &x3);
-    // x1 XOR x2 XOR x3
-    let mut s = transposed_pack_xor(&x1, &x2x3);
+    // Add a and b using the ripple-carry adder
+    let mut a = x1;
+    let mut b = x2;
 
-    // Compute 2 * c mod 2^k
-    // x1 XOR x3
-    let mut x1x3 = x1;
-    transposed_pack_xor_assign(&mut x1x3, &x3);
-    // Chop off the MSBs of these values as they are anyway removed by 2 * c later on.
-    x1x3.pop().ok_or(eyre!("Not enough elements"))?;
-    x2x3.pop().ok_or(eyre!("Not enough elements"))?;
-    x3.pop().ok_or(eyre!("Not enough elements"))?;
-    // (x1 XOR x3) AND (x2 XOR x3) = (x1 AND x2) XOR (x3 AND (x1 XOR x2)) XOR x3
-    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
-    // (x1 AND x2) XOR (x3 AND (x1 XOR x2))
-    transposed_pack_xor_assign(&mut c, &x3);
+    // To compute the MSB of the sum we have to add the MSB of s and c later
+    let a_msb = a.pop().ok_or(eyre!("Not enough elements"))?;
+    let b_msb = b.pop().ok_or(eyre!("Not enough elements"))?;
 
-    // Find the MSB of 2 * c + s using the parallel prefix adder
-    let and_many_span = trace_span!(target: "searcher::network", "and_many_calls", n = c.len() - 1);
+    let and_many_span = trace_span!(target: "searcher::network", "and_many_calls", n = a.len() - 1);
 
-    // First full adder (carry is 0)
-    // The LSB of 2 * c is zero, so we can ignore the LSB of s
-    let mut carry = and_many(session, s[1].as_slice(), c[0].as_slice())
+    // Initialize carry for the second LSB of the sum
+    let mut carry = and_many(session, a[0].as_slice(), b[0].as_slice())
         .instrument(and_many_span.clone())
         .await?;
 
-    // To compute the MSB of the sum we have to add the MSB of s and c later
-    let s_msb = s.pop().ok_or(eyre!("Not enough elements"))?;
-    let c_msb = c.pop().ok_or(eyre!("Not enough elements"))?;
-
     // Compute carry for the MSB of the sum
-    for (s_, c_) in s.iter_mut().skip(2).zip(c.iter_mut().skip(1)) {
+    for (a_, b_) in a.iter_mut().skip(1).zip(b.iter_mut().skip(1)) {
         // carry = s_ AND c_ XOR carry AND (s_ XOR c_) = (s_ XOR carry) AND (c_ XOR carry) XOR carry
-        *s_ ^= carry.as_slice();
-        *c_ ^= carry.as_slice();
-        let tmp_c = and_many(session, s_.as_slice(), c_.as_slice())
+        *a_ ^= carry.as_slice();
+        *b_ ^= carry.as_slice();
+        let tmp_c = and_many(session, a_.as_slice(), b_.as_slice())
             .instrument(and_many_span.clone())
             .await?;
         carry ^= tmp_c;
     }
 
     // Return the MSB of the sum
-    Ok(s_msb ^ c_msb ^ carry)
+    Ok(a_msb ^ b_msb ^ carry)
 }
 
-/// Returns the MSB of the sum of three integers of type T using the binary parallel prefix adder tree.
+/// Returns the MSB of the sum of two integers of type T using the binary parallel prefix adder tree.
 /// Input integers are given in binary form.
 #[cfg(not(feature = "ripple_carry_adder"))]
-async fn binary_add_3_get_msb<T: IntRing2k + NetworkInt>(
+async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
-    mut x3: Vec<VecShare<T>>,
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
 {
-    let len = x1.len();
-    if len != x2.len() || len != x3.len() {
-        bail!(
-            "Inputs have different length {} {} {}",
-            len,
-            x2.len(),
-            x3.len()
-        );
+    if x1.len() != x2.len() {
+        bail!("Inputs have different length {} {}", x1.len(), x2.len());
     };
 
-    // Let x1, x2, x3 are integers modulo 2^k.
-    //
-    // Full adder where x3 plays the role of an input carry yields
-    // c = (x1 AND x2) XOR (x3 AND (x1 XOR x2)) and
-    // s = x1 XOR x2 XOR x3
-    // Note that x1 + x2 + x3 = 2 * c + s mod 2^k
-    let mut x2x3 = x2;
-    transposed_pack_xor_assign(&mut x2x3, &x3);
-    // x1 XOR x2 XOR x3
-    let mut s = transposed_pack_xor(&x1, &x2x3);
-
-    // Compute 2 * c mod 2^k
-    // x1 XOR x3
-    let mut x1x3 = x1;
-    transposed_pack_xor_assign(&mut x1x3, &x3);
-    // Chop off the MSBs of these values as they are anyway removed by 2 * c later on.
-    x1x3.pop().ok_or(eyre!("Not enough elements"))?;
-    x2x3.pop().ok_or(eyre!("Not enough elements"))?;
-    x3.pop().ok_or(eyre!("Not enough elements"))?;
-    // (x1 XOR x3) AND (x2 XOR x3) = (x1 AND x2) XOR (x3 AND (x1 XOR x2)) XOR x3
-    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
-    // (x1 AND x2) XOR (x3 AND (x1 XOR x2))
-    transposed_pack_xor_assign(&mut c, &x3);
-
-    // Find the MSB of 2 * c + s using the parallel prefix adder
-    // The LSB of 2 * c is zero, so we can ignore the LSB of s
-    let mut a = s.drain(1..).collect::<Vec<_>>();
-    let mut b = c;
+    let mut a = x1;
+    let mut b = x2;
 
     // Compute carry propagates p = a XOR b and carry generates g = a AND b
     let mut p = transposed_pack_xor(&a, &b);
-    // The MSB of g is used to compute the carry of the whole sum; we don't need it as there is reduction modulo 2^k
+
+    // The MSB of g is used to compute the carry of the whole sum; we don't need it as there is reduction modulo 2^k, where x1 and x2 are k-bit integers.
     a.pop();
     b.pop();
     let g = transposed_pack_and(session, a, b).await?;
-    // The MSB of p is needed to compute the MSB of the sum, but it doesn't needed for the carry computation
+
+    // The MSB of p is needed to compute the MSB of the sum, but it isn't needed for the carry computation
     let msb_p = p.pop().ok_or(eyre!("Not enough elements"))?;
 
     // Compute the carry for the MSB of the sum
@@ -1071,6 +1011,8 @@ where
         odd_p_doubled.extend(odd_p_temp.iter().skip(1).cloned());
         odd_p_doubled.extend(odd_p_temp);
 
+        //            (p2 AND p3, p4 AND p5,...,
+        // g0 AND p1, g2 AND p3, g4 AND p5,...)
         let mut tmp = transposed_pack_and(session, even_p_with_even_g, odd_p_doubled).await?;
 
         // Update p
@@ -1093,55 +1035,22 @@ where
     Ok(msb)
 }
 
-/// Extracts the MSBs of given bit-sliced arithmetic shares.
-/// The input is supposed to be given in a transposed form such that the i-th `VecShare<T>` contains the i-th bits of the given arithmetic shares.
-/// This function follow the arithmetic-to-binary (A2B) conversion protocol from the ABY3 framework (see Section 5.3, Bit Decomposition).
-/// The only difference is that the binary circuit returns only the MSB of the sum.
-///
-/// The generic T type is only used to batch bits and has no relation to the underlying type of the input arithmetic shares.
-async fn extract_msb_from_sum<T: IntRing2k + NetworkInt>(
-    session: &mut Session,
-    x: Vec<VecShare<T>>,
-) -> Result<VecShare<T>, Error>
-where
-    Standard: Distribution<T>,
-{
-    let len = x.len();
-
-    // Prepare the local input shares to be summed by the binary adder
-    let mut x1 = Vec::with_capacity(len);
-    let mut x2 = Vec::with_capacity(len);
-    let mut x3 = Vec::with_capacity(len);
-
-    for x_ in x.into_iter() {
-        let len_ = x_.len();
-        let mut x1_ = VecShare::with_capacity(len_);
-        let mut x2_ = VecShare::with_capacity(len_);
-        let mut x3_ = VecShare::with_capacity(len_);
-        for x__ in x_.into_iter() {
-            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
-            x1_.push(x1__);
-            x2_.push(x2__);
-            x3_.push(x3__);
-        }
-        x1.push(x1_);
-        x2.push(x2_);
-        x3.push(x3_);
-    }
-
-    // Sum the binary shares using a binary adder and return the MSB.
-    binary_add_3_get_msb(session, x1, x2, x3).await
-}
-
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
-#[allow(dead_code)]
 async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
 where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
+    Standard: Distribution<T>,
 {
-    let x = x_.transpose_pack_u64();
-    extract_msb_from_sum(session, x).await
+    // Split the input shares into the sum of two shares
+    let (x1, x2) = two_way_split(session, x_).await?;
+
+    // Bit-slice the shares into 64-bit shares
+    let x1_t = x1.transpose_pack_u64();
+    let x2_t = x2.transpose_pack_u64();
+
+    // Sum the binary shares using a binary adder and return the MSB.
+    binary_add_2_get_msb::<u64>(session, x1_t, x2_t).await
 }
 
 /// Extracts the MSB of the secret shared input value.
@@ -1150,6 +1059,7 @@ pub async fn single_extract_msb<T>(session: &mut Session, x: Share<T>) -> Result
 where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
+    Standard: Distribution<T>,
 {
     let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
@@ -1166,6 +1076,7 @@ pub async fn extract_msb_batch<T>(session: &mut Session, x: &[Share<T>]) -> Resu
 where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
+    Standard: Distribution<T>,
 {
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
@@ -1244,47 +1155,39 @@ pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Ve
 
 #[cfg(test)]
 mod tests {
-    use crate::execution::local::LocalRuntime;
+    use crate::{
+        execution::local::LocalRuntime,
+        protocol::{ops::open_ring, test_utils::create_array_sharing},
+    };
 
     use super::*;
+    use aes_prng::AesRng;
     use eyre::Result;
-    use num_traits::identities::{One, Zero};
-    use rand::Rng;
+    use num_traits::identities::One;
+    use rand::{Rng, SeedableRng};
     use tokio::task::JoinSet;
 
     async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
     where
         Standard: Distribution<T>,
     {
-        let mut rng = rand::thread_rng();
+        let mut rng = AesRng::seed_from_u64(0_u64);
         let len = 10;
 
         // Generate random bits and their shares
-        let bits: Vec<Bit> = (0..len).map(|_| rng.gen_bool(0.5).into()).collect();
-        let mut shares = (0..3).map(|_| VecShare::with_capacity(len)).collect_vec();
-
-        let mut r: Vec<bool> = vec![false; 3];
-        for bit in bits.iter() {
-            r[0] = rng.gen_bool(0.5);
-            r[1] = rng.gen_bool(0.5);
-            r[2] = bit.convert() ^ r[0] ^ r[1];
-            for i in 0..3 {
-                shares[i].push(Share::new(
-                    RingElement(Bit::from(r[i])),
-                    RingElement(Bit::from(r[(i + 2) % 3])),
-                ));
-            }
-        }
+        let bits = (0..len).map(|_| rng.gen_bool(0.5).into()).collect_vec();
+        let shares = create_array_sharing::<AesRng, Bit>(&mut rng, &bits);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = shares[i].clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-                bit_inject::<T>(&mut session, shares_i).await
+                let injected = bit_inject::<T>(&mut session, shares_i).await.unwrap();
+                open_ring(&mut session, injected.shares()).await
             });
         }
         let res = jobs
@@ -1294,12 +1197,12 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?;
 
         assert_eq!(res.len(), 3);
-        assert_eq!(res[0].len(), res[1].len());
-        assert_eq!(res[1].len(), res[2].len());
+        assert_eq!(res[0], res[1]);
+        assert_eq!(res[1], res[2]);
 
         let mut result_bits = Vec::with_capacity(len);
         for i in 0..len {
-            let bit = res[0].get_at(i).a + res[1].get_at(i).a + res[2].get_at(i).a;
+            let bit = res[0][i];
             if bit.is_one() {
                 result_bits.push(true.into());
             } else if bit.is_zero() {
@@ -1327,5 +1230,136 @@ mod tests {
     #[tokio::test]
     async fn test_bit_inject_u64() -> Result<()> {
         test_bit_inject_generic::<u64>().await
+    }
+
+    async fn test_two_split_generic<T: IntRing2k + NetworkInt>() -> Result<()>
+    where
+        Standard: Distribution<T>,
+    {
+        let mut rng = AesRng::seed_from_u64(0_u64);
+        let len = 10;
+
+        // Generate random input and their shares
+        let ints: Vec<T> = (0..len).map(|_| rng.gen::<T>()).collect();
+        let shares = create_array_sharing(&mut rng, &ints);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                two_way_split::<T>(&mut session, shares_i).await
+            });
+        }
+        let res = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0].0.len(), res[1].0.len());
+        assert_eq!(res[1].0.len(), res[2].0.len());
+        assert_eq!(res[0].1.len(), res[1].1.len());
+        assert_eq!(res[1].1.len(), res[2].1.len());
+
+        for (i, expected) in ints.into_iter().enumerate() {
+            let sum_1 = res[0].0.get_at(i).a ^ res[1].0.get_at(i).a ^ res[2].0.get_at(i).a;
+            let sum_2 = res[0].1.get_at(i).a ^ res[1].1.get_at(i).a ^ res[2].1.get_at(i).a;
+            let sum = sum_1 + sum_2;
+            assert_eq!(expected, sum.convert());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_two_split_u16() -> Result<()> {
+        test_two_split_generic::<u16>().await
+    }
+
+    #[tokio::test]
+    async fn test_two_split_u32() -> Result<()> {
+        test_two_split_generic::<u32>().await
+    }
+
+    #[tokio::test]
+    async fn test_two_split_u64() -> Result<()> {
+        test_two_split_generic::<u64>().await
+    }
+
+    async fn test_extract_msb_generic<T: IntRing2k + NetworkInt>() -> Result<()>
+    where
+        VecShare<T>: Transpose64,
+        Standard: Distribution<T>,
+    {
+        let mut rng = AesRng::seed_from_u64(0);
+        let len = 10;
+
+        // Generate random input and their shares
+        let ints: Vec<T> = (0..len).map(|_| rng.gen::<T>()).collect();
+        let bits: Vec<Bit> = ints
+            .iter()
+            .map(|i| {
+                let msb = *i >> (T::K - 1);
+                if msb.is_zero() {
+                    false.into()
+                } else {
+                    true.into()
+                }
+            })
+            .collect();
+
+        let shares = create_array_sharing(&mut rng, &ints);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let msbs = extract_msb_batch::<T>(&mut session, shares_i.shares())
+                    .await
+                    .unwrap();
+                open_bin(&mut session, &msbs).await
+            });
+        }
+        let res = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], res[1]);
+        assert_eq!(res[1], res[2]);
+
+        let mut result_bits = Vec::with_capacity(len);
+        for i in 0..len {
+            let bit = res[0][i];
+            if bit.is_one() {
+                result_bits.push(true.into());
+            } else {
+                result_bits.push(false.into());
+            }
+        }
+
+        assert_eq!(bits, result_bits);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_extract_msb_u16() -> Result<()> {
+        test_extract_msb_generic::<u16>().await
+    }
+
+    #[tokio::test]
+    async fn test_extract_msb_u32() -> Result<()> {
+        test_extract_msb_generic::<u32>().await
     }
 }

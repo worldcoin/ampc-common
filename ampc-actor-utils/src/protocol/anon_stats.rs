@@ -128,61 +128,16 @@ mod tests {
             local::{generate_local_identities, LocalRuntime},
             session::{Session, SessionHandles},
         },
-        protocol::ops::{open_ring, translate_threshold_a},
+        protocol::{
+            ops::{open_ring, translate_threshold_a},
+            test_utils::create_array_sharing,
+        },
     };
     use aes_prng::AesRng;
     use ampc_secret_sharing::shares::share::DistanceShare;
-    use ampc_secret_sharing::{IntRing2k, RingElement, Share};
     use itertools::Itertools;
-    use rand::{Rng, RngCore, SeedableRng};
-    use rand_distr::{Distribution, Standard};
+    use rand::{Rng, SeedableRng};
     use tokio::{sync::Mutex, task::JoinSet};
-
-    fn create_single_sharing<R: RngCore, T: IntRing2k>(
-        rng: &mut R,
-        input: T,
-    ) -> (Share<T>, Share<T>, Share<T>)
-    where
-        Standard: Distribution<T>,
-    {
-        let a = RingElement(rng.gen::<T>());
-        let b = RingElement(rng.gen::<T>());
-        let c = RingElement(input) - a - b;
-
-        let share1 = Share::new(a, c);
-        let share2 = Share::new(b, a);
-        let share3 = Share::new(c, b);
-        (share1, share2, share3)
-    }
-    struct LocalShares1D<T: IntRing2k> {
-        p0: Vec<Share<T>>,
-        p1: Vec<Share<T>>,
-        p2: Vec<Share<T>>,
-    }
-
-    fn create_array_sharing<R: RngCore, T: IntRing2k>(
-        rng: &mut R,
-        input: &Vec<T>,
-    ) -> LocalShares1D<T>
-    where
-        Standard: Distribution<T>,
-    {
-        let mut player0 = Vec::new();
-        let mut player1 = Vec::new();
-        let mut player2 = Vec::new();
-
-        for entry in input {
-            let (a, b, c) = create_single_sharing(rng, *entry);
-            player0.push(a);
-            player1.push(b);
-            player2.push(c);
-        }
-        LocalShares1D {
-            p0: player0,
-            p1: player1,
-            p2: player2,
-        }
-    }
 
     #[tokio::test]
     async fn test_compare_threshold_buckets() {
