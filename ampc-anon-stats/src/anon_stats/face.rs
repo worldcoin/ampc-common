@@ -94,6 +94,8 @@ pub async fn process_face_distance_job(
         });
     }
 
+    stats.end_time_utc_timestamp = Some(Utc::now());
+
     Ok(stats)
 }
 
@@ -217,6 +219,7 @@ mod tests {
             min_2d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_2d_job_size_reauth: 0,
+            tls: None,
         };
         let thresholds = build_thresholds(&config);
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 10000);
