@@ -1164,14 +1164,14 @@ mod tests {
     use aes_prng::AesRng;
     use eyre::Result;
     use num_traits::identities::One;
-    use rand::{Rng, SeedableRng};
+    use rand::Rng;
     use tokio::task::JoinSet;
 
     async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
     where
         Standard: Distribution<T>,
     {
-        let mut rng = AesRng::seed_from_u64(0_u64);
+        let mut rng = AesRng::from_random_seed();
         let len = 10;
 
         // Generate random bits and their shares
@@ -1236,7 +1236,7 @@ mod tests {
     where
         Standard: Distribution<T>,
     {
-        let mut rng = AesRng::seed_from_u64(0_u64);
+        let mut rng = AesRng::from_random_seed();
         let len = 10;
 
         // Generate random input and their shares
@@ -1295,7 +1295,7 @@ mod tests {
         VecShare<T>: Transpose64,
         Standard: Distribution<T>,
     {
-        let mut rng = AesRng::seed_from_u64(0);
+        let mut rng = AesRng::from_random_seed();
         let len = 10;
 
         // Generate random input and their shares
