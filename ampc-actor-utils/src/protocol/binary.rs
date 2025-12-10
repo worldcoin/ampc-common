@@ -24,6 +24,28 @@ thread_local! {
     );
 }
 
+struct VecBinShare<T: IntRing2k> {
+    inner: VecShare<T>,
+}
+
+impl<T: IntRing2k> VecBinShare<T> {
+    fn from_ab(a: Vec<RingElement<T>>, b: Vec<RingElement<T>>) -> Self {
+        Self {
+            inner: VecShare::from_ab(a, b),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[allow(dead_code)]
+    fn get_word_at(&self, index: usize) -> Share<T> {
+        self.inner.get_at(index)
+    }
+}
+
 /// Splits the components of the given arithmetic share into 3 secret shares as described in Section 5.3 of the ABY3 paper.
 ///
 /// The parties own the following arithmetic shares of x = x1 + x2 + x3:
@@ -800,10 +822,10 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 /// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel each other out resulting in:
 ///
 /// `a + b + c = x_i`
-pub async fn two_way_split<T: IntRing2k + NetworkInt>(
+async fn two_way_split<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<T>,
-) -> Result<(VecShare<T>, VecShare<T>), Error>
+) -> Result<(VecBinShare<T>, VecBinShare<T>), Error>
 where
     Standard: Distribution<T>,
 {
@@ -873,7 +895,10 @@ where
         }
     }
 
-    Ok((VecShare::from_ab(s1_a, s1_b), VecShare::from_ab(s2_a, s2_b)))
+    Ok((
+        VecBinShare::from_ab(s1_a, s1_b),
+        VecBinShare::from_ab(s2_a, s2_b),
+    ))
 }
 
 /// Returns the MSB of the sum of two integers using the binary ripple-carry adder.
@@ -1046,8 +1071,8 @@ where
     let (x1, x2) = two_way_split(session, x_).await?;
 
     // Bit-slice the shares into 64-bit shares
-    let x1_t = x1.transpose_pack_u64();
-    let x2_t = x2.transpose_pack_u64();
+    let x1_t = x1.inner.transpose_pack_u64();
+    let x2_t = x2.inner.transpose_pack_u64();
 
     // Sum the binary shares using a binary adder and return the MSB.
     binary_add_2_get_msb::<u64>(session, x1_t, x2_t).await
@@ -1267,8 +1292,10 @@ mod tests {
         assert_eq!(res[1].1.len(), res[2].1.len());
 
         for (i, expected) in ints.into_iter().enumerate() {
-            let sum_1 = res[0].0.get_at(i).a ^ res[1].0.get_at(i).a ^ res[2].0.get_at(i).a;
-            let sum_2 = res[0].1.get_at(i).a ^ res[1].1.get_at(i).a ^ res[2].1.get_at(i).a;
+            let sum_1 =
+                res[0].0.get_word_at(i).a ^ res[1].0.get_word_at(i).a ^ res[2].0.get_word_at(i).a;
+            let sum_2 =
+                res[0].1.get_word_at(i).a ^ res[1].1.get_word_at(i).a ^ res[2].1.get_word_at(i).a;
             let sum = sum_1 + sum_2;
             assert_eq!(expected, sum.convert());
         }
