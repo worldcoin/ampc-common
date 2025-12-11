@@ -84,6 +84,20 @@ impl<T: IntRing2k> Add for VecRingElement<T> {
     }
 }
 
+impl<T: IntRing2k> BitXor<&Self> for VecRingElement<T> {
+    type Output = Result<Self, eyre::Error>;
+
+    fn bitxor(self, rhs: &Self) -> Self::Output {
+        if self.0.len() != rhs.0.len() {
+            eyre::bail!("Adding vectors of different lengths");
+        }
+        let sum = itertools::izip!(self.0, rhs.0.iter())
+            .map(|(a, b)| a ^ b)
+            .collect();
+        Ok(sum)
+    }
+}
+
 impl<T: IntRing2k> Sub for VecRingElement<T> {
     type Output = Result<Self, eyre::Error>;
 
