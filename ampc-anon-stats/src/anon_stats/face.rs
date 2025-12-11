@@ -77,7 +77,7 @@ pub async fn process_face_distance_job(
     // This will create 1 less bucket than thresholds, which is what we want
     for ((bucket, &threshold), (bucket_end, &threshold_end)) in buckets_opened
         .into_iter()
-        .zip_eq(thresholds.into_iter())
+        .zip_eq(thresholds)
         .tuple_windows()
     {
         stats.buckets.push(BucketResult {
@@ -193,6 +193,7 @@ mod tests {
             environment: "test".to_string(),
             results_topic_arn: "foo".to_string(),
             n_buckets_1d: 0,
+            n_buckets_1d_reauth: 0,
             min_1d_job_size: 0,
             min_face_job_size: 0,
             poll_interval_secs: 10,
@@ -204,6 +205,7 @@ mod tests {
             shutdown_last_results_sync_timeout_secs: 10,
             sns_buffer_bucket_name: "foo".to_string(),
             n_buckets_2d: 0,
+            n_buckets_2d_reauth: 0,
             min_2d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_2d_job_size_reauth: 0,
