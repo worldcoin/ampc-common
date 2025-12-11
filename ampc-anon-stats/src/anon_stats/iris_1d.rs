@@ -1,4 +1,4 @@
-use crate::anon_stats::calculate_iris_threshold_a;
+use crate::anon_stats::{calculate_iris_threshold_a, MATCH_THRESHOLD_RATIO_REAUTH};
 use crate::server::config::AnonStatsServerConfig;
 use crate::types::AnonStatsResultSource;
 use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin, BucketStatistics};
@@ -60,7 +60,14 @@ pub async fn process_1d_anon_stats_job(
     let job_size = job.len();
     let job_data = job.into_bundles();
     let lifted_data = lift_bundles_1d(session, &job_data).await?;
-    let translated_thresholds = calculate_iris_threshold_a(config.n_buckets_1d);
+    let translated_thresholds = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            calculate_iris_threshold_a(config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) => {
+            calculate_iris_threshold_a(config.n_buckets_1d, MATCH_THRESHOLD_RATIO)
+        }
+    };
 
     // execute anon stats MPC protocol
     let bucket_result_shares = compare_min_threshold_buckets(
@@ -93,7 +100,14 @@ pub async fn process_1d_lifted_anon_stats_job(
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    let translated_thresholds = calculate_iris_threshold_a(config.n_buckets_1d);
+    let translated_thresholds = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            calculate_iris_threshold_a(config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) => {
+            calculate_iris_threshold_a(config.n_buckets_1d, MATCH_THRESHOLD_RATIO)
+        }
+    };
 
     // execute anon stats MPC protocol
     let bucket_result_shares = compare_min_threshold_buckets(

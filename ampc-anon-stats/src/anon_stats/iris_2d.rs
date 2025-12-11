@@ -14,6 +14,7 @@ use crate::{
     anon_stats::{
         calculate_iris_threshold_a,
         iris_1d::{lift_bundles_1d, DistanceBundle1D, LiftedDistanceBundle1D},
+        MATCH_THRESHOLD_RATIO_REAUTH,
     },
     types::AnonStatsResultSource,
     AnonStatsMapping, AnonStatsOperation, AnonStatsServerConfig, BucketStatistics2D,
@@ -45,7 +46,14 @@ pub async fn process_2d_anon_stats_job(
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    let translated_thresholds = calculate_iris_threshold_a(config.n_buckets_2d);
+    let translated_thresholds = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            calculate_iris_threshold_a(config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) => {
+            calculate_iris_threshold_a(config.n_buckets_2d, MATCH_THRESHOLD_RATIO)
+        }
+    };
 
     let bundle_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
     let bundle_right = job_data

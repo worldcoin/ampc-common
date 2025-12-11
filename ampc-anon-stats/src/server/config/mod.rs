@@ -46,9 +46,17 @@ pub struct AnonStatsServerConfig {
     /// Number of buckets to use in 1D anon stats computation.
     pub n_buckets_1d: usize,
 
+    #[serde(default = "default_n_buckets_1d_reauth")]
+    /// Number of buckets to use in 1D anon stats computation for reauth.
+    pub n_buckets_1d_reauth: usize,
+
     #[serde(default = "default_n_buckets_2d")]
-    /// Number of buckets to use in 1D anon stats computation.
+    /// Number of buckets to use in 2D anon stats computation.
     pub n_buckets_2d: usize,
+
+    #[serde(default = "default_n_buckets_2d_reauth")]
+    /// Number of buckets to use in 2D anon stats computation for reauth.
+    pub n_buckets_2d_reauth: usize,
 
     #[serde(default = "default_min_1d_job_size")]
     /// Minimum job size for 1D anon stats computation.
@@ -119,8 +127,16 @@ fn default_n_buckets_1d() -> usize {
     10
 }
 
+fn default_n_buckets_1d_reauth() -> usize {
+    20
+}
+
 fn default_n_buckets_2d() -> usize {
     10
+}
+
+fn default_n_buckets_2d_reauth() -> usize {
+    15
 }
 
 fn default_min_1d_job_size() -> usize {
