@@ -46,14 +46,13 @@ pub async fn process_2d_anon_stats_job(
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    let translated_thresholds = match operation {
+    let (num_buckets, upper_threshold) = match operation {
         Some(AnonStatsOperation::Reauth) => {
-            calculate_iris_threshold_a(config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+            (config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
-        None | Some(AnonStatsOperation::Uniqueness) => {
-            calculate_iris_threshold_a(config.n_buckets_2d, MATCH_THRESHOLD_RATIO)
-        }
+        None | Some(AnonStatsOperation::Uniqueness) => (config.n_buckets_2d, MATCH_THRESHOLD_RATIO),
     };
+    let translated_thresholds = calculate_iris_threshold_a(num_buckets, upper_threshold);
 
     let bundle_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
     let bundle_right = job_data
@@ -93,8 +92,7 @@ pub async fn process_2d_anon_stats_job(
     // combine left and right comparisons by doing an outer product
     // at the same time also do the summing
 
-    let mut bucket_shares =
-        vec![RingElement::<u32>::default(); config.n_buckets_2d * config.n_buckets_2d];
+    let mut bucket_shares = vec![RingElement::<u32>::default(); num_buckets * num_buckets];
 
     // prepare the correlated randomness for the bucket sums
     // we want additive shares of 0
@@ -119,19 +117,19 @@ pub async fn process_2d_anon_stats_job(
     let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
     let mut anon_stats = BucketStatistics2D::new(
         job_size,
-        config.n_buckets_2d,
+        num_buckets,
         config.party_id,
         AnonStatsResultSource::Aggregator,
         operation,
     );
-    anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
+    anon_stats.fill_buckets(&buckets, upper_threshold, None);
     Ok(anon_stats)
 }
 
 pub mod test_helper {
-    use ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO;
     use crate::types::AnonStatsResultSource;
     use crate::{BucketStatistics2D, DistanceBundle2D};
+    use ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO;
     use ampc_secret_sharing::shares::{share::DistanceShare, RingElement};
     use ampc_secret_sharing::Share;
     use itertools::Itertools;
