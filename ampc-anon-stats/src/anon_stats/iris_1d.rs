@@ -134,7 +134,7 @@ pub mod test_helper {
     use ampc_secret_sharing::shares::{share::DistanceShare, RingElement, Share};
     use itertools::Itertools;
 
-    use crate::DistanceBundle1D;
+    use crate::{BucketResult, BucketStatistics, DistanceBundle1D};
 
     pub struct TestDistances {
         pub distances: Vec<Vec<[i16; 2]>>,
@@ -268,7 +268,11 @@ pub mod test_helper {
             }
         }
 
-        pub fn ground_truth_buckets(&self, translated_thresholds: &[u32]) -> Vec<u32> {
+        pub fn ground_truth_buckets(&self, translated_thresholds: &[u32]) -> BucketStatistics {
+            let thresholds = translated_thresholds
+                .iter()
+                .map(|&t| 0.5f64 - (t as f64) / (2f64 * 65536f64))
+                .collect_vec();
             let num_buckets = translated_thresholds.len();
             let expected = self
                 .distances
@@ -302,7 +306,139 @@ pub mod test_helper {
                     }
                     acc
                 });
-            expected
+
+            let mut stats = BucketStatistics::new(
+                self.distances.len(),
+                translated_thresholds.len(),
+                0,
+                None,
+                crate::types::AnonStatsResultSource::Aggregator,
+                None,
+            );
+            let bucket_results = std::iter::once(BucketResult {
+                count: expected[0],
+                hamming_distance_bucket: [0f64, thresholds[0]],
+            })
+            .chain(
+                thresholds
+                    .windows(2)
+                    .enumerate()
+                    .map(|(i, window)| BucketResult {
+                        count: expected[i + 1] - expected[i],
+                        hamming_distance_bucket: [window[0], window[1]],
+                    }),
+            )
+            .collect();
+            stats.buckets = bucket_results;
+            stats
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ampc_actor_utils::{constants::MATCH_THRESHOLD_RATIO, execution::local::LocalRuntime};
+    use rand::thread_rng;
+
+    use crate::{
+        anon_stats::{calculate_iris_threshold_a, iris_1d::test_helper::TestDistances},
+        AnonStatsOrigin, AnonStatsServerConfig,
+    };
+
+    #[tokio::test]
+    async fn test_1d_distances() {
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let num_buckets_1d = 10;
+        let thresholds = calculate_iris_threshold_a(num_buckets_1d, MATCH_THRESHOLD_RATIO);
+
+        let config = AnonStatsServerConfig {
+            party_id: 0,
+            face_bucket_thresholds: vec![],
+            service: None,
+            aws: None,
+            environment: "test".to_string(),
+            results_topic_arn: "foo".to_string(),
+            n_buckets_1d: num_buckets_1d,
+            n_buckets_1d_reauth: 0,
+            min_1d_job_size: 0,
+            min_face_job_size: 0,
+            poll_interval_secs: 10,
+            max_sync_failures_before_reset: 10,
+            db_url: "foo".to_string(),
+            db_schema_name: "foo".to_string(),
+            server_coordination: None,
+            service_ports: Vec::new(),
+            shutdown_last_results_sync_timeout_secs: 10,
+            sns_buffer_bucket_name: "foo".to_string(),
+            n_buckets_2d: 0,
+            n_buckets_2d_reauth: 0,
+            min_2d_job_size: 0,
+            min_1d_job_size_reauth: 0,
+            min_2d_job_size_reauth: 0,
+            tls: None,
+        };
+        let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 1000, 12);
+        let ground_truth_buckets = ground_truth.ground_truth_buckets(&thresholds);
+        let TestDistances {
+            distances: _,
+            shares0,
+            shares1,
+            shares2,
+        } = ground_truth;
+
+        let mut tasks = vec![];
+        for (party_id, (shares, net)) in [shares0, shares1, shares2]
+            .into_iter()
+            .zip(sessions.into_iter())
+            .enumerate()
+        {
+            let config = AnonStatsServerConfig {
+                party_id,
+                ..config.clone()
+            };
+            let origin = AnonStatsOrigin {
+                side: Some(crate::types::Eye::Left),
+                orientation: crate::AnonStatsOrientation::Normal,
+                context: crate::AnonStatsContext::GPU,
+            };
+
+            tasks.push(tokio::task::spawn(async move {
+                let mut session = net.lock().await;
+                let shares = shares
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, s)| (idx as i64, s))
+                    .collect();
+                let job = crate::AnonStatsMapping::new(shares);
+
+                let stats = crate::anon_stats::iris_1d::process_1d_anon_stats_job(
+                    &mut session,
+                    job,
+                    &origin,
+                    &config,
+                    Some(crate::AnonStatsOperation::Uniqueness),
+                )
+                .await
+                .unwrap();
+
+                stats
+            }));
+        }
+        let results = futures_util::future::join_all(tasks).await;
+        for stats in results {
+            let stats = stats.expect("bucket computation works");
+            assert_eq!(
+                stats.buckets.len(),
+                ground_truth_buckets.buckets.len(),
+                "Number of buckets mismatch"
+            );
+            for (i, bucket) in stats.buckets.iter().enumerate() {
+                assert_eq!(
+                    bucket.count, ground_truth_buckets.buckets[i].count,
+                    "Bucket {} mismatch: expected {:?}, got {:?}",
+                    i, ground_truth_buckets.buckets[i], bucket
+                );
+            }
         }
     }
 }

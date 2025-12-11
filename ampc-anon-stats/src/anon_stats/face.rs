@@ -77,7 +77,7 @@ pub async fn process_face_distance_job(
     // This will create 1 less bucket than thresholds, which is what we want
     for ((bucket, &threshold), (bucket_end, &threshold_end)) in buckets_opened
         .into_iter()
-        .zip_eq(thresholds.into_iter())
+        .zip_eq(thresholds)
         .tuple_windows()
     {
         stats.buckets.push(BucketResult {
