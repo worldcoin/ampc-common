@@ -73,6 +73,16 @@ pub struct AnonStatsServerConfig {
     /// Minimum job size for REAUTH 2D anon stats computation.
     pub min_2d_job_size_reauth: usize,
 
+    #[serde(default = "default_max_rows_per_job_1d")]
+    /// Maximum number of rows (bundles) to fetch from DB for a single 1D anon stats job.
+    /// This acts as a safety cap to avoid OOMs when the backlog is very large.
+    pub max_rows_per_job_1d: usize,
+
+    #[serde(default = "default_max_rows_per_job_2d")]
+    /// Maximum number of rows (bundles) to fetch from DB for a single 2D anon stats job.
+    /// This acts as a safety cap to avoid OOMs when the backlog is very large.
+    pub max_rows_per_job_2d: usize,
+
     #[serde(default = "default_poll_interval_secs")]
     /// Interval, in seconds, between polling attempts.
     pub poll_interval_secs: u64,
@@ -152,6 +162,14 @@ fn default_min_1d_job_size_reauth() -> usize {
 
 fn default_min_2d_job_size_reauth() -> usize {
     default_min_2d_job_size()
+}
+
+fn default_max_rows_per_job_1d() -> usize {
+    100_000
+}
+
+fn default_max_rows_per_job_2d() -> usize {
+    10_000
 }
 
 fn default_schema_name() -> String {
