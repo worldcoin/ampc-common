@@ -375,6 +375,8 @@ mod tests {
             min_2d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_2d_job_size_reauth: 0,
+            max_rows_per_job_1d: 0,
+            max_rows_per_job_2d: 0,
             tls: None,
         };
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 1000, 12);
