@@ -209,6 +209,9 @@ impl AnonStatsServerConfig {
         if let Some(service_coordination) = &mut config.server_coordination {
             config.party_id = service_coordination.party_id;
         }
+
+        // validate and return config
+        config.validate_config()?;
         Ok(config)
     }
 
@@ -220,6 +223,39 @@ impl AnonStatsServerConfig {
         if let Some(results_topic_arn) = opts.results_topic_arn {
             self.results_topic_arn = results_topic_arn;
         }
+    }
+
+    // Validate the overall configuration.
+    pub fn validate_config(&self) -> eyre::Result<()> {
+        self.validate_job_limits()?;
+        Ok(())
+    }
+
+    // Validate that max rows per job are not less than min job sizes.
+    pub fn validate_job_limits(&self) -> eyre::Result<()> {
+        if self.max_rows_per_job_1d < self.min_1d_job_size
+            || self.max_rows_per_job_1d < self.min_1d_job_size_reauth
+            || self.max_rows_per_job_1d < self.min_face_job_size
+        {
+            return Err(eyre::eyre!(
+                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {})",
+                self.max_rows_per_job_1d,
+                self.min_1d_job_size,
+                self.min_1d_job_size_reauth,
+                self.min_face_job_size
+            ));
+        }
+        if self.max_rows_per_job_2d < self.min_2d_job_size
+            || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
+        {
+            return Err(eyre::eyre!(
+                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {})",
+                self.max_rows_per_job_2d,
+                self.min_2d_job_size,
+                self.min_2d_job_size_reauth
+            ));
+        }
+        Ok(())
     }
 }
 
