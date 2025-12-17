@@ -90,8 +90,7 @@ fn shuffle_triplets(
 /// = pi_12(pi_20(pi_01(A + B + C)))
 /// = pi(A + B + C)
 /// = pi(distances)
-#[allow(dead_code)]
-pub(crate) async fn random_shuffle_batch(
+pub async fn random_shuffle_batch(
     session: &mut Session,
     distances: Vec<Vec<(Share<u32>, DistanceShare<u32>)>>,
 ) -> Result<Vec<Vec<(Share<u32>, DistanceShare<u32>)>>> {

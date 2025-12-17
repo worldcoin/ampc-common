@@ -1,5 +1,5 @@
 use ampc_actor_utils::execution::session::Session;
-use ampc_actor_utils::protocol::binary::{bit_inject, extract_msb_u16_batch};
+use ampc_actor_utils::protocol::binary::{bit_inject, extract_msb_batch};
 use ampc_actor_utils::protocol::ops::{open_ring, sub_pub};
 use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::{RingElement, Share};
@@ -12,14 +12,6 @@ use crate::{AnonStatsOperation, AnonStatsServerConfig, BucketResult, BucketStati
 
 /// The type representing a face distance share, just a simple u16 share encoding a i16 holding the distance of two face vectors.
 pub type FaceDistance = Share<u16>;
-
-/// Build the thresholds vector from the configuration
-/// Essentially returns (start..=end).step_by(step)
-fn build_thresholds(config: &AnonStatsServerConfig) -> Vec<i16> {
-    (config.face_threshold_start..=config.face_threshold_end)
-        .step_by(config.face_threshold_step)
-        .collect()
-}
 
 /// Process a job of face distances and compute bucketed statistics.
 ///
@@ -47,19 +39,19 @@ pub async fn process_face_distance_job(
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
 ) -> Result<BucketStatistics> {
-    let thresholds = build_thresholds(config);
+    let thresholds = &config.face_bucket_thresholds;
     let n_buckets = thresholds.len();
     let job_size = job.len();
 
     let mut buckets = Vec::with_capacity(thresholds.len());
     // TODO: This could be parallelized over many sessions, but for now we do it sequentially, since anon stats are not expected to be a bottleneck.
-    for &threshold in &thresholds {
+    for &threshold in thresholds {
         let mut bucket_distances = job.clone();
         bucket_distances.iter_mut().for_each(|share| {
             sub_pub(session, share, RingElement(threshold as u16));
         });
 
-        let bits = extract_msb_u16_batch(session, &bucket_distances).await?;
+        let bits = extract_msb_batch(session, &bucket_distances).await?;
         let sums: VecShare<u32> = bit_inject(session, VecShare::new_vec(bits)).await?;
         let sums = sums.inner();
         let sum = sums
@@ -83,9 +75,9 @@ pub async fn process_face_distance_job(
 
     // we want non-cumulative data, so we iterate over consecutive pairs of cumulative data and subtract the start from the end to the the actual bucket count
     // This will create 1 less bucket than thresholds, which is what we want
-    for ((bucket, threshold), (bucket_end, threshold_end)) in buckets_opened
+    for ((bucket, &threshold), (bucket_end, &threshold_end)) in buckets_opened
         .into_iter()
-        .zip_eq(thresholds.into_iter())
+        .zip_eq(thresholds)
         .tuple_windows()
     {
         stats.buckets.push(BucketResult {
@@ -186,25 +178,22 @@ mod tests {
     use ampc_actor_utils::execution::local::LocalRuntime;
     use rand::thread_rng;
 
-    use crate::{
-        anon_stats::face::{build_thresholds, test_helper::TestDistances},
-        AnonStatsServerConfig,
-    };
+    use crate::{anon_stats::face::test_helper::TestDistances, AnonStatsServerConfig};
 
     #[tokio::test]
     async fn test_face_distances() {
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let thresholds = (-2000..=5000).step_by(200).collect::<Vec<i16>>();
 
         let config = AnonStatsServerConfig {
             party_id: 0,
-            face_threshold_start: -2000,
-            face_threshold_end: 5000,
-            face_threshold_step: 200,
+            face_bucket_thresholds: thresholds.clone(),
             service: None,
             aws: None,
             environment: "test".to_string(),
             results_topic_arn: "foo".to_string(),
             n_buckets_1d: 0,
+            n_buckets_1d_reauth: 0,
             min_1d_job_size: 0,
             min_face_job_size: 0,
             poll_interval_secs: 10,
@@ -216,6 +205,7 @@ mod tests {
             shutdown_last_results_sync_timeout_secs: 10,
             sns_buffer_bucket_name: "foo".to_string(),
             n_buckets_2d: 0,
+            n_buckets_2d_reauth: 0,
             min_2d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_2d_job_size_reauth: 0,
@@ -223,7 +213,6 @@ mod tests {
             max_rows_per_job_2d: 0,
             tls: None,
         };
-        let thresholds = build_thresholds(&config);
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 10000);
         let ground_truth_buckets = ground_truth.ground_truth_buckets(&thresholds);
         let TestDistances {

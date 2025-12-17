@@ -3,9 +3,7 @@
 
 use crate::execution::session::SessionHandles;
 use crate::network::value::NetworkInt;
-use crate::protocol::binary::{
-    bit_inject, extract_msb_u16_batch, extract_msb_u32_batch, lift, open_bin,
-};
+use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
 use crate::{
     execution::session::{NetworkSession, Session},
     network::value::NetworkValue,
@@ -105,7 +103,7 @@ pub async fn lt_zero_and_open_u16(
     session: &mut Session,
     distances: &[Share<u16>],
 ) -> Result<Vec<bool>> {
-    let bits = extract_msb_u16_batch(session, distances).await?;
+    let bits = extract_msb_batch(session, distances).await?;
     open_bin(session, &bits)
         .await
         .map(|v| v.into_iter().map(|x| x.convert()).collect())
@@ -130,7 +128,7 @@ pub async fn gte_zero_and_open_u16(
     session: &mut Session,
     distances: &[Share<u16>],
 ) -> Result<Vec<bool>> {
-    let bits = extract_msb_u16_batch(session, distances).await?;
+    let bits = extract_msb_batch(session, distances).await?;
 
     // MSB is `1` is `distance < 0`.
     // MSB is `0` if `distance >= 0`.
@@ -335,7 +333,7 @@ pub(crate) async fn oblivious_cross_compare(
     // d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     let diff = cross_mul(session, distances).await?;
     // Compute the MSB of the above
-    extract_msb_u32_batch(session, &diff).await
+    extract_msb_batch(session, &diff).await
 }
 
 /// For every pair of distance shares (d1, d2), this computes the secret-shared bit d2 < d1 and lift it to u32 shares.
