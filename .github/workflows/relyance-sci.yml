@@ -15,7 +15,6 @@ jobs:
       group: arc-public-large-amd64-runner
     permissions:
       contents: read
-
     steps:
       - name: Run Relyance SCI
         uses: worldcoin/gh-actions-public/relyance@main
