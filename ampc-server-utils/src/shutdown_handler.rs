@@ -19,7 +19,9 @@ pub struct ShutdownHandler {
 
 #[derive(Error, Debug)]
 pub enum ShutdownError {
-    #[error("timeout waiting for shutdown")]
+    #[error(
+        "timeout waiting for shutdown with {batches_pending_completion} batches still pending"
+    )]
     Timeout { batches_pending_completion: usize },
 }
 
@@ -76,13 +78,8 @@ impl ShutdownHandler {
 
         while self.n_batches_pending_completion.load(Ordering::SeqCst) > 0 {
             if start.elapsed() >= self.last_results_sync_timeout {
-                let pending = self.get_batches_pending_completion();
-                tracing::warn!(
-                    "Shutdown timeout reached with {} batches still pending",
-                    pending
-                );
                 return Err(ShutdownError::Timeout {
-                    batches_pending_completion: pending,
+                    batches_pending_completion: self.get_batches_pending_completion(),
                 });
             }
 
