@@ -5,6 +5,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use thiserror::Error;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
 
@@ -14,6 +15,12 @@ pub struct ShutdownHandler {
     network_ct: CancellationToken,
     n_batches_pending_completion: Arc<AtomicUsize>,
     last_results_sync_timeout: Duration,
+}
+
+#[derive(Error, Debug)]
+pub enum ShutdownError {
+    #[error("timeout waiting for shutdown")]
+    Timeout { batches_pending_completion: usize },
 }
 
 impl ShutdownHandler {
@@ -63,14 +70,15 @@ impl ShutdownHandler {
             .fetch_sub(1, Ordering::SeqCst);
     }
 
-    pub async fn wait_for_pending_batches_completion(&self) {
+    pub async fn wait_for_pending_batches_completion(&self) -> Result<(), ShutdownError> {
         let check_interval = Duration::from_millis(100);
         let start = Instant::now();
 
         while self.n_batches_pending_completion.load(Ordering::SeqCst) > 0 {
             if start.elapsed() >= self.last_results_sync_timeout {
-                tracing::error!("Timed out waiting for pending batches to complete.");
-                return;
+                return Err(ShutdownError::Timeout {
+                    batches_pending_completion: self.get_batches_pending_completion(),
+                });
             }
 
             tokio::time::sleep(check_interval).await;
@@ -80,6 +88,11 @@ impl ShutdownHandler {
             self.network_ct.cancel();
         }
         tracing::info!("Pending batches count reached zero.");
+        Ok(())
+    }
+
+    fn get_batches_pending_completion(&self) -> usize {
+        self.n_batches_pending_completion.load(Ordering::SeqCst)
     }
 }
 
