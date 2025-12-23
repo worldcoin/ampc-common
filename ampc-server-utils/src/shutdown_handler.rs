@@ -76,8 +76,13 @@ impl ShutdownHandler {
 
         while self.n_batches_pending_completion.load(Ordering::SeqCst) > 0 {
             if start.elapsed() >= self.last_results_sync_timeout {
+                let pending = self.get_batches_pending_completion();
+                tracing::warn!(
+                    "Shutdown timeout reached with {} batches still pending",
+                    pending
+                );
                 return Err(ShutdownError::Timeout {
-                    batches_pending_completion: self.get_batches_pending_completion(),
+                    batches_pending_completion: pending,
                 });
             }
 
@@ -141,18 +146,28 @@ mod tests {
         handler.trigger_manual_shutdown();
         assert!(handler.is_shutting_down());
 
-        // If batches do not complete, return anyway after timeout.
-        // Since timeout is 0 seconds, it should return immediately
-        handler.wait_for_pending_batches_completion().await;
+        // If batches do not complete, return timeout error.
+        // Since timeout is 0 seconds, it should return immediately with error
+        let result = handler.wait_for_pending_batches_completion().await;
+        assert!(matches!(
+            result,
+            Err(ShutdownError::Timeout {
+                batches_pending_completion: 1
+            })
+        ));
 
         // Complete the batch.
         handler.decrement_batches_pending_completion();
 
         // Should return quickly since no batches are pending
+        let result = handler.wait_for_pending_batches_completion().await;
+        assert!(result.is_ok());
+
+        // Test quick completion again
         let quick = timeout(
             Duration::from_millis(10),
             handler.wait_for_pending_batches_completion(),
         );
-        assert!(quick.await.is_ok());
+        assert!(quick.await.unwrap().is_ok());
     }
 }
