@@ -1,5 +1,9 @@
 use crate::protocol::shuffle::Permutation;
-use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
+use ampc_secret_sharing::shares::{
+    int_ring::IntRing2k,
+    ring_impl::{RingElement, VecRingElement},
+    RngRingExt,
+};
 use eyre::Result;
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
@@ -21,11 +25,8 @@ fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
     }
 }
 
-#[cfg(not(feature = "chacha_prf"))]
-type PrfRng = aes_prng::AesRng;
-
-#[cfg(feature = "chacha_prf")]
-type PrfRng = rand_chacha::ChaCha20Rng;
+// ChaCha8 - fastest on ARM (Graviton) while still cryptographically secure
+type PrfRng = rand_chacha::ChaCha8Rng;
 
 pub type PrfSeed = [u8; 16];
 
@@ -45,7 +46,6 @@ impl Default for Prf {
 }
 
 impl Prf {
-    #[cfg(feature = "chacha_prf")]
     pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
         Self {
             my_prf: PrfRng::from_seed(Self::expand_seed(my_key)),
@@ -53,15 +53,6 @@ impl Prf {
         }
     }
 
-    #[cfg(not(feature = "chacha_prf"))]
-    pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
-        Self {
-            my_prf: PrfRng::from_seed(my_key),
-            prev_prf: PrfRng::from_seed(prev_key),
-        }
-    }
-
-    #[cfg(feature = "chacha_prf")]
     fn expand_seed(seed: PrfSeed) -> [u8; 32] {
         use blake3::Hasher;
         let mut h = Hasher::new();
@@ -94,6 +85,20 @@ impl Prf {
         (a, b)
     }
 
+    /// Generate two vectors of random RingElements in bulk (much faster than gen_rands in a loop)
+    #[inline]
+    pub fn gen_rands_vec<T: IntRing2k>(
+        &mut self,
+        count: usize,
+    ) -> (VecRingElement<T>, VecRingElement<T>)
+    where
+        Standard: Distribution<T>,
+    {
+        let a = self.my_prf.gen_ring_vec::<T>(count).into();
+        let b = self.prev_prf.gen_ring_vec::<T>(count).into();
+        (a, b)
+    }
+
     pub fn gen_zero_share<T: IntRing2k>(&mut self) -> RingElement<T>
     where
         Standard: Distribution<T>,
@@ -108,6 +113,15 @@ impl Prf {
     {
         let (a, b) = self.gen_rands::<RingElement<T>>();
         a ^ b
+    }
+
+    /// Generate a vector of arithmetic zero shares in bulk
+    pub fn gen_zero_shares_vec<T: IntRing2k>(&mut self, count: usize) -> VecRingElement<T>
+    where
+        Standard: Distribution<T>,
+    {
+        let (a, b) = self.gen_rands_vec::<T>(count);
+        (a - b).expect("subtraction of equal-length vectors cannot fail")
     }
 
     // Generates shared random u32 in [0, modulus)

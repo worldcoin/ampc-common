@@ -33,7 +33,6 @@ clap = { version = "4", features = ["derive"] }
 
 [features]
 networking_metrics = []
-chacha_prf = []
 ripple_carry_adder = []
 
 [dev-dependencies]
