@@ -1,9 +1,5 @@
 use crate::protocol::shuffle::Permutation;
-use ampc_secret_sharing::shares::{
-    int_ring::IntRing2k,
-    ring_impl::{RingElement, VecRingElement},
-    RngRingExt,
-};
+use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
 use eyre::Result;
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
@@ -85,20 +81,6 @@ impl Prf {
         (a, b)
     }
 
-    /// Generate two vectors of random RingElements in bulk (much faster than gen_rands in a loop)
-    #[inline]
-    pub fn gen_rands_vec<T: IntRing2k>(
-        &mut self,
-        count: usize,
-    ) -> (VecRingElement<T>, VecRingElement<T>)
-    where
-        Standard: Distribution<T>,
-    {
-        let a = self.my_prf.gen_ring_vec::<T>(count).into();
-        let b = self.prev_prf.gen_ring_vec::<T>(count).into();
-        (a, b)
-    }
-
     pub fn gen_zero_share<T: IntRing2k>(&mut self) -> RingElement<T>
     where
         Standard: Distribution<T>,
@@ -113,15 +95,6 @@ impl Prf {
     {
         let (a, b) = self.gen_rands::<RingElement<T>>();
         a ^ b
-    }
-
-    /// Generate a vector of arithmetic zero shares in bulk
-    pub fn gen_zero_shares_vec<T: IntRing2k>(&mut self, count: usize) -> VecRingElement<T>
-    where
-        Standard: Distribution<T>,
-    {
-        let (a, b) = self.gen_rands_vec::<T>(count);
-        (a - b).expect("subtraction of equal-length vectors cannot fail")
     }
 
     // Generates shared random u32 in [0, modulus)
