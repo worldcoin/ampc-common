@@ -4,6 +4,34 @@ use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::mem::size_of;
 
+/// Serialize a vector of RingElements as bytes, using bulk memcpy on little-endian.
+///
+/// # Safety
+/// This is safe because:
+/// - `RingElement<T>` is `#[repr(transparent)]` over `T`
+/// - On little-endian, the native byte order matches the wire format
+/// - We're only reading from the slice, not modifying it
+#[inline]
+fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
+    let byte_len = v.len() * size_of::<T>();
+    res.extend_from_slice(&(byte_len as u32).to_le_bytes());
+
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
+        // the memory layout matches the serialized format (little-endian bytes).
+        let bytes: &[u8] = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, byte_len) };
+        res.extend_from_slice(bytes);
+    }
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        for x in v {
+            res.extend_from_slice(&x.convert().to_le_bytes());
+        }
+    }
+}
+
 /// Size of a PRF key in bytes
 const PRF_KEY_SIZE: usize = 16;
 
@@ -156,24 +184,9 @@ impl NetworkValue {
             NetworkValue::RingElement16(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElement32(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElement64(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
-            NetworkValue::VecRing16(v) => {
-                res.extend_from_slice(&((v.len() * size_of::<u16>()) as u32).to_le_bytes());
-                for x in v {
-                    res.extend_from_slice(&x.convert().to_le_bytes());
-                }
-            }
-            NetworkValue::VecRing32(v) => {
-                res.extend_from_slice(&((v.len() * size_of::<u32>()) as u32).to_le_bytes());
-                for x in v {
-                    res.extend_from_slice(&x.convert().to_le_bytes());
-                }
-            }
-            NetworkValue::VecRing64(v) => {
-                res.extend_from_slice(&((v.len() * size_of::<u64>()) as u32).to_le_bytes());
-                for x in v {
-                    res.extend_from_slice(&x.convert().to_le_bytes());
-                }
-            }
+            NetworkValue::VecRing16(v) => serialize_vec_ring(v, res),
+            NetworkValue::VecRing32(v) => serialize_vec_ring(v, res),
+            NetworkValue::VecRing64(v) => serialize_vec_ring(v, res),
             NetworkValue::StateChecksum(checksums) => {
                 res.extend_from_slice(&u64::to_le_bytes(checksums.irises));
                 res.extend_from_slice(&u64::to_le_bytes(checksums.graph));
@@ -370,7 +383,7 @@ impl NetworkValue {
 
 fn deserialize_vec_ring<T, const N: usize, F>(
     serialized: &[u8],
-    from_bytes: F,
+    #[allow(unused_variables)] from_bytes: F,
 ) -> Result<Vec<RingElement<T>>>
 where
     F: Fn([u8; N]) -> T,
@@ -405,13 +418,33 @@ where
         );
     }
     let num_elements = len / size_of::<T>();
-    let mut res = Vec::with_capacity(num_elements);
-    for chunk in serialized[5..].chunks_exact(N) {
-        let slice = <[u8; N]>::try_from(chunk)?;
-        let value: T = from_bytes(slice);
-        res.push(RingElement(value));
+
+    #[cfg(target_endian = "little")]
+    {
+        // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
+        // the memory layout matches the serialized format (little-endian bytes).
+        // We allocate a new Vec, copy the bytes, and return it.
+        let mut res = Vec::<RingElement<T>>::with_capacity(num_elements);
+        // SAFETY: We just allocated capacity for num_elements, and we're about to
+        // initialize all of them via copy_from_slice.
+        unsafe {
+            let dst = res.as_mut_ptr() as *mut u8;
+            std::ptr::copy_nonoverlapping(serialized[5..].as_ptr(), dst, len);
+            res.set_len(num_elements);
+        }
+        Ok(res)
     }
-    Ok(res)
+
+    #[cfg(not(target_endian = "little"))]
+    {
+        let mut res = Vec::with_capacity(num_elements);
+        for chunk in serialized[5..].chunks_exact(N) {
+            let slice = <[u8; N]>::try_from(chunk)?;
+            let value: T = from_bytes(slice);
+            res.push(RingElement(value));
+        }
+        Ok(res)
+    }
 }
 
 pub trait NetworkInt
@@ -475,6 +508,40 @@ mod tests {
     fn test_from_network_empty() -> Result<()> {
         let result = NetworkValue::deserialize(&[]);
         assert_eq!(result.unwrap_err().to_string(), "Empty serialized data");
+        Ok(())
+    }
+
+    /// Test round-trip serialization for VecRing variants
+    #[test]
+    fn test_vec_ring_roundtrip() -> Result<()> {
+        // Test VecRing16
+        let v16: Vec<RingElement<u16>> = (0..1000).map(RingElement).collect();
+        let nv16 = NetworkValue::VecRing16(v16.clone());
+        let serialized = nv16.to_network();
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(NetworkValue::VecRing16(v16), deserialized);
+
+        // Test VecRing32
+        let v32: Vec<RingElement<u32>> = (0..1000).map(RingElement).collect();
+        let nv32 = NetworkValue::VecRing32(v32.clone());
+        let serialized = nv32.to_network();
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(NetworkValue::VecRing32(v32), deserialized);
+
+        // Test VecRing64
+        let v64: Vec<RingElement<u64>> = (0..1000).map(RingElement).collect();
+        let nv64 = NetworkValue::VecRing64(v64.clone());
+        let serialized = nv64.to_network();
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(NetworkValue::VecRing64(v64), deserialized);
+
+        // Test empty vectors
+        let empty16: Vec<RingElement<u16>> = vec![];
+        let nv_empty = NetworkValue::VecRing16(empty16.clone());
+        let serialized = nv_empty.to_network();
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(NetworkValue::VecRing16(empty16), deserialized);
+
         Ok(())
     }
 }
