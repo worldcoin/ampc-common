@@ -284,15 +284,17 @@ where
     let total_len: usize = chunk_sizes.iter().sum();
     let x1 = VecShare::flatten(x1);
     let x2 = VecShare::flatten(x2);
-    let mut shares_a = and_many_iter_send(session, x1, x2, total_len).await?;
-    let mut shares_b = and_many_receive(session).await?;
+    let shares_a = and_many_iter_send(session, x1, x2, total_len).await?;
+    let shares_b = and_many_receive(session).await?;
 
-    // Unflatten the shares vectors
+    // Unflatten the shares vectors using indexed iteration to avoid O(N²) drain
     let mut res = Vec::with_capacity(chunk_sizes.len());
+    let mut offset = 0;
     for l in chunk_sizes {
-        let a = shares_a.drain(..l);
-        let b = shares_b.drain(..l);
+        let a = shares_a[offset..offset + l].iter().copied();
+        let b = shares_b[offset..offset + l].iter().copied();
         res.push(VecShare::from_iter_ab(a, b));
+        offset += l;
     }
     Ok(res)
 }
