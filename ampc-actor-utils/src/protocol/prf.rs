@@ -4,7 +4,7 @@ use ampc_secret_sharing::shares::{
     ring_impl::{RingElement, VecRingElement},
 };
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Rng, RngCore, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -113,12 +113,13 @@ impl Prf {
         a ^ b
     }
 
-    /// Generates `n` zero shares in batch. Uses fill_bytes for maximum performance.
+    /// Generates `n` zero shares in batch.
+    /// Uses simple iteration - one write per element, computed in registers.
     pub fn gen_zero_shares_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
     where
         Standard: Distribution<T>,
     {
-        VecRingElement(self.gen_zero_shares_fast(n))
+        VecRingElement((0..n).map(|_| self.gen_zero_share()).collect())
     }
 
     /// Fills an existing slice with zero shares. Use this with thread_local buffers
@@ -135,12 +136,13 @@ impl Prf {
         }
     }
 
-    /// Generates `n` binary zero shares in batch. Uses fill_bytes for maximum performance.
+    /// Generates `n` binary zero shares in batch.
+    /// Uses simple iteration - one write per element, computed in registers.
     pub fn gen_binary_zero_shares_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
     where
         Standard: Distribution<T>,
     {
-        VecRingElement(self.gen_binary_zero_shares_fast(n))
+        VecRingElement((0..n).map(|_| self.gen_binary_zero_share()).collect())
     }
 
     /// Fills an existing slice with binary zero shares. Use this with thread_local buffers
@@ -157,12 +159,12 @@ impl Prf {
         }
     }
 
-    /// Generates `n` random RingElements from my_prf. Uses fill_bytes for maximum performance.
+    /// Generates `n` random RingElements from my_prf.
     pub fn gen_my_rands_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
     where
         Standard: Distribution<T>,
     {
-        VecRingElement(self.gen_my_rands_fast(n))
+        VecRingElement((0..n).map(|_| self.my_prf.gen::<RingElement<T>>()).collect())
     }
 
     /// Fills an existing slice with random RingElements from my_prf.
@@ -176,12 +178,12 @@ impl Prf {
         }
     }
 
-    /// Generates `n` random RingElements from prev_prf. Uses fill_bytes for maximum performance.
+    /// Generates `n` random RingElements from prev_prf.
     pub fn gen_prev_rands_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
     where
         Standard: Distribution<T>,
     {
-        VecRingElement(self.gen_prev_rands_fast(n))
+        VecRingElement((0..n).map(|_| self.prev_prf.gen::<RingElement<T>>()).collect())
     }
 
     /// Fills an existing slice with random RingElements from prev_prf.
@@ -192,173 +194,6 @@ impl Prf {
     {
         for elem in dest.iter_mut() {
             *elem = self.prev_prf.gen::<RingElement<T>>();
-        }
-    }
-
-    /// Ultra-fast zero share generation using fill_bytes.
-    /// Bypasses the Distribution trait entirely for maximum performance.
-    /// Uses chunked processing to minimize memory bandwidth.
-    ///
-    /// # Safety
-    /// This uses unsafe pointer casts. Safe because RingElement<T> is #[repr(transparent)]
-    /// and T is a primitive integer type with no padding.
-    #[inline]
-    pub fn gen_zero_shares_fast<T: IntRing2k>(&mut self, n: usize) -> Vec<RingElement<T>> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let elem_size = std::mem::size_of::<T>();
-
-        // Allocate result buffer
-        let mut result: Vec<RingElement<T>> = vec![RingElement(T::default()); n];
-
-        // Process in chunks to keep temp buffer in L1 cache
-        const CHUNK_BYTES: usize = 4096; // 4KB fits comfortably in L1
-        let chunk_elems = CHUNK_BYTES / elem_size;
-        let mut temp: Vec<T> = vec![T::default(); chunk_elems.max(1)];
-
-        for chunk in result.chunks_mut(chunk_elems) {
-            let chunk_len = chunk.len();
-            let chunk_byte_len = chunk_len * elem_size;
-
-            // Fill chunk with my_prf
-            let chunk_bytes: &mut [u8] =
-                unsafe { std::slice::from_raw_parts_mut(chunk.as_mut_ptr() as *mut u8, chunk_byte_len) };
-            self.my_prf.fill_bytes(chunk_bytes);
-
-            // Fill temp with prev_prf
-            let temp_bytes: &mut [u8] =
-                unsafe { std::slice::from_raw_parts_mut(temp.as_mut_ptr() as *mut u8, chunk_byte_len) };
-            self.prev_prf.fill_bytes(temp_bytes);
-
-            // Subtract in place
-            for (r, t) in chunk.iter_mut().zip(temp[..chunk_len].iter()) {
-                r.0 = r.0.wrapping_sub(t);
-            }
-        }
-
-        result
-    }
-
-    /// Ultra-fast binary zero share generation using fill_bytes.
-    /// Bypasses the Distribution trait entirely for maximum performance.
-    /// Uses chunked processing to minimize memory bandwidth.
-    #[inline]
-    pub fn gen_binary_zero_shares_fast<T: IntRing2k>(&mut self, n: usize) -> Vec<RingElement<T>> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let byte_len = n * std::mem::size_of::<T>();
-
-        // Allocate result buffer
-        let mut result: Vec<RingElement<T>> = vec![RingElement(T::default()); n];
-        let result_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, byte_len) };
-
-        // Process in chunks to keep temp buffer in L1 cache
-        // ChaCha generates 64 bytes at a time, so use a multiple of that
-        const CHUNK_SIZE: usize = 4096; // 4KB fits comfortably in L1
-        let mut temp = [0u8; CHUNK_SIZE];
-
-        for chunk in result_bytes.chunks_mut(CHUNK_SIZE) {
-            let chunk_len = chunk.len();
-            // Fill chunk with my_prf
-            self.my_prf.fill_bytes(chunk);
-            // Fill temp with prev_prf and XOR immediately
-            self.prev_prf.fill_bytes(&mut temp[..chunk_len]);
-            // XOR in place - compiler will auto-vectorize this
-            for (r, t) in chunk.iter_mut().zip(temp[..chunk_len].iter()) {
-                *r ^= *t;
-            }
-        }
-
-        result
-    }
-
-    /// Ultra-fast random generation from my_prf using fill_bytes.
-    #[inline]
-    pub fn gen_my_rands_fast<T: IntRing2k>(&mut self, n: usize) -> Vec<RingElement<T>> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let byte_len = n * std::mem::size_of::<T>();
-        let mut result: Vec<RingElement<T>> = vec![RingElement(T::default()); n];
-        let result_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, byte_len) };
-        self.my_prf.fill_bytes(result_bytes);
-        result
-    }
-
-    /// Ultra-fast random generation from prev_prf using fill_bytes.
-    #[inline]
-    pub fn gen_prev_rands_fast<T: IntRing2k>(&mut self, n: usize) -> Vec<RingElement<T>> {
-        if n == 0 {
-            return Vec::new();
-        }
-        let byte_len = n * std::mem::size_of::<T>();
-        let mut result: Vec<RingElement<T>> = vec![RingElement(T::default()); n];
-        let result_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(result.as_mut_ptr() as *mut u8, byte_len) };
-        self.prev_prf.fill_bytes(result_bytes);
-        result
-    }
-
-    /// Fill existing buffer with zero shares using fill_bytes (no allocation).
-    /// Use with thread_local pre-allocated buffers for hot paths.
-    #[inline]
-    pub fn fill_zero_shares_fast<T: IntRing2k>(
-        &mut self,
-        dest: &mut [RingElement<T>],
-        temp: &mut [T],
-    ) {
-        debug_assert_eq!(dest.len(), temp.len());
-        if dest.is_empty() {
-            return;
-        }
-        let byte_len = dest.len() * std::mem::size_of::<T>();
-
-        // Fill dest with bytes from my_prf
-        let dest_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(dest.as_mut_ptr() as *mut u8, byte_len) };
-        self.my_prf.fill_bytes(dest_bytes);
-
-        // Fill temp with bytes from prev_prf
-        let temp_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(temp.as_mut_ptr() as *mut u8, byte_len) };
-        self.prev_prf.fill_bytes(temp_bytes);
-
-        // Compute difference in place
-        for (d, t) in dest.iter_mut().zip(temp.iter()) {
-            d.0 = d.0.wrapping_sub(t);
-        }
-    }
-
-    /// Fill existing buffer with binary zero shares using fill_bytes (no allocation).
-    #[inline]
-    pub fn fill_binary_zero_shares_fast<T: IntRing2k>(
-        &mut self,
-        dest: &mut [RingElement<T>],
-        temp: &mut [T],
-    ) {
-        debug_assert_eq!(dest.len(), temp.len());
-        if dest.is_empty() {
-            return;
-        }
-        let byte_len = dest.len() * std::mem::size_of::<T>();
-
-        // Fill dest with bytes from my_prf
-        let dest_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(dest.as_mut_ptr() as *mut u8, byte_len) };
-        self.my_prf.fill_bytes(dest_bytes);
-
-        // Fill temp with bytes from prev_prf
-        let temp_bytes: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(temp.as_mut_ptr() as *mut u8, byte_len) };
-        self.prev_prf.fill_bytes(temp_bytes);
-
-        // Compute XOR in place
-        for (d, t) in dest.iter_mut().zip(temp.iter()) {
-            d.0 = d.0 ^ *t;
         }
     }
 

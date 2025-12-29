@@ -1,5 +1,6 @@
 use eyre::Result;
 use itertools::Itertools;
+use rand::Rng;
 
 use crate::{
     constants::N_PARTIES,
@@ -198,8 +199,9 @@ async fn shuffle_party_1(
     let x2 = shuffle_triplets(pi_12, (x1 + z12)?, batch_size);
 
     // tilde(B) shared with party 0
-    // Use batch generation for better performance
-    let tilde_b: VecRingElement<u32> = session.prf.gen_prev_rands_batch(x2.len());
+    let tilde_b: VecRingElement<u32> = (0..x2.len())
+        .map(|_| prf.get_prev_prf().gen::<RingElement<u32>>())
+        .collect();
     // tilde(C_1) = X2 - tilde(B)
     let tilde_c1 = (x2 - &tilde_b)?;
 
@@ -242,8 +244,9 @@ async fn shuffle_party_2(
     // Y2 = pi_12(Y1 - Z_12)
     let y2 = shuffle_triplets(pi_12, (y1 - z12)?, batch_size);
     // tilde(A) shared with party 0
-    // Use batch generation for better performance
-    let tilde_a: VecRingElement<u32> = session.prf.gen_my_rands_batch(y2.len());
+    let tilde_a: VecRingElement<u32> = (0..y2.len())
+        .map(|_| prf.get_my_prf().gen::<RingElement<u32>>())
+        .collect();
     // tilde(C_2) = Y2 - tilde(A)
     let tilde_c2 = (y2 - &tilde_a)?;
 
