@@ -1,8 +1,5 @@
 use crate::protocol::shuffle::Permutation;
-use ampc_secret_sharing::shares::{
-    int_ring::IntRing2k,
-    ring_impl::{RingElement, VecRingElement},
-};
+use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
 use eyre::Result;
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
@@ -111,90 +108,6 @@ impl Prf {
     {
         let (a, b) = self.gen_rands::<RingElement<T>>();
         a ^ b
-    }
-
-    /// Generates `n` zero shares in batch.
-    /// Uses simple iteration - one write per element, computed in registers.
-    pub fn gen_zero_shares_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
-    where
-        Standard: Distribution<T>,
-    {
-        VecRingElement((0..n).map(|_| self.gen_zero_share()).collect())
-    }
-
-    /// Fills an existing slice with zero shares. Use this with thread_local buffers
-    /// to avoid repeated allocations in hot paths.
-    #[inline]
-    pub fn fill_zero_shares<T: IntRing2k>(&mut self, dest: &mut [RingElement<T>])
-    where
-        Standard: Distribution<T>,
-    {
-        for elem in dest.iter_mut() {
-            let a: RingElement<T> = self.my_prf.gen::<RingElement<T>>();
-            let b: RingElement<T> = self.prev_prf.gen::<RingElement<T>>();
-            *elem = a - b;
-        }
-    }
-
-    /// Generates `n` binary zero shares in batch.
-    /// Uses simple iteration - one write per element, computed in registers.
-    pub fn gen_binary_zero_shares_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
-    where
-        Standard: Distribution<T>,
-    {
-        VecRingElement((0..n).map(|_| self.gen_binary_zero_share()).collect())
-    }
-
-    /// Fills an existing slice with binary zero shares. Use this with thread_local buffers
-    /// to avoid repeated allocations in hot paths.
-    #[inline]
-    pub fn fill_binary_zero_shares<T: IntRing2k>(&mut self, dest: &mut [RingElement<T>])
-    where
-        Standard: Distribution<T>,
-    {
-        for elem in dest.iter_mut() {
-            let a: RingElement<T> = self.my_prf.gen::<RingElement<T>>();
-            let b: RingElement<T> = self.prev_prf.gen::<RingElement<T>>();
-            *elem = a ^ b;
-        }
-    }
-
-    /// Generates `n` random RingElements from my_prf.
-    pub fn gen_my_rands_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
-    where
-        Standard: Distribution<T>,
-    {
-        VecRingElement((0..n).map(|_| self.my_prf.gen::<RingElement<T>>()).collect())
-    }
-
-    /// Fills an existing slice with random RingElements from my_prf.
-    #[inline]
-    pub fn fill_my_rands<T: IntRing2k>(&mut self, dest: &mut [RingElement<T>])
-    where
-        Standard: Distribution<T>,
-    {
-        for elem in dest.iter_mut() {
-            *elem = self.my_prf.gen::<RingElement<T>>();
-        }
-    }
-
-    /// Generates `n` random RingElements from prev_prf.
-    pub fn gen_prev_rands_batch<T: IntRing2k>(&mut self, n: usize) -> VecRingElement<T>
-    where
-        Standard: Distribution<T>,
-    {
-        VecRingElement((0..n).map(|_| self.prev_prf.gen::<RingElement<T>>()).collect())
-    }
-
-    /// Fills an existing slice with random RingElements from prev_prf.
-    #[inline]
-    pub fn fill_prev_rands<T: IntRing2k>(&mut self, dest: &mut [RingElement<T>])
-    where
-        Standard: Distribution<T>,
-    {
-        for elem in dest.iter_mut() {
-            *elem = self.prev_prf.gen::<RingElement<T>>();
-        }
     }
 
     // Generates shared random u32 in [0, modulus)
