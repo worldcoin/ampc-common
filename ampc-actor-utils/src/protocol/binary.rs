@@ -239,18 +239,20 @@ pub async fn and_product(
         // if the length is odd, we save the last column to add it back later
         let maybe_last_column = if res.len() % 2 == 1 { res.pop() } else { None };
         let half_len = res.len() / 2;
+        // Collect directly into VecShare using FromIterator (avoids intermediate Vec)
         let left_bits: VecShare<u64> =
-            VecShare::new_vec(res.drain(..half_len).flatten().collect_vec()).pack();
+            res.drain(..half_len).flatten().collect::<VecShare<Bit>>().pack();
         let right_bits: VecShare<u64> =
-            VecShare::new_vec(res.drain(..).flatten().collect_vec()).pack();
+            res.drain(..).flatten().collect::<VecShare<Bit>>().pack();
         let and_bits = and_many(session, left_bits.as_slice(), right_bits.as_slice()).await?;
         let mut and_bits = and_bits.convert_to_bits();
         let num_and_bits = half_len * len;
         and_bits.truncate(num_and_bits);
+        // Use iter().cloned() to avoid chunk.to_vec() allocation
         res = and_bits
             .inner()
             .chunks(len)
-            .map(|chunk| VecShare::new_vec(chunk.to_vec()))
+            .map(|chunk| chunk.iter().cloned().collect())
             .collect_vec();
         res.extend(maybe_last_column);
     }
@@ -485,13 +487,13 @@ where
 {
     let len = input.len();
 
-    // Prepare b2 shares
+    // Prepare b2 shares - access field directly instead of clone
     let b2: VecRingElement<T> = input
         .iter()
         .map(|bit_share| {
             // b2 is the share of b owned by Party 0 at the start of the protocol
             // Party 0 holds shares (0, b_2)
-            if bit_share.clone().get_b().convert().into() {
+            if bit_share.b.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())
@@ -661,12 +663,13 @@ where
     let r_12: VecRingElement<T> = session.prf.gen_prev_rands_batch(len);
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
+    // Access field directly instead of clone
     let b2: VecRingElement<T> = input
         .iter()
         .map(|bit_share| {
             // b2 is the share of b owned by Party 2 at the start of the protocol
             // Party 2 holds shares (b_2, 0)
-            if bit_share.clone().get_a().convert().into() {
+            if bit_share.a.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())

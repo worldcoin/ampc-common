@@ -208,7 +208,6 @@ impl Prf {
             return Vec::new();
         }
         let elem_size = std::mem::size_of::<T>();
-        let byte_len = n * elem_size;
 
         // Allocate result buffer
         let mut result: Vec<RingElement<T>> = vec![RingElement(T::default()); n];
