@@ -70,13 +70,16 @@ pub async fn galois_ring_to_rep3(
     session: &mut Session,
     items: Vec<RingElement<u16>>,
 ) -> Result<Vec<Share<u16>>> {
-    let network = &mut session.network_session;
-
     // make sure we mask the input with a zero sharing
+    // Use batch generation for better performance
+    let zero_shares = session.prf.gen_zero_shares_batch::<u16>(items.len());
     let masked_items: Vec<_> = items
         .iter()
-        .map(|x| session.prf.gen_zero_share() + x)
+        .zip(zero_shares)
+        .map(|(x, zero)| zero + x)
         .collect();
+
+    let network = &mut session.network_session;
 
     // sending to the next party
     network
@@ -226,16 +229,23 @@ async fn conditionally_select_distance(
     // We need to do it for both code_dot and mask_dot.
 
     // we start with the mult of c and d1-d2
+    // Pre-generate zero shares in batch for better performance (2 per distance pair)
+    let zero_shares = session.prf.gen_zero_shares_batch::<u32>(distances.len() * 2);
+    let mut zero_iter = zero_shares.into_iter();
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
         .zip(control_bits.iter())
         .flat_map(|((d1, d2), c)| {
             let code = d1.code_dot.clone() - d2.code_dot.clone();
             let mask = d1.mask_dot.clone() - d2.mask_dot.clone();
-            let code_mul_a =
-                session.prf.gen_zero_share() + c.a * code.a + c.b * code.a + c.a * code.b;
-            let mask_mul_a =
-                session.prf.gen_zero_share() + c.a * mask.a + c.b * mask.a + c.a * mask.b;
+            let code_mul_a = zero_iter.next().unwrap()
+                + c.a * code.a
+                + c.b * code.a
+                + c.a * code.b;
+            let mask_mul_a = zero_iter.next().unwrap()
+                + c.a * mask.a
+                + c.b * mask.a
+                + c.a * mask.b;
             [code_mul_a, mask_mul_a]
         })
         .collect();
@@ -292,10 +302,13 @@ pub(crate) async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
+    // Pre-generate zero shares in batch for better performance
+    let zero_shares = session.prf.gen_zero_shares_batch::<u32>(distances.len());
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
-        .map(|(d1, d2)| {
-            session.prf.gen_zero_share() + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
+        .zip(zero_shares)
+        .map(|((d1, d2), zero)| {
+            zero + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
         })
         .collect();
 

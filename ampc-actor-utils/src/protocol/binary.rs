@@ -14,7 +14,7 @@ use ampc_secret_sharing::shares::{
 use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
-use rand::{distributions::Standard, prelude::Distribution, Rng};
+use rand::{distributions::Standard, prelude::Distribution};
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
@@ -134,9 +134,10 @@ where
     Standard: Distribution<T>,
 {
     // Caller should ensure that size_hint == a.len() == b.len()
+    // Pre-generate all random values in batch for better performance
+    let rands = session.prf.gen_binary_zero_shares_batch::<T>(size_hint);
     let mut shares_a = VecRingElement::with_capacity(size_hint);
-    for (a_, b_) in a.zip(b) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    for ((a_, b_), rand) in a.zip(b).zip(rands) {
         let mut c = &a_ & &b_;
         c ^= rand;
         shares_a.push(c);
@@ -164,9 +165,10 @@ where
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
     }
+    // Pre-generate all random values in batch for better performance
+    let rands = session.prf.gen_binary_zero_shares_batch::<T>(a.len());
     let mut shares_a = VecRingElement::with_capacity(a.len());
-    for (a_, b_) in a.iter().zip(b.iter()) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    for ((a_, b_), rand) in a.iter().zip(b.iter()).zip(rands) {
         let mut c = a_ & b_;
         c ^= rand;
         shares_a.push(c);
@@ -268,7 +270,6 @@ where
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
     }
-    let x1_length = x1.len();
 
     let chunk_sizes = x1.iter().map(VecShare::len).collect::<Vec<_>>();
     for (chunk_size1, chunk_size2) in izip!(chunk_sizes.iter(), x2.iter().map(VecShare::len)) {
@@ -277,9 +278,11 @@ where
         }
     }
 
+    // Calculate the total flattened length for batch random generation
+    let total_len: usize = chunk_sizes.iter().sum();
     let x1 = VecShare::flatten(x1);
     let x2 = VecShare::flatten(x2);
-    let mut shares_a = and_many_iter_send(session, x1, x2, x1_length).await?;
+    let mut shares_a = and_many_iter_send(session, x1, x2, total_len).await?;
     let mut shares_b = and_many_receive(session).await?;
 
     // Unflatten the shares vectors
@@ -481,7 +484,6 @@ where
     Standard: Distribution<T>,
 {
     let len = input.len();
-    let prf = &mut session.prf;
 
     // Prepare b2 shares
     let b2: VecRingElement<T> = input
@@ -499,12 +501,9 @@ where
 
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
-        .collect();
-    let r_02: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    // Use batch generation for better performance
+    let r_01: VecRingElement<T> = session.prf.gen_my_rands_batch(len);
+    let r_02: VecRingElement<T> = session.prf.gen_prev_rands_batch(len);
 
     // 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
     let y = ((r_01.clone() * &b2)? - &r_02)?;
@@ -570,13 +569,11 @@ where
     Standard: Distribution<T>,
 {
     let len = input.len();
-    let prf = &mut session.prf;
 
     //Rounds 1 and 2 (computed in parallel):
     // 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    // Use batch generation for better performance
+    let r_01: VecRingElement<T> = session.prf.gen_prev_rands_batch(len);
 
     // 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
     let x: VecRingElement<T> = izip!(input, r_01.0.iter())
@@ -593,7 +590,8 @@ where
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
-    let r_12 = (0..len).map(|_| prf.get_my_prf().gen::<RingElement<T>>());
+    // Use batch generation for better performance
+    let r_12: VecRingElement<T> = session.prf.gen_my_rands_batch(len);
 
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
@@ -603,7 +601,7 @@ where
     // - s3 = (0, y) of [r_01 * b_2]
     let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
     // - s4 = (r_12, 0) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
+    let s4 = Share::iter_from_iter_ab(r_12.into_iter(), zero_iter(len));
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
@@ -648,20 +646,19 @@ where
     Standard: Distribution<T>,
 {
     let len = input.len();
-    let prf = &mut session.prf;
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 2 receives x from Party 1.
     let network = &mut session.network_session;
     let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
-    let my_prf = &mut prf.my_prf;
-    let r_02 = (0..len).map(|_| my_prf.gen::<RingElement<T>>());
+    // Use batch generation for better performance
+    let r_02: VecRingElement<T> = session.prf.gen_my_rands_batch(len);
 
     // Round 3:
     // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
-    let prev_prf = &mut prf.prev_prf;
-    let r_12: VecRingElement<T> = (0..len).map(|_| prev_prf.gen::<RingElement<T>>()).collect();
+    // Use batch generation for better performance
+    let r_12: VecRingElement<T> = session.prf.gen_prev_rands_batch(len);
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
     let b2: VecRingElement<T> = input
@@ -685,7 +682,7 @@ where
     // - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
     let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
     // - s3 = (r_02, 0) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
+    let s3 = Share::iter_from_iter_ab(r_02.into_iter(), zero_iter(len));
     // - s4 = (z, r_12) of [x * b_2]
     let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
 
@@ -850,9 +847,8 @@ where
             let (a, b): (VecRingElement<_>, VecRingElement<_>) =
                 my_chunk.map(|share| (share.a, share.b)).unzip();
             // Generate randomness shared between the current party and the previous party
-            let r_prev: VecRingElement<T> = (0..a.len())
-                .map(|_| session.prf.get_prev_prf().gen::<RingElement<T>>())
-                .collect();
+            // Use batch generation for better performance
+            let r_prev: VecRingElement<T> = session.prf.gen_prev_rands_batch(a.len());
             // t = a + b XOR r_prev
             let t = ((a + b)? ^ &r_prev)?;
             // Send t to the next party
@@ -882,9 +878,8 @@ where
             // Extract the second component of the shares
             let c: VecRingElement<T> = prev_chunk.map(|share| share.b).collect();
             // Generate randomness shared between the current party and the next party
-            let r_next: VecRingElement<T> = (0..c.len())
-                .map(|_| session.prf.get_my_prf().gen::<RingElement<T>>())
-                .collect();
+            // Use batch generation for better performance
+            let r_next: VecRingElement<T> = session.prf.gen_my_rands_batch(c.len());
             // Collect first shares (r_next, 0)
             let chunk_len = c.len();
             s1_a.extend(r_next);
