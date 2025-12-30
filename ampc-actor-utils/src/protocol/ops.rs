@@ -230,8 +230,8 @@ async fn conditionally_select_distance(
         .iter()
         .zip(control_bits.iter())
         .flat_map(|((d1, d2), c)| {
-            let code = d1.code_dot.clone() - d2.code_dot.clone();
-            let mask = d1.mask_dot.clone() - d2.mask_dot.clone();
+            let code = d1.code_dot - d2.code_dot;
+            let mask = d1.mask_dot - d2.mask_dot;
             let code_mul_a =
                 session.prf.gen_zero_share() + c.a * code.a + c.b * code.a + c.a * code.b;
             let mask_mul_a =
