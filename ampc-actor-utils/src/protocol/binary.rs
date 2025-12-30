@@ -237,12 +237,10 @@ pub async fn and_product(
         // if the length is odd, we save the last column to add it back later
         let maybe_last_column = if res.len() % 2 == 1 { res.pop() } else { None };
         let half_len = res.len() / 2;
-        let left_bits: VecShare<u64> = res
-            .drain(..half_len)
-            .flatten()
-            .collect::<VecShare<Bit>>()
-            .pack();
-        let right_bits: VecShare<u64> = res.drain(..).flatten().collect::<VecShare<Bit>>().pack();
+        let left_bits: VecShare<u64> =
+            VecShare::new_vec(res.drain(..half_len).flatten().collect_vec()).pack();
+        let right_bits: VecShare<u64> =
+            VecShare::new_vec(res.drain(..).flatten().collect_vec()).pack();
         let and_bits = and_many(session, left_bits.as_slice(), right_bits.as_slice()).await?;
         let mut and_bits = and_bits.convert_to_bits();
         let num_and_bits = half_len * len;
@@ -250,7 +248,7 @@ pub async fn and_product(
         res = and_bits
             .inner()
             .chunks(len)
-            .map(|chunk| chunk.iter().cloned().collect())
+            .map(|chunk| VecShare::new_vec(chunk.to_vec()))
             .collect_vec();
         res.extend(maybe_last_column);
     }

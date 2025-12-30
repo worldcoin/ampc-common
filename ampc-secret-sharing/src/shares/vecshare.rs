@@ -233,14 +233,6 @@ impl<T: IntRing2k> IntoIterator for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> FromIterator<Share<T>> for VecShare<T> {
-    fn from_iter<I: IntoIterator<Item = Share<T>>>(iter: I) -> Self {
-        Self {
-            shares: iter.into_iter().collect(),
-        }
-    }
-}
-
 impl<T: IntRing2k> Not for SliceShare<'_, T> {
     type Output = VecShare<T>;
 
