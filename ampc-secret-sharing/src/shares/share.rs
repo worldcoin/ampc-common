@@ -14,7 +14,9 @@ pub trait Role {
     fn index(&self) -> usize;
 }
 
-#[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash,
+)]
 #[serde(bound = "")]
 /// A replicated share of a value in a ring.
 /// The value is shared among three parties, with each party holding two shares.
@@ -345,7 +347,7 @@ impl<T: IntRing2k> Shl<u32> for Share<T> {
 /// - `mask_dot` is the number of common unmasked bits.
 ///
 /// The greater the ratio `code_dot / mask_dot`, the more similar the irises are.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct DistanceShare<T: IntRing2k> {
     pub code_dot: Share<T>,

@@ -268,7 +268,6 @@ where
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
     }
-    let x1_length = x1.len();
 
     let chunk_sizes = x1.iter().map(VecShare::len).collect::<Vec<_>>();
     for (chunk_size1, chunk_size2) in izip!(chunk_sizes.iter(), x2.iter().map(VecShare::len)) {
@@ -277,17 +276,20 @@ where
         }
     }
 
+    let flattened_len: usize = chunk_sizes.iter().sum();
     let x1 = VecShare::flatten(x1);
     let x2 = VecShare::flatten(x2);
-    let mut shares_a = and_many_iter_send(session, x1, x2, x1_length).await?;
-    let mut shares_b = and_many_receive(session).await?;
+    let shares_a = and_many_iter_send(session, x1, x2, flattened_len).await?;
+    let shares_b = and_many_receive(session).await?;
 
     // Unflatten the shares vectors
     let mut res = Vec::with_capacity(chunk_sizes.len());
+    let mut offset = 0;
     for l in chunk_sizes {
-        let a = shares_a.drain(..l);
-        let b = shares_b.drain(..l);
+        let a = shares_a[offset..offset + l].iter().copied();
+        let b = shares_b[offset..offset + l].iter().copied();
         res.push(VecShare::from_iter_ab(a, b));
+        offset += l;
     }
     Ok(res)
 }
@@ -489,7 +491,7 @@ where
         .map(|bit_share| {
             // b2 is the share of b owned by Party 0 at the start of the protocol
             // Party 0 holds shares (0, b_2)
-            if bit_share.clone().get_b().convert().into() {
+            if bit_share.b.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())
@@ -669,7 +671,7 @@ where
         .map(|bit_share| {
             // b2 is the share of b owned by Party 2 at the start of the protocol
             // Party 2 holds shares (b_2, 0)
-            if bit_share.clone().get_a().convert().into() {
+            if bit_share.a.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())
