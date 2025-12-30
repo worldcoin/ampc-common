@@ -237,16 +237,16 @@ pub async fn and_product(
         // if the length is odd, we save the last column to add it back later
         let maybe_last_column = if res.len() % 2 == 1 { res.pop() } else { None };
         let half_len = res.len() / 2;
-        // Collect directly into VecShare using FromIterator (avoids intermediate Vec)
-        let left_bits: VecShare<u64> =
-            res.drain(..half_len).flatten().collect::<VecShare<Bit>>().pack();
-        let right_bits: VecShare<u64> =
-            res.drain(..).flatten().collect::<VecShare<Bit>>().pack();
+        let left_bits: VecShare<u64> = res
+            .drain(..half_len)
+            .flatten()
+            .collect::<VecShare<Bit>>()
+            .pack();
+        let right_bits: VecShare<u64> = res.drain(..).flatten().collect::<VecShare<Bit>>().pack();
         let and_bits = and_many(session, left_bits.as_slice(), right_bits.as_slice()).await?;
         let mut and_bits = and_bits.convert_to_bits();
         let num_and_bits = half_len * len;
         and_bits.truncate(num_and_bits);
-        // Use iter().cloned() to avoid chunk.to_vec() allocation
         res = and_bits
             .inner()
             .chunks(len)
@@ -278,14 +278,13 @@ where
         }
     }
 
-    // Calculate the total flattened length for correct size_hint
-    let total_len: usize = chunk_sizes.iter().sum();
+    let flattened_len: usize = chunk_sizes.iter().sum();
     let x1 = VecShare::flatten(x1);
     let x2 = VecShare::flatten(x2);
-    let shares_a = and_many_iter_send(session, x1, x2, total_len).await?;
+    let shares_a = and_many_iter_send(session, x1, x2, flattened_len).await?;
     let shares_b = and_many_receive(session).await?;
 
-    // Unflatten the shares vectors using indexed iteration to avoid O(N²) drain
+    // Unflatten the shares vectors
     let mut res = Vec::with_capacity(chunk_sizes.len());
     let mut offset = 0;
     for l in chunk_sizes {
@@ -488,7 +487,7 @@ where
     let len = input.len();
     let prf = &mut session.prf;
 
-    // Prepare b2 shares - access field directly instead of clone
+    // Prepare b2 shares
     let b2: VecRingElement<T> = input
         .iter()
         .map(|bit_share| {
@@ -669,7 +668,6 @@ where
     let r_12: VecRingElement<T> = (0..len).map(|_| prev_prf.gen::<RingElement<T>>()).collect();
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
-    // Access field directly instead of clone
     let b2: VecRingElement<T> = input
         .iter()
         .map(|bit_share| {

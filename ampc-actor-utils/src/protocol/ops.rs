@@ -226,19 +226,16 @@ async fn conditionally_select_distance(
     // We need to do it for both code_dot and mask_dot.
 
     // we start with the mult of c and d1-d2
-    // Compute differences component-wise to avoid intermediate Share allocation
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
         .zip(control_bits.iter())
         .flat_map(|((d1, d2), c)| {
-            let code_a = d1.code_dot.a - d2.code_dot.a;
-            let code_b = d1.code_dot.b - d2.code_dot.b;
-            let mask_a = d1.mask_dot.a - d2.mask_dot.a;
-            let mask_b = d1.mask_dot.b - d2.mask_dot.b;
+            let code = d1.code_dot - d2.code_dot;
+            let mask = d1.mask_dot - d2.mask_dot;
             let code_mul_a =
-                session.prf.gen_zero_share() + c.a * code_a + c.b * code_a + c.a * code_b;
+                session.prf.gen_zero_share() + c.a * code.a + c.b * code.a + c.a * code.b;
             let mask_mul_a =
-                session.prf.gen_zero_share() + c.a * mask_a + c.b * mask_a + c.a * mask_b;
+                session.prf.gen_zero_share() + c.a * mask.a + c.b * mask.a + c.a * mask.b;
             [code_mul_a, mask_mul_a]
         })
         .collect();
