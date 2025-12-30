@@ -19,6 +19,7 @@ pub use server_coordination::{
     start_coordination_server, try_get_endpoint_other_nodes, wait_for_others_ready,
     wait_for_others_unready, ReadyProbeResponse,
 };
+pub use shutdown_handler::{ShutdownError, ShutdownHandler};
 pub use sqs::{
     delete_messages_until_sequence_num, get_approximate_number_of_messages, get_next_sns_seq_num,
     SQSMessage,
