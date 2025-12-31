@@ -1,10 +1,10 @@
 use crate::protocol::shuffle::Permutation;
 use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Rng, RngCore, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
-fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
+fn gen_u32_mod<R: Rng>(rng: &mut R, modulus: u32) -> Result<u32> {
     if modulus == 0 {
         eyre::bail!("modulus must be non-zero");
     }
@@ -29,17 +29,107 @@ type PrfRng = aes_prng::AesRng;
 
 pub type PrfSeed = [u8; 16];
 
+const RNG_BUF_LEN: usize = 1024;
+/// A buffered wrapper around PrfRng that generates 1024 bytes at a time
+/// to minimize the overhead of frequent small random number generation calls.
+#[derive(Clone, Debug)]
+pub struct BufferedPrf {
+    rng: PrfRng,
+    buffer: [u8; RNG_BUF_LEN],
+    position: usize,
+}
+
+impl BufferedPrf {
+    /// Create a new BufferedPrf from an existing PrfRng
+    pub fn new(mut rng: PrfRng) -> Self {
+        let mut buffer = [0u8; RNG_BUF_LEN];
+        rng.fill_bytes(&mut buffer);
+        Self {
+            rng,
+            buffer,
+            position: 0,
+        }
+    }
+
+    /// Refill the buffer with fresh random bytes
+    fn refill_buffer(&mut self) {
+        self.rng.fill_bytes(&mut self.buffer);
+        self.position = 0;
+    }
+
+    /// Get the next value of type T from the buffer
+    fn gen<T>(&mut self) -> T
+    where
+        Standard: Distribution<T>,
+    {
+        let t_size = std::mem::size_of::<T>();
+
+        // Safety check: if type is larger than buffer, fall back to direct generation
+        if t_size > self.buffer.len() {
+            return self.rng.gen::<T>();
+        }
+
+        // Ensure we have enough bytes in the buffer
+        if self.position + t_size > self.buffer.len() {
+            self.refill_buffer();
+        }
+
+        // Safetyy:
+        // T is guaranteed to be <= the buffer size
+        let result = unsafe { std::ptr::read(self.buffer.as_ptr().add(self.position) as *const T) };
+
+        self.position += t_size;
+        result
+    }
+
+    /// Get the next `len` bytes from the buffer, refilling if necessary
+    fn next_bytes(&mut self, dest: &mut [u8]) {
+        self.rng.fill_bytes(dest);
+    }
+}
+
+impl RngCore for BufferedPrf {
+    fn next_u32(&mut self) -> u32 {
+        self.gen::<u32>()
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.gen::<u64>()
+    }
+
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        self.next_bytes(dest);
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl SeedableRng for BufferedPrf {
+    type Seed = <PrfRng as SeedableRng>::Seed;
+
+    fn from_seed(seed: Self::Seed) -> Self {
+        Self::new(PrfRng::from_seed(seed))
+    }
+
+    fn from_entropy() -> Self {
+        Self::new(PrfRng::from_entropy())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Prf {
-    pub my_prf: PrfRng,
-    pub prev_prf: PrfRng,
+    pub my_prf: BufferedPrf,
+    pub prev_prf: BufferedPrf,
 }
 
 impl Default for Prf {
     fn default() -> Self {
         Self {
-            my_prf: PrfRng::from_entropy(),
-            prev_prf: PrfRng::from_entropy(),
+            my_prf: BufferedPrf::new(PrfRng::from_entropy()),
+            prev_prf: BufferedPrf::new(PrfRng::from_entropy()),
         }
     }
 }
@@ -48,13 +138,13 @@ impl Prf {
     #[cfg(not(feature = "aes_rng_prf"))]
     pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
         Self {
-            my_prf: PrfRng::from_seed(Self::expand_seed(my_key)),
-            prev_prf: PrfRng::from_seed(Self::expand_seed(prev_key)),
+            my_prf: BufferedPrf::new(PrfRng::from_seed(Self::expand_seed(my_key))),
+            prev_prf: BufferedPrf::new(PrfRng::from_seed(Self::expand_seed(prev_key))),
         }
     }
 
     #[cfg(not(feature = "aes_rng_prf"))]
-    fn expand_seed(seed: PrfSeed) -> [u8; 32] {
+    pub fn expand_seed(seed: PrfSeed) -> [u8; 32] {
         use blake3::Hasher;
         let mut h = Hasher::new();
         h.update(&seed);
@@ -67,16 +157,16 @@ impl Prf {
     #[cfg(feature = "aes_rng_prf")]
     pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
         Self {
-            my_prf: PrfRng::from_seed(my_key),
-            prev_prf: PrfRng::from_seed(prev_key),
+            my_prf: BufferedPrf(PrfRng::from_seed(my_key)),
+            prev_prf: BufferedPrf(PrfRng::from_seed(prev_key)),
         }
     }
 
-    pub fn get_my_prf(&mut self) -> &mut PrfRng {
+    pub fn get_my_prf(&mut self) -> &mut BufferedPrf {
         &mut self.my_prf
     }
 
-    pub fn get_prev_prf(&mut self) -> &mut PrfRng {
+    pub fn get_prev_prf(&mut self) -> &mut BufferedPrf {
         &mut self.prev_prf
     }
 
