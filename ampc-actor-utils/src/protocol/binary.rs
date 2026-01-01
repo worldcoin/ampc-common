@@ -133,11 +133,16 @@ async fn and_many_iter_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     // Caller should ensure that size_hint == a.len() == b.len()
     let mut shares_a = VecRingElement::with_capacity(size_hint);
-    for (a_, b_) in a.zip(b) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    let mut mine = VecRingElement(vec![RingElement::<T>::default(); size_hint]);
+    let mut prev = VecRingElement(vec![RingElement::<T>::default(); size_hint]);
+    session.prf.get_my_prf().fill(&mut mine);
+    session.prf.get_prev_prf().fill(&mut prev);
+    for (a_, b_, mine_, prev_) in izip!(a, b, mine, prev) {
+        let rand = mine_ - prev_; // equivalent to gen_zero_share()
         let mut c = &a_ & &b_;
         c ^= rand;
         shares_a.push(c);
@@ -265,6 +270,7 @@ async fn transposed_pack_and<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<VecShare<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -308,6 +314,7 @@ async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
 ) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = x1.len();
     if len != x2.len() || len != x3.len() {
@@ -967,6 +974,7 @@ async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1073,6 +1081,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
@@ -1092,6 +1101,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
@@ -1109,6 +1119,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);

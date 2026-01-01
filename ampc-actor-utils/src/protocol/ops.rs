@@ -11,9 +11,14 @@ use crate::{
 };
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
+use ampc_secret_sharing::shares::{
+    ring_impl::{RingElement, VecRingElement},
+    share::Share,
+    IntRing2k, VecShare,
+};
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
+use rand::Rng;
 use tracing::instrument;
 
 pub(crate) const B_BITS: u64 = 16;
@@ -292,10 +297,28 @@ pub(crate) async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
+    let len = distances.len();
+
+    // Pre-allocate vectors for batch PRF generation
+    let mut prf_my_values = VecRingElement(vec![RingElement::<u32>::default(); len]);
+    let mut prf_prev_values = VecRingElement(vec![RingElement::<u32>::default(); len]);
+
+    // Batch fill both PRF vectors
+    session.prf.get_my_prf().fill(&mut prf_my_values);
+    session.prf.get_prev_prf().fill(&mut prf_prev_values);
+
+    // Now do the arithmetic with the pre-generated random values
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
-        .map(|(d1, d2)| {
-            session.prf.gen_zero_share() + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
+        .zip(
+            prf_my_values
+                .0
+                .into_iter()
+                .zip(prf_prev_values.0.into_iter()),
+        )
+        .map(|((d1, d2), (a, b))| {
+            let zero_share = a - b; // equivalent to gen_zero_share()
+            zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
         })
         .collect();
 
