@@ -14,7 +14,9 @@ use ampc_secret_sharing::shares::{
 use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
+use rand::Fill;
 use rand::{distributions::Standard, prelude::Distribution, Rng};
+use std::prelude::rust_2024;
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
@@ -482,6 +484,7 @@ async fn bit_inject_party0<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
     let prf = &mut session.prf;
@@ -502,12 +505,10 @@ where
 
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
-        .collect();
-    let r_02: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    let mut r_01 = VecRingElement(vec![RingElement::default(); len]);
+    let mut r_02 = VecRingElement(vec![RingElement::default(); len]);
+    prf.get_my_prf().fill(&mut r_01);
+    prf.get_prev_prf().fill(&mut r_02);
 
     // 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
     let y = ((r_01.clone() * &b2)? - &r_02)?;
@@ -571,15 +572,15 @@ async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
     let prf = &mut session.prf;
 
     //Rounds 1 and 2 (computed in parallel):
     // 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    let mut r_01 = VecRingElement(vec![RingElement::<T>::default(); len]);
+    prf.get_prev_prf().fill(&mut r_01);
 
     // 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
     let x: VecRingElement<T> = izip!(input, r_01.0.iter())
@@ -596,7 +597,9 @@ where
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
-    let r_12 = (0..len).map(|_| prf.get_my_prf().gen::<RingElement<T>>());
+    let mut r_12 = VecRingElement(vec![RingElement::<T>::default(); len]);
+    prf.get_my_prf().fill(&mut r_12);
+    let r_12 = r_12.into_iter();
 
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
@@ -649,6 +652,7 @@ async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
     let prf = &mut session.prf;
@@ -658,13 +662,14 @@ where
     let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
-    let my_prf = &mut prf.my_prf;
-    let r_02 = (0..len).map(|_| my_prf.gen::<RingElement<T>>());
+    let mut r_02 = VecRingElement(vec![RingElement::<T>::default(); len]);
+    prf.get_my_prf().fill(&mut r_02);
+    let r_02 = r_02.into_iter();
 
     // Round 3:
     // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
-    let prev_prf = &mut prf.prev_prf;
-    let r_12: VecRingElement<T> = (0..len).map(|_| prev_prf.gen::<RingElement<T>>()).collect();
+    let mut r_12 = VecRingElement(vec![RingElement::<T>::default(); len]);
+    prf.get_prev_prf().fill(&mut r_12);
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
     let b2: VecRingElement<T> = input
