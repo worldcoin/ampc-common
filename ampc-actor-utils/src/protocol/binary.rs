@@ -16,7 +16,6 @@ use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
 use rand::Fill;
 use rand::{distributions::Standard, prelude::Distribution, Rng};
-use std::prelude::rust_2024;
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
