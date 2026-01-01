@@ -1,24 +1,15 @@
 // Protocol operations for MPC
 // This file contains only the non-iris-specific protocol operations
 
-use crate::execution::session::SessionHandles;
-use crate::network::value::NetworkInt;
+use crate::execution::session::{NetworkSession, Session, SessionHandles};
+use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
-use crate::{
-    execution::session::{NetworkSession, Session},
-    network::value::NetworkValue,
-    protocol::prf::{Prf, PrfSeed},
-};
+use crate::protocol::prf::{batch_generate_prf, Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::{
-    ring_impl::{RingElement, VecRingElement},
-    share::Share,
-    IntRing2k, VecShare,
-};
+use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
-use rand::Rng;
 use tracing::instrument;
 
 pub(crate) const B_BITS: u64 = 16;
@@ -79,12 +70,8 @@ pub async fn galois_ring_to_rep3(
     let len = items.len();
 
     // Pre-allocate vectors for batch PRF generation
-    let mut prf_my_values = VecRingElement(vec![RingElement::<u16>::default(); len]);
-    let mut prf_prev_values = VecRingElement(vec![RingElement::<u16>::default(); len]);
-
-    // Batch fill both PRF vectors
-    session.prf.get_my_prf().fill(&mut prf_my_values);
-    session.prf.get_prev_prf().fill(&mut prf_prev_values);
+    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len);
+    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len);
 
     // make sure we mask the input with a zero sharing
     let masked_items: Vec<_> = items
@@ -252,12 +239,8 @@ async fn conditionally_select_distance(
     let len = distances.len();
 
     // Pre-allocate vectors for batch PRF generation (2 values per distance pair)
-    let mut prf_my_values = VecRingElement(vec![RingElement::<u32>::default(); len * 2]);
-    let mut prf_prev_values = VecRingElement(vec![RingElement::<u32>::default(); len * 2]);
-
-    // Batch fill both PRF vectors
-    session.prf.get_my_prf().fill(&mut prf_my_values);
-    session.prf.get_prev_prf().fill(&mut prf_prev_values);
+    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len * 2);
+    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len * 2);
 
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
@@ -334,12 +317,8 @@ pub(crate) async fn cross_mul(
     let len = distances.len();
 
     // Pre-allocate vectors for batch PRF generation
-    let mut prf_my_values = VecRingElement(vec![RingElement::<u32>::default(); len]);
-    let mut prf_prev_values = VecRingElement(vec![RingElement::<u32>::default(); len]);
-
-    // Batch fill both PRF vectors
-    session.prf.get_my_prf().fill(&mut prf_my_values);
-    session.prf.get_prev_prf().fill(&mut prf_prev_values);
+    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len);
+    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len);
 
     // Now do the arithmetic with the pre-generated random values
     let res_a: Vec<RingElement<u32>> = distances

@@ -1,7 +1,10 @@
 use crate::protocol::shuffle::Permutation;
-use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
+use ampc_secret_sharing::shares::{
+    int_ring::IntRing2k,
+    ring_impl::{RingElement, VecRingElement},
+};
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Fill, Rng, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -28,6 +31,17 @@ type PrfRng = rand_chacha::ChaCha8Rng;
 type PrfRng = aes_prng::AesRng;
 
 pub type PrfSeed = [u8; 16];
+
+/// Helper function to batch generate PRF values
+#[inline(always)]
+pub fn batch_generate_prf<T: IntRing2k>(prf: &mut impl Rng, count: usize) -> VecRingElement<T>
+where
+    [T]: Fill,
+{
+    let mut values = VecRingElement(vec![RingElement::<T>::default(); count]);
+    prf.fill(&mut values);
+    values
+}
 
 #[derive(Clone, Debug)]
 pub struct Prf {
