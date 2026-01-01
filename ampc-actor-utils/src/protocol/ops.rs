@@ -245,11 +245,11 @@ async fn conditionally_select_distance(
         prf_my_values.0.chunks(2),
         prf_prev_values.0.chunks(2)
     )
-    .flat_map(|((d1, d2), c, my_chunk, prev_chunk)| {
+    .flat_map(|((d1, d2), c, my_prf, prev_prf)| {
         let code = d1.code_dot - d2.code_dot;
         let mask = d1.mask_dot - d2.mask_dot;
-        let code_zero_share = my_chunk[0] - prev_chunk[0]; // equivalent to gen_zero_share()
-        let mask_zero_share = my_chunk[1] - prev_chunk[1]; // equivalent to gen_zero_share()
+        let code_zero_share = my_prf[0] - prev_prf[0]; // equivalent to gen_zero_share()
+        let mask_zero_share = my_prf[1] - prev_prf[1]; // equivalent to gen_zero_share()
         let code_mul_a = code_zero_share + c.a * code.a + c.b * code.a + c.a * code.b;
         let mask_mul_a = mask_zero_share + c.a * mask.a + c.b * mask.a + c.a * mask.b;
         [code_mul_a, mask_mul_a]
@@ -320,7 +320,7 @@ pub(crate) async fn cross_mul(
         prf_my_values.0.into_iter(),
         prf_prev_values.0.into_iter()
     )
-    .map(|( &(d1, d2), a, b)| {
+    .map(|(&(d1, d2), a, b)| {
         let zero_share = a - b; // equivalent to gen_zero_share()
         zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
     })
