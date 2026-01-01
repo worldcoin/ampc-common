@@ -536,9 +536,9 @@ where
     Ok(VecShare::new_vec(
         izip!(s1, s2, s3, s4)
             .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + &s2;
-                let sum34 = s3 + &s4;
-                sum12 - &sum34 - &sum34
+                let sum12 = s1 + s2;
+                let sum34 = s3 + s4;
+                sum12 - sum34 - sum34
             })
             .collect_vec(),
     ))
@@ -615,8 +615,8 @@ where
     Ok(VecShare::new_vec(
         izip!(s1, s3, s4)
             .map(|(s1, s3, s4)| {
-                let sum34 = s3 + &s4;
-                s1 - &sum34 - &sum34
+                let sum34 = s3 + s4;
+                s1 - sum34 - sum34
             })
             .collect_vec(),
     ))
@@ -699,9 +699,9 @@ where
     Ok(VecShare::new_vec(
         izip!(s1, s2, s3, s4)
             .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + &s2;
-                let sum34 = s3 + &s4;
-                sum12 - &sum34 - &sum34
+                let sum12 = s1 + s2;
+                let sum34 = s3 + s4;
+                sum12 - sum34 - sum34
             })
             .collect_vec(),
     ))

@@ -268,8 +268,8 @@ async fn conditionally_select_distance(
         // add the d2 shares
         .zip(distances.iter())
         .map(|(res, (_, d2))| DistanceShare {
-            code_dot: res.code_dot + &d2.code_dot,
-            mask_dot: res.mask_dot + &d2.mask_dot,
+            code_dot: res.code_dot + d2.code_dot,
+            mask_dot: res.mask_dot + d2.mask_dot,
         })
         .collect())
 }

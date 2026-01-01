@@ -25,7 +25,7 @@ pub async fn lift_bundles_1d(
         .iter()
         .flat_map(|x| {
             x.iter()
-                .flat_map(|y| [y.code_dot.clone(), y.mask_dot.clone()])
+                .flat_map(|y| [y.code_dot, y.mask_dot])
         })
         .collect_vec();
     let lifted_flattened = batch_signed_lift_vec(session, flattened.clone()).await?;
@@ -38,8 +38,8 @@ pub async fn lift_bundles_1d(
         .map(|chunk_size| {
             let mut lifted_bundle = Vec::with_capacity(chunk_size);
             for _ in 0..chunk_size {
-                let code_dot = lifted_flattened[idx].clone();
-                let mask_dot = lifted_flattened[idx + 1].clone();
+                let code_dot = lifted_flattened[idx];
+                let mask_dot = lifted_flattened[idx + 1];
                 idx += 2;
                 lifted_bundle.push(DistanceShare { code_dot, mask_dot });
             }
@@ -225,7 +225,7 @@ pub mod test_helper {
                 .map(|&size| {
                     let mut bundle = Vec::with_capacity(size);
                     for _ in 0..size {
-                        bundle.push(shares1[idx].clone());
+                        bundle.push(shares1[idx]);
                         idx += 1;
                     }
                     bundle
@@ -239,7 +239,7 @@ pub mod test_helper {
                 .map(|&size| {
                     let mut bundle = Vec::with_capacity(size);
                     for _ in 0..size {
-                        bundle.push(shares2[idx].clone());
+                        bundle.push(shares2[idx]);
                         idx += 1;
                     }
                     bundle
@@ -253,7 +253,7 @@ pub mod test_helper {
                 .map(|&size| {
                     let mut bundle = Vec::with_capacity(size);
                     for _ in 0..size {
-                        bundle.push(shares3[idx].clone());
+                        bundle.push(shares3[idx]);
                         idx += 1;
                     }
                     bundle

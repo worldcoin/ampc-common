@@ -226,7 +226,7 @@ pub mod test_helper {
                     .map(|&size| {
                         let mut bundle = Vec::with_capacity(size);
                         for _ in 0..size {
-                            bundle.push(shares1[idx].clone());
+                            bundle.push(shares1[idx]);
                             idx += 1;
                         }
                         bundle
@@ -240,7 +240,7 @@ pub mod test_helper {
                     .map(|&size| {
                         let mut bundle = Vec::with_capacity(size);
                         for _ in 0..size {
-                            bundle.push(shares2[idx].clone());
+                            bundle.push(shares2[idx]);
                             idx += 1;
                         }
                         bundle
@@ -254,7 +254,7 @@ pub mod test_helper {
                     .map(|&size| {
                         let mut bundle = Vec::with_capacity(size);
                         for _ in 0..size {
-                            bundle.push(shares3[idx].clone());
+                            bundle.push(shares3[idx]);
                             idx += 1;
                         }
                         bundle
