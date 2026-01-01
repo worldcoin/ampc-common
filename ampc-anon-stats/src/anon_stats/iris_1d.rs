@@ -23,10 +23,7 @@ pub async fn lift_bundles_1d(
 ) -> Result<Vec<LiftedDistanceBundle1D>> {
     let flattened = bundles
         .iter()
-        .flat_map(|x| {
-            x.iter()
-                .flat_map(|y| [y.code_dot, y.mask_dot])
-        })
+        .flat_map(|x| x.iter().flat_map(|y| [y.code_dot, y.mask_dot]))
         .collect_vec();
     let lifted_flattened = batch_signed_lift_vec(session, flattened.clone()).await?;
 
