@@ -242,8 +242,8 @@ async fn conditionally_select_distance(
     let res_a: Vec<RingElement<u32>> = izip!(
         distances.iter(),
         control_bits.iter(),
-        prf_my_values.0.into_iter().chunks_exact(2),
-        prf_prev_values.0.into_iter().chunks_exact(2)
+        prf_my_values.0.chunks(2),
+        prf_prev_values.0.chunks(2)
     )
     .flat_map(|((d1, d2), c, my_chunk, prev_chunk)| {
         let code = d1.code_dot - d2.code_dot;
@@ -316,11 +316,11 @@ pub(crate) async fn cross_mul(
 
     // Now do the arithmetic with the pre-generated random values
     let res_a: Vec<RingElement<u32>> = izip!(
-        distances,
+        distances.iter(),
         prf_my_values.0.into_iter(),
         prf_prev_values.0.into_iter()
     )
-    .map(|((d1, d2), (a, b))| {
+    .map(|( &(d1, d2), a, b)| {
         let zero_share = a - b; // equivalent to gen_zero_share()
         zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
     })
