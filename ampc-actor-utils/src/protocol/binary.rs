@@ -166,13 +166,19 @@ async fn and_many_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
     }
-    let mut shares_a = VecRingElement::with_capacity(a.len());
-    for (a_, b_) in a.iter().zip(b.iter()) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    let len = a.len();
+    let mut shares_a = VecRingElement::with_capacity(len);
+    let mut mine = VecRingElement(vec![RingElement::<T>::default(); len]);
+    let mut prev = VecRingElement(vec![RingElement::<T>::default(); len]);
+    session.prf.get_my_prf().fill(&mut mine);
+    session.prf.get_prev_prf().fill(&mut prev);
+    for (a_, b_, mine_, prev_) in izip!(a.iter(), b.iter(), mine, prev) {
+        let rand = mine_ - prev_; // equivalent to gen_zero_share()
         let mut c = a_ & b_;
         c ^= rand;
         shares_a.push(c);
@@ -213,6 +219,7 @@ async fn and_many<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let shares_a = and_many_send(session, a, b).await?;
     let shares_b = and_many_receive(session).await?;
@@ -1213,6 +1220,7 @@ mod tests {
     async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
     where
         Standard: Distribution<T>,
+        [T]: Fill,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
@@ -1339,6 +1347,7 @@ mod tests {
     where
         VecShare<T>: Transpose64,
         Standard: Distribution<T>,
+        [T]: Fill,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;

@@ -76,11 +76,29 @@ pub async fn galois_ring_to_rep3(
     items: Vec<RingElement<u16>>,
 ) -> Result<Vec<Share<u16>>> {
     let network = &mut session.network_session;
+    let len = items.len();
+
+    // Pre-allocate vectors for batch PRF generation
+    let mut prf_my_values = VecRingElement(vec![RingElement::<u16>::default(); len]);
+    let mut prf_prev_values = VecRingElement(vec![RingElement::<u16>::default(); len]);
+
+    // Batch fill both PRF vectors
+    session.prf.get_my_prf().fill(&mut prf_my_values);
+    session.prf.get_prev_prf().fill(&mut prf_prev_values);
 
     // make sure we mask the input with a zero sharing
     let masked_items: Vec<_> = items
         .iter()
-        .map(|x| session.prf.gen_zero_share() + x)
+        .zip(
+            prf_my_values
+                .0
+                .into_iter()
+                .zip(prf_prev_values.0.into_iter()),
+        )
+        .map(|(x, (a, b))| {
+            let zero_share = a - b; // equivalent to gen_zero_share()
+            zero_share + x
+        })
         .collect();
 
     // sending to the next party
@@ -231,16 +249,32 @@ async fn conditionally_select_distance(
     // We need to do it for both code_dot and mask_dot.
 
     // we start with the mult of c and d1-d2
+    let len = distances.len();
+
+    // Pre-allocate vectors for batch PRF generation (2 values per distance pair)
+    let mut prf_my_values = VecRingElement(vec![RingElement::<u32>::default(); len * 2]);
+    let mut prf_prev_values = VecRingElement(vec![RingElement::<u32>::default(); len * 2]);
+
+    // Batch fill both PRF vectors
+    session.prf.get_my_prf().fill(&mut prf_my_values);
+    session.prf.get_prev_prf().fill(&mut prf_prev_values);
+
     let res_a: Vec<RingElement<u32>> = distances
         .iter()
         .zip(control_bits.iter())
-        .flat_map(|((d1, d2), c)| {
+        .zip(
+            prf_my_values
+                .0
+                .chunks_exact(2)
+                .zip(prf_prev_values.0.chunks_exact(2)),
+        )
+        .flat_map(|(((d1, d2), c), (my_chunk, prev_chunk))| {
             let code = d1.code_dot - d2.code_dot;
             let mask = d1.mask_dot - d2.mask_dot;
-            let code_mul_a =
-                session.prf.gen_zero_share() + c.a * code.a + c.b * code.a + c.a * code.b;
-            let mask_mul_a =
-                session.prf.gen_zero_share() + c.a * mask.a + c.b * mask.a + c.a * mask.b;
+            let code_zero_share = my_chunk[0] - prev_chunk[0]; // equivalent to gen_zero_share()
+            let mask_zero_share = my_chunk[1] - prev_chunk[1]; // equivalent to gen_zero_share()
+            let code_mul_a = code_zero_share + c.a * code.a + c.b * code.a + c.a * code.b;
+            let mask_mul_a = mask_zero_share + c.a * mask.a + c.b * mask.a + c.a * mask.b;
             [code_mul_a, mask_mul_a]
         })
         .collect();
