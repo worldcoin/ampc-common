@@ -368,8 +368,8 @@ impl<T: IntRing2k> Add<&Self> for DistanceShare<T> {
 
     fn add(self, rhs: &Self) -> Self::Output {
         DistanceShare {
-            code_dot: self.code_dot + &rhs.code_dot,
-            mask_dot: self.mask_dot + &rhs.mask_dot,
+            code_dot: self.code_dot + rhs.code_dot,
+            mask_dot: self.mask_dot + rhs.mask_dot,
         }
     }
 }
