@@ -437,6 +437,7 @@ pub async fn bit_inject<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let res = match role_index {
