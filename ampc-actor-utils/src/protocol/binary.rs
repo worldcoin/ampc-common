@@ -142,7 +142,7 @@ where
     session.prf.get_my_prf().fill(&mut mine);
     session.prf.get_prev_prf().fill(&mut prev);
     for (a_, b_, mine_, prev_) in izip!(a, b, mine, prev) {
-        let rand = mine_ - prev_; // equivalent to gen_zero_share()
+        let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = &a_ & &b_;
         c ^= rand;
         shares_a.push(c);
@@ -178,7 +178,7 @@ where
     session.prf.get_my_prf().fill(&mut mine);
     session.prf.get_prev_prf().fill(&mut prev);
     for (a_, b_, mine_, prev_) in izip!(a.iter(), b.iter(), mine, prev) {
-        let rand = mine_ - prev_; // equivalent to gen_zero_share()
+        let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = a_ & b_;
         c ^= rand;
         shares_a.push(c);
