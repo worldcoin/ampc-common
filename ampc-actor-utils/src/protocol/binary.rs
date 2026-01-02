@@ -541,15 +541,13 @@ where
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
-    Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + s2;
-                let sum34 = s3 + s4;
-                sum12 - sum34 - sum34
-            })
-            .collect_vec(),
-    ))
+    let mut r = Vec::with_capacity(len);
+    for (s1, s2, s3, s4) in izip!(s1, s2, s3, s4) {
+        let sum12 = s1 + s2;
+        let sum34 = s3 + s4;
+        r.push(sum12 - sum34 - sum34);
+    }
+    Ok(VecShare::new_vec(r))
 }
 
 /// Implementation of Party 1 in the bit-injection protocol description above.
@@ -618,14 +616,12 @@ where
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 - 2 * (s3 + s4)
-    Ok(VecShare::new_vec(
-        izip!(s1, s3, s4)
-            .map(|(s1, s3, s4)| {
-                let sum34 = s3 + s4;
-                s1 - sum34 - sum34
-            })
-            .collect_vec(),
-    ))
+    let mut r = Vec::with_capacity(len);
+    for (s1, s3, s4) in izip!(s1, s3, s4) {
+        let sum34 = s3 + s4;
+        r.push(s1 - sum34 - sum34);
+    }
+    Ok(VecShare::new_vec(r))
 }
 
 /// Implementation of Party 2 in the bit-injection protocol description above.
@@ -700,15 +696,13 @@ where
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
-    Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + s2;
-                let sum34 = s3 + s4;
-                sum12 - sum34 - sum34
-            })
-            .collect_vec(),
-    ))
+    let mut r = Vec::with_capacity(len);
+    for (s1, s2, s3, s4) in izip!(s1, s2, s3, s4) {
+        let sum12 = s1 + s2;
+        let sum34 = s3 + s4;
+        r.push(sum12 - sum34 - sum34);
+    }
+    Ok(VecShare::new_vec(r))
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
