@@ -218,7 +218,7 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 /// otherwise it selects the second distance share (d2).
 /// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-async fn conditionally_select_distance(
+pub async fn conditionally_select_distance(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
     control_bits: &[Share<u32>],
@@ -304,7 +304,7 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 ///
 /// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub(crate) async fn cross_mul(
+pub async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
@@ -353,7 +353,7 @@ pub(crate) async fn cross_mul(
 /// 2. The most significant bit of the result is extracted.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
-pub(crate) async fn oblivious_cross_compare(
+pub async fn oblivious_cross_compare(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<Bit>>> {
@@ -371,7 +371,7 @@ pub(crate) async fn oblivious_cross_compare(
 /// 2. The most significant bit of the result is extracted.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
-pub(crate) async fn oblivious_cross_compare_lifted(
+pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
