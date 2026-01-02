@@ -92,7 +92,7 @@ impl VecShare<u16> {
         while j != 0 {
             k = 0;
             while k < 16 {
-                t = ((&res[k] >> j) ^ &res[k + j as usize]) & m;
+                t = ((&res[k] >> j) ^ res[k + j as usize]) & m;
                 res[k + j as usize] ^= &t;
                 res[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);
@@ -123,7 +123,7 @@ impl VecShare<u16> {
         while j != 0 {
             k = 0;
             while k < 16 {
-                t = ((&res[k] >> j) ^ &res[k + j as usize]) & m;
+                t = ((&res[k] >> j) ^ res[k + j as usize]) & m;
                 res[k + j as usize] ^= &t;
                 res[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);
@@ -229,7 +229,7 @@ impl VecShare<u32> {
         while j != 0 {
             k = 0;
             while k < 32 {
-                t = ((&res[k] >> j) ^ &res[k + j as usize]) & m;
+                t = ((&res[k] >> j) ^ res[k + j as usize]) & m;
                 res[k + j as usize] ^= &t;
                 res[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);
@@ -260,7 +260,7 @@ impl VecShare<u32> {
         while j != 0 {
             k = 0;
             while k < 32 {
-                t = ((&res[k] >> j) ^ &res[k + j as usize]) & m;
+                t = ((&res[k] >> j) ^ res[k + j as usize]) & m;
                 res[k + j as usize] ^= &t;
                 res[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);
@@ -351,7 +351,7 @@ impl VecShare<u64> {
         while j != 0 {
             k = 0;
             while k < 64 {
-                t = ((&res[k] >> j) ^ &res[k + j as usize]) & m;
+                t = ((&res[k] >> j) ^ res[k + j as usize]) & m;
                 res[k + j as usize] ^= &t;
                 res[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);
@@ -374,7 +374,7 @@ impl VecShare<u64> {
         while j != 0 {
             k = 0;
             while k < 64 {
-                t = ((&a[k] >> j) ^ &a[k + j as usize]) & m;
+                t = ((&a[k] >> j) ^ a[k + j as usize]) & m;
                 a[k + j as usize] ^= &t;
                 a[k] ^= t << j;
                 k = (k + j as usize + 1) & !(j as usize);

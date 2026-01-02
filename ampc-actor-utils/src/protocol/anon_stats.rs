@@ -19,8 +19,8 @@ pub async fn compare_against_thresholds_batched(
         .iter()
         .flat_map(|a| {
             distances.iter().map(|d| {
-                let x = d.mask_dot.clone() * *a;
-                let y = d.code_dot.clone() * B as u32;
+                let x = d.mask_dot * *a;
+                let y = d.code_dot * B as u32;
                 x - y
             })
         })
@@ -85,14 +85,14 @@ pub async fn reduce_to_min_distance_batch(
             .iter()
             .zip(sizes.iter_mut())
             .map(|(group, size)| {
-                let element_to_reduce = group[*size].clone();
+                let element_to_reduce = group[*size];
                 if *size > 0 {
                     *size -= 1;
                 }
                 element_to_reduce
             })
             .zip(reduced_distances.iter())
-            .map(|(new, reduced)| (new, reduced.clone()))
+            .map(|(new, reduced)| (new, *reduced))
             .collect();
 
         reduced_distances = min_of_pair_batch(session, &distances_to_reduce).await?;

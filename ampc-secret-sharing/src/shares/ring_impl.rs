@@ -2,7 +2,7 @@ use super::{bit::Bit, int_ring::IntRing2k};
 use num_traits::{One, Zero};
 use rand::{
     distributions::{Distribution, Standard},
-    Rng,
+    Fill, Rng,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -67,6 +67,19 @@ impl<T: IntRing2k + std::fmt::Display> FromIterator<RingElement<T>> for VecRingE
 impl<T: IntRing2k + std::fmt::Display> Extend<RingElement<T>> for VecRingElement<T> {
     fn extend<I: IntoIterator<Item = RingElement<T>>>(&mut self, iter: I) {
         self.0.extend(iter);
+    }
+}
+
+impl<T: IntRing2k> Fill for VecRingElement<T>
+where
+    [T]: Fill,
+{
+    fn try_fill<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Result<(), rand::Error> {
+        let len = self.0.len();
+        // Safety: RingElement<T> is #[repr(transparent)] so we can safely cast the
+        // slice to T
+        let slice = unsafe { std::slice::from_raw_parts_mut(self.0.as_mut_ptr() as *mut T, len) };
+        rng.try_fill(slice)
     }
 }
 
