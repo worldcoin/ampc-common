@@ -231,30 +231,28 @@ pub async fn conditionally_select_distance(
     // If control bit is 1, select d1, else select d2.
     // res = c * d1 + (1 - c) * d2 = d2 + c * (d1 - d2);
     // We need to do it for both code_dot and mask_dot.
-
     // we start with the mult of c and d1-d2
-    let len = distances.len();
 
     // Pre-allocate vectors for batch PRF generation (2 values per distance pair)
+    let len = distances.len();
     let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len * 2);
     let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len * 2);
-
-    let res_a: Vec<RingElement<u32>> = izip!(
+    let mut res_a = Vec::with_capacity(len * 2);
+    for ((d1, d2), c, my_prf, prev_prf) in izip!(
         distances.iter(),
         control_bits.iter(),
         prf_my_values.0.chunks(2),
         prf_prev_values.0.chunks(2)
-    )
-    .flat_map(|((d1, d2), c, my_prf, prev_prf)| {
+    ) {
         let code = d1.code_dot - d2.code_dot;
         let mask = d1.mask_dot - d2.mask_dot;
         let code_zero_share = my_prf[0] - prev_prf[0]; // equivalent to gen_zero_share()
         let mask_zero_share = my_prf[1] - prev_prf[1]; // equivalent to gen_zero_share()
         let code_mul_a = code_zero_share + c.a * code.a + c.b * code.a + c.a * code.b;
         let mask_mul_a = mask_zero_share + c.a * mask.a + c.b * mask.a + c.a * mask.b;
-        [code_mul_a, mask_mul_a]
-    })
-    .collect();
+        res_a.push(code_mul_a);
+        res_a.push(mask_mul_a);
+    }
 
     let network = &mut session.network_session;
 
