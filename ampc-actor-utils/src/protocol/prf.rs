@@ -4,7 +4,7 @@ use ampc_secret_sharing::shares::{
     ring_impl::{RingElement, VecRingElement},
 };
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Fill, Rng, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Fill, Rng, RngCore, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -24,11 +24,49 @@ fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct NoOpRng;
+
+impl RngCore for NoOpRng {
+    // 1. Generate a 32-bit random number
+    fn next_u32(&mut self) -> u32 {
+        0
+    }
+
+    // 2. Generate a 64-bit random number (the "heart" of your algorithm)
+    fn next_u64(&mut self) -> u64 {
+        0
+    }
+
+    // 3. Fill a byte buffer (helper available in rand_core::impls)
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        dest.fill(0);
+    }
+
+    // 4. Fallible version of fill_bytes (usually just returns Ok)
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
+impl SeedableRng for NoOpRng {
+    type Seed = [u8; 32];
+
+    fn from_entropy() -> Self {
+        Self
+    }
+
+    fn from_seed(_seed: Self::Seed) -> Self {
+        Self
+    }
+}
+
 #[cfg(not(feature = "aes_rng_prf"))]
-type PrfRng = rand_chacha::ChaCha8Rng;
+type PrfRng = NoOpRng; //rand_chacha::ChaCha8Rng;
 
 #[cfg(feature = "aes_rng_prf")]
-type PrfRng = aes_prng::AesRng;
+type PrfRng = NoOpRng; //aes_prng::AesRng;
 
 pub type PrfSeed = [u8; 16];
 
