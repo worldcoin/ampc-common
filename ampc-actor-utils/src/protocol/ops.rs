@@ -1,14 +1,10 @@
 // Protocol operations for MPC
 // This file contains only the non-iris-specific protocol operations
 
-use crate::execution::session::SessionHandles;
-use crate::network::value::NetworkInt;
+use crate::execution::session::{NetworkSession, Session, SessionHandles};
+use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
-use crate::{
-    execution::session::{NetworkSession, Session},
-    network::value::NetworkValue,
-    protocol::prf::{Prf, PrfSeed},
-};
+use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
@@ -71,12 +67,19 @@ pub async fn galois_ring_to_rep3(
     items: Vec<RingElement<u16>>,
 ) -> Result<Vec<Share<u16>>> {
     let network = &mut session.network_session;
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
 
     // make sure we mask the input with a zero sharing
-    let masked_items: Vec<_> = items
-        .iter()
-        .map(|x| session.prf.gen_zero_share() + x)
-        .collect();
+    let masked_items: Vec<_> = izip!(
+        items.into_iter(),
+        prf_my_values.0.into_iter(),
+        prf_prev_values.0.into_iter()
+    )
+    .map(|(x, a, b)| {
+        let zero_share = a - b; // equivalent to gen_zero_share()
+        zero_share + x
+    })
+    .collect();
 
     // sending to the next party
     network
@@ -211,7 +214,7 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 /// otherwise it selects the second distance share (d2).
 /// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-async fn conditionally_select_distance(
+pub async fn conditionally_select_distance(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
     control_bits: &[Share<u32>],
@@ -226,19 +229,24 @@ async fn conditionally_select_distance(
     // We need to do it for both code_dot and mask_dot.
 
     // we start with the mult of c and d1-d2
-    let res_a: Vec<RingElement<u32>> = distances
-        .iter()
-        .zip(control_bits.iter())
-        .flat_map(|((d1, d2), c)| {
-            let code = d1.code_dot - d2.code_dot;
-            let mask = d1.mask_dot - d2.mask_dot;
-            let code_mul_a =
-                session.prf.gen_zero_share() + c.a * code.a + c.b * code.a + c.a * code.b;
-            let mask_mul_a =
-                session.prf.gen_zero_share() + c.a * mask.a + c.b * mask.a + c.a * mask.b;
-            [code_mul_a, mask_mul_a]
-        })
-        .collect();
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len() * 2);
+
+    let res_a: Vec<RingElement<u32>> = izip!(
+        distances.iter(),
+        control_bits.iter(),
+        prf_my_values.0.chunks(2),
+        prf_prev_values.0.chunks(2)
+    )
+    .flat_map(|((d1, d2), c, my_prf, prev_prf)| {
+        let code = d1.code_dot - d2.code_dot;
+        let mask = d1.mask_dot - d2.mask_dot;
+        let code_zero_share = my_prf[0] - prev_prf[0]; // equivalent to gen_zero_share()
+        let mask_zero_share = my_prf[1] - prev_prf[1]; // equivalent to gen_zero_share()
+        let code_mul_a = code_zero_share + c.a * code.a + c.b * code.a + c.a * code.b;
+        let mask_mul_a = mask_zero_share + c.a * mask.a + c.b * mask.a + c.a * mask.b;
+        [code_mul_a, mask_mul_a]
+    })
+    .collect();
 
     let network = &mut session.network_session;
 
@@ -268,8 +276,8 @@ async fn conditionally_select_distance(
         // add the d2 shares
         .zip(distances.iter())
         .map(|(res, (_, d2))| DistanceShare {
-            code_dot: res.code_dot + &d2.code_dot,
-            mask_dot: res.mask_dot + &d2.mask_dot,
+            code_dot: res.code_dot + d2.code_dot,
+            mask_dot: res.mask_dot + d2.mask_dot,
         })
         .collect())
 }
@@ -288,16 +296,21 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 ///
 /// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub(crate) async fn cross_mul(
+pub async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
-    let res_a: Vec<RingElement<u32>> = distances
-        .iter()
-        .map(|(d1, d2)| {
-            session.prf.gen_zero_share() + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
-        })
-        .collect();
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
+    let res_a: Vec<RingElement<u32>> = izip!(
+        distances.iter(),
+        prf_my_values.0.into_iter(),
+        prf_prev_values.0.into_iter()
+    )
+    .map(|(&(d1, d2), a, b)| {
+        let zero_share = a - b; // equivalent to gen_zero_share()
+        zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
+    })
+    .collect();
 
     let network = &mut session.network_session;
 
@@ -326,7 +339,7 @@ pub(crate) async fn cross_mul(
 /// 2. The most significant bit of the result is extracted.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
-pub(crate) async fn oblivious_cross_compare(
+pub async fn oblivious_cross_compare(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<Bit>>> {
@@ -344,7 +357,7 @@ pub(crate) async fn oblivious_cross_compare(
 /// 2. The most significant bit of the result is extracted.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
-pub(crate) async fn oblivious_cross_compare_lifted(
+pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
