@@ -24,8 +24,6 @@ thread_local! {
     );
 }
 
-use crate::protocol::prf::batch_generate_prf;
-
 struct VecBinShare<T: IntRing2k> {
     inner: VecShare<T>,
 }
@@ -138,8 +136,7 @@ where
 {
     // Caller should ensure that size_hint == a.len() == b.len()
     let mut shares_a = VecRingElement::with_capacity(size_hint);
-    let mine = batch_generate_prf(session.prf.get_my_prf(), size_hint);
-    let prev = batch_generate_prf(session.prf.get_prev_prf(), size_hint);
+    let (mine, prev) = session.prf.gen_rands_batch(size_hint);
     for (a_, b_, mine_, prev_) in izip!(a, b, mine, prev) {
         let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = &a_ & &b_;
@@ -170,10 +167,8 @@ where
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
     }
-    let len = a.len();
-    let mut shares_a = VecRingElement::with_capacity(len);
-    let mine = batch_generate_prf(session.prf.get_my_prf(), len);
-    let prev = batch_generate_prf(session.prf.get_prev_prf(), len);
+    let mut shares_a = VecRingElement::with_capacity(a.len());
+    let (mine, prev) = session.prf.gen_rands_batch(a.len());
     for (a_, b_, mine_, prev_) in izip!(a.iter(), b.iter(), mine, prev) {
         let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = a_ & b_;
@@ -514,8 +509,7 @@ where
 
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
-    let r_01 = batch_generate_prf(session.prf.get_my_prf(), len);
-    let r_02 = batch_generate_prf(session.prf.get_prev_prf(), len);
+    let (r_01, r_02) = session.prf.gen_rands_batch(len);
 
     // 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
     let y = ((r_01.clone() * &b2)? - &r_02)?;
@@ -585,7 +579,7 @@ where
 
     //Rounds 1 and 2 (computed in parallel):
     // 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
-    let r_01 = batch_generate_prf(session.prf.get_prev_prf(), len);
+    let r_01 = session.prf.gen_rands_prev(len);
 
     // 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
     let x: VecRingElement<T> = izip!(input, r_01.0.iter())
@@ -602,7 +596,7 @@ where
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
-    let r_12 = batch_generate_prf(session.prf.get_my_prf(), len).into_iter();
+    let r_12 = session.prf.gen_rands_mine(len).into_iter();
 
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
@@ -664,11 +658,11 @@ where
     let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
-    let r_02 = batch_generate_prf(session.prf.get_my_prf(), len).into_iter();
+    let r_02 = session.prf.gen_rands_mine(len).into_iter();
 
     // Round 3:
     // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
-    let r_12 = batch_generate_prf(session.prf.get_prev_prf(), len);
+    let r_12 = session.prf.gen_rands_prev(len);
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
     let b2: VecRingElement<T> = input

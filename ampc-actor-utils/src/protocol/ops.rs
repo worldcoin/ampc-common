@@ -4,7 +4,7 @@
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
-use crate::protocol::prf::{batch_generate_prf, Prf, PrfSeed};
+use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
@@ -67,11 +67,7 @@ pub async fn galois_ring_to_rep3(
     items: Vec<RingElement<u16>>,
 ) -> Result<Vec<Share<u16>>> {
     let network = &mut session.network_session;
-    let len = items.len();
-
-    // Pre-allocate vectors for batch PRF generation
-    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len);
-    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len);
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
 
     // make sure we mask the input with a zero sharing
     let masked_items: Vec<_> = izip!(
@@ -233,11 +229,7 @@ pub async fn conditionally_select_distance(
     // We need to do it for both code_dot and mask_dot.
 
     // we start with the mult of c and d1-d2
-    let len = distances.len();
-
-    // Pre-allocate vectors for batch PRF generation (2 values per distance pair)
-    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len * 2);
-    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len * 2);
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len() * 2);
 
     let res_a: Vec<RingElement<u32>> = izip!(
         distances.iter(),
@@ -308,13 +300,7 @@ pub async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
 ) -> Result<Vec<Share<u32>>> {
-    let len = distances.len();
-
-    // Pre-allocate vectors for batch PRF generation
-    let prf_my_values = batch_generate_prf(session.prf.get_my_prf(), len);
-    let prf_prev_values = batch_generate_prf(session.prf.get_prev_prf(), len);
-
-    // Now do the arithmetic with the pre-generated random values
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
     let res_a: Vec<RingElement<u32>> = izip!(
         distances.iter(),
         prf_my_values.0.into_iter(),
