@@ -16,9 +16,19 @@ pub fn bench_bit_inject(c: &mut Criterion) {
         let (mine, prev) = prf.gen_rands_batch(num_shares);
         let input1 = prf.gen_rands_mine(num_shares);
         let input2 = prf.gen_rands_mine(num_shares);
-        group.bench_function(BenchmarkId::from_parameter(num_shares), |b| {
+        group.bench_function(BenchmarkId::new("regular", num_shares), |b| {
             b.iter(|| {
                 std::hint::black_box(test_bit_inject(
+                    input1.clone(),
+                    input2.clone(),
+                    mine.clone(),
+                    prev.clone(),
+                ));
+            });
+        });
+        group.bench_function(BenchmarkId::new("skip_zip", num_shares), |b| {
+            b.iter(|| {
+                std::hint::black_box(test_bit_inject2(
                     input1.clone(),
                     input2.clone(),
                     mine.clone(),
@@ -60,6 +70,35 @@ fn test_bit_inject(
                 s1 - sum34 - sum34
             })
             .collect_vec(),
+    )
+}
+
+fn test_bit_inject2(
+    input1: VecRingElement<u32>,
+    input2: VecRingElement<u32>,
+    mine: VecRingElement<u32>,
+    theirs: VecRingElement<u32>,
+) -> VecShare<u32> {
+    VecShare::new_vec(
+        izip!(
+            input1.into_iter(),
+            mine.into_iter(),
+            input2.into_iter(),
+            theirs.into_iter()
+        )
+        .map(|(s1a, s1b, s3b, s4a)| {
+            // Local computation of the final shares:
+            // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
+            // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+            // = s1 - 2 * (s3 + s4)
+
+            let s1 = Share::new(s1a, s1b);
+            let s3 = Share::new(RingElement::zero(), s3b);
+            let s4 = Share::new(s4a, RingElement::zero());
+            let sum34 = s3 + s4;
+            s1 - sum34 - sum34
+        })
+        .collect_vec(),
     )
 }
 
