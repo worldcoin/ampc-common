@@ -198,7 +198,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
         }
         // forward the message to the correct session.
         if let Some(ch) = inbound_tx.get(&SessionId::from(session_id)) {
-            match NetworkValue::deserialize(buf.split_off(total_len).freeze()) {
+            match NetworkValue::deserialize(buf.split_to(total_len).freeze()) {
                 Ok(nv) => {
                     if ch.send(nv).is_err() {
                         return Err(io::Error::other("failed to forward message"));
