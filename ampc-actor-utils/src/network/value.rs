@@ -1,5 +1,5 @@
 use ampc_secret_sharing::shares::{self, bit::Bit, ring_impl::RingElement, IntRing2k};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::mem::size_of;
@@ -199,7 +199,7 @@ impl NetworkValue {
         }
     }
 
-    pub fn deserialize(serialized: &[u8]) -> Result<Self> {
+    pub fn deserialize(serialized: Bytes) -> Result<Self> {
         if serialized
             .first()
             .map(|byte| *byte == DescriptorByte::NetworkVec as u8)
@@ -211,7 +211,7 @@ impl NetworkValue {
         }
     }
 
-    pub fn deserialize_vec(serialized: &[u8]) -> Result<Vec<Self>> {
+    pub fn deserialize_vec(serialized: Bytes) -> Result<Vec<Self>> {
         if serialized.len() < 5 {
             bail!("Can't parse vector length: buffer too short");
         }
@@ -253,14 +253,14 @@ impl NetworkValue {
                 _ => bail!("Invalid type for NetworkVec"),
             };
             res.push(NetworkValue::deserialize_internal(
-                &serialized[idx..idx + value_len],
+                serialized.slice(idx..idx + value_len),
             )?);
             idx += value_len;
         }
         Ok(res)
     }
 
-    fn deserialize_internal(serialized: &[u8]) -> Result<Self> {
+    fn deserialize_internal(serialized: Bytes) -> Result<Self> {
         if serialized.is_empty() {
             bail!("Empty serialized data");
         }
@@ -382,7 +382,7 @@ impl NetworkValue {
 }
 
 fn deserialize_vec_ring<T, const N: usize, F>(
-    serialized: &[u8],
+    serialized: Bytes,
     #[allow(unused_variables)] from_bytes: F,
 ) -> Result<Vec<RingElement<T>>>
 where
@@ -496,8 +496,8 @@ mod tests {
             .collect::<Vec<_>>();
         let mut bm = BytesMut::new();
         NetworkValue::NetworkVec(network_values.clone()).serialize(&mut bm);
-        let serialized = bm.freeze().to_vec();
-        let result_vec = NetworkValue::deserialize_vec(&serialized)?;
+        let serialized = bm.freeze();
+        let result_vec = NetworkValue::deserialize_vec(serialized)?;
         assert_eq!(network_values, result_vec);
 
         Ok(())
@@ -506,7 +506,7 @@ mod tests {
     /// Test from_network with empty data
     #[test]
     fn test_from_network_empty() -> Result<()> {
-        let result = NetworkValue::deserialize(&[]);
+        let result = NetworkValue::deserialize(Bytes::new());
         assert_eq!(result.unwrap_err().to_string(), "Empty serialized data");
         Ok(())
     }
@@ -518,28 +518,28 @@ mod tests {
         let v16: Vec<RingElement<u16>> = (0..1000).map(RingElement).collect();
         let nv16 = NetworkValue::VecRing16(v16.clone());
         let serialized = nv16.to_network();
-        let deserialized = NetworkValue::deserialize(&serialized)?;
+        let deserialized = NetworkValue::deserialize(Bytes::from(serialized))?;
         assert_eq!(NetworkValue::VecRing16(v16), deserialized);
 
         // Test VecRing32
         let v32: Vec<RingElement<u32>> = (0..1000).map(RingElement).collect();
         let nv32 = NetworkValue::VecRing32(v32.clone());
         let serialized = nv32.to_network();
-        let deserialized = NetworkValue::deserialize(&serialized)?;
+        let deserialized = NetworkValue::deserialize(Bytes::from(serialized))?;
         assert_eq!(NetworkValue::VecRing32(v32), deserialized);
 
         // Test VecRing64
         let v64: Vec<RingElement<u64>> = (0..1000).map(RingElement).collect();
         let nv64 = NetworkValue::VecRing64(v64.clone());
         let serialized = nv64.to_network();
-        let deserialized = NetworkValue::deserialize(&serialized)?;
+        let deserialized = NetworkValue::deserialize(Bytes::from(serialized))?;
         assert_eq!(NetworkValue::VecRing64(v64), deserialized);
 
         // Test empty vectors
         let empty16: Vec<RingElement<u16>> = vec![];
         let nv_empty = NetworkValue::VecRing16(empty16.clone());
         let serialized = nv_empty.to_network();
-        let deserialized = NetworkValue::deserialize(&serialized)?;
+        let deserialized = NetworkValue::deserialize(Bytes::from(serialized))?;
         assert_eq!(NetworkValue::VecRing16(empty16), deserialized);
 
         Ok(())

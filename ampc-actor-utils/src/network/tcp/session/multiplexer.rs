@@ -29,9 +29,7 @@ pub async fn run<T: NetworkConnection>(
 ) {
     let shutdown_ct = connection_state.shutdown_ct().await;
     let err_ct = connection_state.err_ct().await;
-
     let (reader, writer) = tokio::io::split(stream);
-    let reader = BufReader::with_capacity(READ_BUF_SIZE, reader);
 
     enum Event {
         Shutdown,
@@ -153,53 +151,62 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
     Ok(())
 }
 
+async fn fill_to<T: NetworkConnection>(
+    reader: &mut ReadHalf<T>,
+    buf: &mut BytesMut,
+    min_len: usize,
+) -> io::Result<()> {
+    while buf.len() < min_len {
+        let n_read = reader.read_buf(buf).await?;
+        if n_read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "inbound connection closed",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Inbound: read from the socket and send to tx.
 async fn handle_inbound_traffic<T: NetworkConnection>(
-    mut reader: BufReader<ReadHalf<T>>,
+    mut reader: ReadHalf<T>,
     inbound_tx: HashMap<SessionId, UnboundedSender<NetworkValue>>,
 ) -> io::Result<()> {
-    let mut buf = vec![0u8; READ_BUF_SIZE];
+    let mut buf = BytesMut::with_capacity(BUFFER_CAPACITY);
 
     loop {
-        let mut buf_offset = 0;
+        // read the session id and descriptor byte
+        fill_to(&mut reader, &mut buf, 5).await?;
 
-        // first read the session id. this does not get passed to the next layer.
-        let mut session_id_buf = [0u8; 4];
-        reader.read_exact(&mut session_id_buf).await?;
-        let _rx_start = Instant::now();
-        let session_id = u32::from_le_bytes(session_id_buf);
-
-        // then read the descriptor byte
-        reader.read_exact(&mut buf[..1]).await?;
-        buf_offset += 1;
+        // little endian format
+        let session_id_buf = buf.split_to(4);
+        let session_id = u32::from_le_bytes(session_id_buf[0..4].try_into().unwrap());
 
         // depending on the descriptor, read the length field too
         let nd: DescriptorByte = buf[0]
             .try_into()
             .map_err(|_e| io::Error::other("invalid descriptor byte"))?;
-        // base_len includes the descriptor byte
-        let base_len = nd.base_len();
-        let total_len: usize = if matches!(
-            nd,
-            DescriptorByte::VecRing16
-                | DescriptorByte::VecRing32
-                | DescriptorByte::VecRing64
-                | DescriptorByte::NetworkVec
-                | DescriptorByte::Bytes
-        ) {
-            reader.read_exact(&mut buf[1..5]).await?;
-            buf_offset += 4;
-            let payload_len = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
-            base_len + payload_len
-        } else {
-            base_len
-        };
 
-        // then read the rest of the message
-        if buf.len() < total_len {
-            buf.resize(total_len, 0);
-        }
-        reader.read_exact(&mut buf[buf_offset..total_len]).await?;
+        // base_len includes the descriptor byte and if applicable, the payload length
+        let base_len = nd.base_len();
+        fill_to(&mut reader, &mut buf, base_len).await?;
+
+        let total_len = base_len
+            + if matches!(
+                nd,
+                DescriptorByte::VecRing16
+                    | DescriptorByte::VecRing32
+                    | DescriptorByte::VecRing64
+                    | DescriptorByte::NetworkVec
+                    | DescriptorByte::Bytes
+            ) {
+                let payload_len = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                fill_to(&mut reader, &mut buf, base_len + payload_len as usize).await?;
+                payload_len as usize
+            } else {
+                0
+            };
 
         #[cfg(feature = "networking_metrics")]
         {
@@ -208,7 +215,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
         }
         // forward the message to the correct session.
         if let Some(ch) = inbound_tx.get(&SessionId::from(session_id)) {
-            match NetworkValue::deserialize(&buf[..total_len]) {
+            match NetworkValue::deserialize(buf.split_off(total_len).freeze()) {
                 Ok(nv) => {
                     if ch.send(nv).is_err() {
                         return Err(io::Error::other("failed to forward message"));

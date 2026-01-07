@@ -3,6 +3,7 @@ use crate::{
     network::{value::NetworkValue, Networking},
 };
 use async_trait::async_trait;
+use bytes::Bytes;
 use dashmap::DashMap;
 use eyre::{eyre, Result};
 use std::sync::Arc;
@@ -91,7 +92,7 @@ impl Networking for LocalNetworking {
             .clone();
 
         let received_value = rx.recv().await?;
-        NetworkValue::deserialize(&received_value.value)
+        NetworkValue::deserialize(Bytes::from(received_value.value))
     }
 }
 
