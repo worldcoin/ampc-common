@@ -151,27 +151,6 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
     Ok(())
 }
 
-async fn fill_to<T: NetworkConnection>(
-    reader: &mut ReadHalf<T>,
-    buf: &mut BytesMut,
-    min_len: usize,
-) -> io::Result<()> {
-    if buf.capacity() < min_len {
-        buf.reserve(READ_BUF_SIZE - buf.capacity());
-    }
-
-    while buf.len() < min_len {
-        let n_read = reader.read_buf(buf).await?;
-        if n_read == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "inbound connection closed",
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Inbound: read from the socket and send to tx.
 async fn handle_inbound_traffic<T: NetworkConnection>(
     mut reader: ReadHalf<T>,
@@ -238,6 +217,27 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             );
         }
     }
+}
+
+async fn fill_to<T: NetworkConnection>(
+    reader: &mut ReadHalf<T>,
+    buf: &mut BytesMut,
+    min_len: usize,
+) -> io::Result<()> {
+    if buf.capacity() < min_len {
+        buf.reserve(READ_BUF_SIZE - buf.capacity());
+    }
+
+    while buf.len() < min_len {
+        let n_read = reader.read_buf(buf).await?;
+        if n_read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "inbound connection closed",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Helper to write & flush, then clear the buffer
