@@ -31,7 +31,7 @@ pub async fn run<T: NetworkConnection>(
     let err_ct = connection_state.err_ct().await;
 
     let (reader, writer) = tokio::io::split(stream);
-    let reader = BufReader::new(reader);
+    let reader = BufReader::with_capacity(READ_BUF_SIZE, reader);
 
     enum Event {
         Shutdown,
@@ -42,6 +42,7 @@ pub async fn run<T: NetworkConnection>(
     }
 
     // avoid polling the reader while flushing outbound traffic
+    // handle_outbound_traffic will yield after a flush
     let mut flush_in_progress = false;
     let evt = tokio::select! {
         _ = shutdown_ct.cancelled() => Event::Shutdown,
