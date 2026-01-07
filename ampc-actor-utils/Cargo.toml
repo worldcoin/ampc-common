@@ -30,7 +30,6 @@ metrics = "0.22.1"
 rand_distr = "0.4.3"
 tracing.workspace = true
 clap = { version = "4", features = ["derive"] }
-criterion = "0.8.1"
 
 [features]
 networking_metrics = []
@@ -39,6 +38,7 @@ aes_rng_prf = []
 
 [dev-dependencies]
 tracing-test = "0.2"
+criterion = "0.8.1"
 statrs = "0.17"
 
 [[bench]]

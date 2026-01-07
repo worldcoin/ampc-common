@@ -542,9 +542,8 @@ where
     // = s1 + s2 - 2 * (s3 + s4)
 
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
-    // variable creation is commented out in the above comment. sXa is a share generated
-    // from prf.mine and sXb is a share generated from prf.prev. if sXa or sXb is absent
-    // then it is a zero share, which is RingElement::zero().
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
         izip!(
             r_01.into_iter(),
@@ -634,9 +633,8 @@ where
     // = s1 - 2 * (s3 + s4)
 
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
-    // variable creation is commented out in the above comment. sXa is a share generated
-    // from prf.mine and sXb is a share generated from prf.prev. if sXa or sXb is absent
-    // then it is a zero share, which is RingElement::zero().
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
         izip!(x.into_iter(), r_01.into_iter(), y.into_iter(), r_12)
             .map(|(s1a, s1b, s3b, s4a)| {
@@ -724,9 +722,8 @@ where
     // = s1 + s2 - 2 * (s3 + s4)
 
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
-    // variable creation is commented out in the above comment. sXa is a share generated
-    // from prf.mine and sXb is a share generated from prf.prev. if sXa or sXb is absent
-    // then it is a zero share, which is RingElement::zero().
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
         izip!(
             x.into_iter(),
