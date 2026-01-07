@@ -41,10 +41,12 @@ pub async fn run<T: NetworkConnection>(
         ClosedOk,
     }
 
+    // avoid polling the reader while flushing outbound traffic
+    let mut flush_in_progress = false;
     let evt = tokio::select! {
         _ = shutdown_ct.cancelled() => Event::Shutdown,
         _ = err_ct.cancelled() => Event::Error,
-        r = handle_outbound_traffic(writer, outbound_rx, num_sessions) => {
+        r = handle_outbound_traffic(writer, outbound_rx, num_sessions, &mut flush_in_progress) => {
             tracing::debug!("handle_outbound_traffic: {:?}", r);
             if r.is_err() {
                 err_ct.cancel();
@@ -53,7 +55,7 @@ pub async fn run<T: NetworkConnection>(
                 Event::ClosedOk
             }
         },
-        r = handle_inbound_traffic(reader, inbound_forwarder) => {
+        r = handle_inbound_traffic(reader, inbound_forwarder), if !flush_in_progress => {
             if let Err(e) = &r {
                 tracing::warn!("handle_inbound_traffic error: {:?}", e);
                 err_ct.cancel();
@@ -88,6 +90,7 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
     mut stream: WriteHalf<T>,
     mut outbound_rx: UnboundedReceiver<OutboundMsg>,
     num_sessions: u32,
+    flush_in_progress: &mut bool,
 ) -> io::Result<()> {
     // Time spent buffering between the first and last messages of a packet.
     let mut metrics_buffer_latency = FastHistogram::new("outbound_buffer_latency");
@@ -135,7 +138,10 @@ async fn handle_outbound_traffic<T: NetworkConnection>(
             }
         }
 
-        write_buf(&mut stream, &mut buf).await?
+        *flush_in_progress = true;
+        write_buf(&mut stream, &mut buf).await?;
+        *flush_in_progress = false;
+        tokio::task::yield_now().await;
     }
 
     if !buf.is_empty() {
