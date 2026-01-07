@@ -36,11 +36,13 @@ impl<T: IntRing2k> VecBinShare<T> {
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn len(&self) -> usize {
         self.inner.len()
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn get_word_at(&self, index: usize) -> Share<T> {
         self.inner.get_at(index)
     }
@@ -102,6 +104,7 @@ fn a2b_pre<T: IntRing2k>(session: &Session, x: Share<T>) -> Result<(Share<T>, Sh
 }
 
 /// Computes in place binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecShare<T>]) {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -112,6 +115,7 @@ fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecSha
 }
 
 /// Computes binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> Vec<VecShare<T>> {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -459,6 +463,7 @@ where
 }
 
 /// Returns an iterator that yields `len` zero RingElements of type T.
+#[inline(always)]
 fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
     repeat_n(RingElement::<T>::zero(), len)
 }
@@ -748,6 +753,7 @@ where
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
 #[allow(dead_code)]
+#[inline]
 pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
@@ -756,6 +762,7 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
+#[inline]
 fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
 }
