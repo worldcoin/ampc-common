@@ -150,10 +150,11 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
     inbound_tx: HashMap<SessionId, UnboundedSender<NetworkValue>>,
 ) -> io::Result<()> {
     let mut buf = BytesMut::with_capacity(READ_BUF_SIZE);
+    let mut max_buf_size = READ_BUF_SIZE;
 
     loop {
         // read the session id and descriptor byte
-        fill_to(&mut reader, &mut buf, 5).await?;
+        fill_to(&mut reader, &mut buf, 5, max_buf_size).await?;
 
         // little endian format
         let session_id_buf = buf.split_to(4);
@@ -166,7 +167,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
 
         // base_len includes the descriptor byte and if applicable, the payload length
         let base_len = nd.base_len();
-        fill_to(&mut reader, &mut buf, base_len).await?;
+        fill_to(&mut reader, &mut buf, base_len, max_buf_size).await?;
 
         let total_len = base_len
             + if matches!(
@@ -178,7 +179,11 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
                     | DescriptorByte::Bytes
             ) {
                 let payload_len = u32::from_le_bytes(buf[1..5].try_into().unwrap());
-                fill_to(&mut reader, &mut buf, base_len + payload_len as usize).await?;
+                let total_len = base_len + payload_len as usize;
+                if total_len > max_buf_size {
+                    max_buf_size = total_len;
+                }
+                fill_to(&mut reader, &mut buf, total_len, max_buf_size).await?;
                 payload_len as usize
             } else {
                 0
@@ -216,9 +221,10 @@ async fn fill_to<T: NetworkConnection>(
     reader: &mut ReadHalf<T>,
     buf: &mut BytesMut,
     min_len: usize,
+    max_buf_size: usize,
 ) -> io::Result<()> {
     if buf.capacity() < min_len {
-        buf.reserve(READ_BUF_SIZE - buf.capacity());
+        buf.reserve(max_buf_size - buf.capacity());
     }
 
     while buf.len() < min_len {
