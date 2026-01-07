@@ -36,11 +36,13 @@ impl<T: IntRing2k> VecBinShare<T> {
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn len(&self) -> usize {
         self.inner.len()
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn get_word_at(&self, index: usize) -> Share<T> {
         self.inner.get_at(index)
     }
@@ -102,6 +104,7 @@ fn a2b_pre<T: IntRing2k>(session: &Session, x: Share<T>) -> Result<(Share<T>, Sh
 }
 
 /// Computes in place binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecShare<T>]) {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -112,6 +115,7 @@ fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecSha
 }
 
 /// Computes binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> Vec<VecShare<T>> {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -459,6 +463,7 @@ where
 }
 
 /// Returns an iterator that yields `len` zero RingElements of type T.
+#[inline(always)]
 fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
     repeat_n(RingElement::<T>::zero(), len)
 }
@@ -523,26 +528,40 @@ where
     // Pack shares
     // By the end of Round 3, Party 0 holds the following shares:
     // - s1 = (r_01, 0) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(r_01.into_iter(), zero_iter(len));
+    // let s1 = Share::iter_from_iter_ab(r_01.into_iter(), zero_iter(len));
     // - s2 = (0, b_2) of [b_2]
-    let s2 = Share::iter_from_iter_ab(zero_iter(len), b2.into_iter());
+    // let s2 = Share::iter_from_iter_ab(zero_iter(len), b2.into_iter());
     // - s3 = (y, r_02) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(y.into_iter(), r_02.into_iter());
+    // let s3 = Share::iter_from_iter_ab(y.into_iter(), r_02.into_iter());
     // - s4 = (0, z) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(zero_iter(len), z.into_iter());
+    // let s4 = Share::iter_from_iter_ab(zero_iter(len), z.into_iter());
     // Local computation of the final shares:
     //
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + s2;
-                let sum34 = s3 + s4;
-                sum12 - sum34 - sum34
-            })
-            .collect_vec(),
+        izip!(
+            r_01.into_iter(),
+            b2.into_iter(),
+            y.into_iter(),
+            r_02.into_iter(),
+            z.into_iter()
+        )
+        .map(|(s1a, s2b, s3a, s3b, s4b)| {
+            let s1 = Share::new(s1a, RingElement::zero());
+            let s2 = Share::new(RingElement::zero(), s2b);
+            let s3 = Share::new(s3a, s3b);
+            let s4 = Share::new(RingElement::zero(), s4b);
+            let sum12 = s1 + s2;
+            let sum34 = s3 + s4;
+            sum12 - sum34 - sum34
+        })
+        .collect_vec(),
     ))
 }
 
@@ -601,20 +620,27 @@ where
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
     // - s1 = (x, r_01) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(x.into_iter(), r_01.into_iter());
+    // let s1 = Share::iter_from_iter_ab(x.into_iter(), r_01.into_iter());
     // - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
     // - s3 = (0, y) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
+    // let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
     // - s4 = (r_12, 0) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
+    // let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s3, s4)
-            .map(|(s1, s3, s4)| {
+        izip!(x.into_iter(), r_01.into_iter(), y.into_iter(), r_12)
+            .map(|(s1a, s1b, s3b, s4a)| {
+                let s1 = Share::new(s1a, s1b);
+                let s3 = Share::new(RingElement::zero(), s3b);
+                let s4 = Share::new(s4a, RingElement::zero());
                 let sum34 = s3 + s4;
                 s1 - sum34 - sum34
             })
@@ -682,26 +708,40 @@ where
 
     // By the end of Round 3, Party 2 holds the following shares:
     // - s1 = (0, x) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(zero_iter(len), x.into_iter());
+    // let s1 = Share::iter_from_iter_ab(zero_iter(len), x.into_iter());
     // - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
-    let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
+    // let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
     // - s3 = (r_02, 0) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
+    // let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
     // - s4 = (z, r_12) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
+    // let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + s2;
-                let sum34 = s3 + s4;
-                sum12 - sum34 - sum34
-            })
-            .collect_vec(),
+        izip!(
+            x.into_iter(),
+            b2.into_iter(),
+            r_02,
+            z.into_iter(),
+            r_12.into_iter()
+        )
+        .map(|(s1b, s2a, s3a, s4a, s4b)| {
+            let s1 = Share::new(RingElement::zero(), s1b);
+            let s2 = Share::new(s2a, RingElement::zero());
+            let s3 = Share::new(s3a, RingElement::zero());
+            let s4 = Share::new(s4a, s4b);
+            let sum12 = s1 + s2;
+            let sum34 = s3 + s4;
+            sum12 - sum34 - sum34
+        })
+        .collect_vec(),
     ))
 }
 
@@ -710,6 +750,7 @@ where
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
 #[allow(dead_code)]
+#[inline]
 pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
@@ -718,6 +759,7 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
+#[inline]
 fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
 }

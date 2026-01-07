@@ -113,6 +113,7 @@ pub async fn lt_zero_and_open_u16(
 }
 
 /// Subtracts a public ring element from a secret-shared ring element in-place.
+#[inline]
 pub fn sub_pub<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     share: &mut Share<T>,
@@ -283,6 +284,7 @@ pub async fn conditionally_select_distance(
 }
 
 /// Computes the `A` term of the threshold comparison based on the formula `A = ((1. - 2. * t) * B)`.
+#[inline]
 pub fn translate_threshold_a(t: f64) -> u32 {
     assert!(
         (0. ..=1.).contains(&t),
