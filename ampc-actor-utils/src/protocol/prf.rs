@@ -1,7 +1,10 @@
 use crate::protocol::shuffle::Permutation;
-use ampc_secret_sharing::shares::{int_ring::IntRing2k, ring_impl::RingElement};
+use ampc_secret_sharing::shares::{
+    int_ring::IntRing2k,
+    ring_impl::{RingElement, VecRingElement},
+};
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Fill, Rng, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -21,11 +24,11 @@ fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
     }
 }
 
-#[cfg(not(feature = "chacha_prf"))]
-type PrfRng = aes_prng::AesRng;
+#[cfg(not(feature = "aes_rng_prf"))]
+type PrfRng = rand_chacha::ChaCha8Rng;
 
-#[cfg(feature = "chacha_prf")]
-type PrfRng = rand_chacha::ChaCha20Rng;
+#[cfg(feature = "aes_rng_prf")]
+type PrfRng = aes_prng::AesRng;
 
 pub type PrfSeed = [u8; 16];
 
@@ -45,7 +48,7 @@ impl Default for Prf {
 }
 
 impl Prf {
-    #[cfg(feature = "chacha_prf")]
+    #[cfg(not(feature = "aes_rng_prf"))]
     pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
         Self {
             my_prf: PrfRng::from_seed(Self::expand_seed(my_key)),
@@ -53,15 +56,7 @@ impl Prf {
         }
     }
 
-    #[cfg(not(feature = "chacha_prf"))]
-    pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
-        Self {
-            my_prf: PrfRng::from_seed(my_key),
-            prev_prf: PrfRng::from_seed(prev_key),
-        }
-    }
-
-    #[cfg(feature = "chacha_prf")]
+    #[cfg(not(feature = "aes_rng_prf"))]
     fn expand_seed(seed: PrfSeed) -> [u8; 32] {
         use blake3::Hasher;
         let mut h = Hasher::new();
@@ -72,10 +67,20 @@ impl Prf {
         out
     }
 
+    #[cfg(feature = "aes_rng_prf")]
+    pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
+        Self {
+            my_prf: PrfRng::from_seed(my_key),
+            prev_prf: PrfRng::from_seed(prev_key),
+        }
+    }
+
+    #[inline(always)]
     pub fn get_my_prf(&mut self) -> &mut PrfRng {
         &mut self.my_prf
     }
 
+    #[inline(always)]
     pub fn get_prev_prf(&mut self) -> &mut PrfRng {
         &mut self.prev_prf
     }
@@ -92,6 +97,40 @@ impl Prf {
         let a = self.my_prf.gen::<T>();
         let b = self.prev_prf.gen::<T>();
         (a, b)
+    }
+
+    #[inline(always)]
+    pub fn gen_rands_mine<T: IntRing2k>(&mut self, len: usize) -> VecRingElement<T>
+    where
+        [T]: Fill,
+    {
+        let mut mine = VecRingElement(vec![RingElement::<T>::default(); len]);
+        self.get_my_prf().fill(&mut mine);
+        mine
+    }
+
+    #[inline(always)]
+    pub fn gen_rands_prev<T: IntRing2k>(&mut self, len: usize) -> VecRingElement<T>
+    where
+        [T]: Fill,
+    {
+        let mut prev = VecRingElement(vec![RingElement::<T>::default(); len]);
+        self.get_prev_prf().fill(&mut prev);
+        prev
+    }
+
+    // returns the ring elements corresponding to (mine, prev). can be used to create zero shares (mine - prev) or binary shares (mine ^ prev)
+    #[inline(always)]
+    pub fn gen_rands_batch<T: IntRing2k>(
+        &mut self,
+        len: usize,
+    ) -> (VecRingElement<T>, VecRingElement<T>)
+    where
+        [T]: Fill,
+    {
+        let mine = self.gen_rands_mine(len);
+        let prev = self.gen_rands_prev(len);
+        (mine, prev)
     }
 
     pub fn gen_zero_share<T: IntRing2k>(&mut self) -> RingElement<T>

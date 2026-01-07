@@ -30,8 +30,8 @@ pub struct LocalNetworkingStore {
 impl LocalNetworkingStore {
     pub fn from_host_ids(identities: &[Identity]) -> Self {
         let p2p = DashMap::new();
-        for v1 in identities.to_owned().iter() {
-            for v2 in identities.to_owned().iter() {
+        for v1 in identities.iter() {
+            for v2 in identities.iter() {
                 if v1 != v2 {
                     let (tx, rx) = async_channel::unbounded::<Value>();
                     p2p.insert((v1.clone(), v2.clone()), (Arc::new(tx), Arc::new(rx)));

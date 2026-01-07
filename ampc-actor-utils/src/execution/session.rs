@@ -140,14 +140,17 @@ pub trait SessionHandles {
 }
 
 impl SessionHandles for NetworkSession {
+    #[inline]
     fn session_id(&self) -> SessionId {
         self.session_id
     }
 
+    #[inline]
     fn own_role(&self) -> Role {
         self.own_role
     }
 
+    #[inline]
     fn own_identity(&self) -> Identity {
         self.role_assignments.get(&self.own_role()).unwrap().clone()
     }
@@ -181,15 +184,18 @@ impl SessionHandles for NetworkSession {
 }
 
 impl SessionHandles for Session {
+    #[inline]
     fn session_id(&self) -> SessionId {
         self.network_session.session_id
     }
     fn identity(&self, role: &Role) -> Result<&Identity> {
         self.network_session.identity(role)
     }
+    #[inline]
     fn own_identity(&self) -> Identity {
         self.network_session.own_identity()
     }
+    #[inline]
     fn own_role(&self) -> Role {
         self.network_session.own_role()
     }

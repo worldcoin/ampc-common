@@ -14,7 +14,7 @@ use ampc_secret_sharing::shares::{
 use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
-use rand::{distributions::Standard, prelude::Distribution, Rng};
+use rand::{distributions::Standard, prelude::Distribution, Fill, Rng};
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
@@ -36,11 +36,13 @@ impl<T: IntRing2k> VecBinShare<T> {
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn len(&self) -> usize {
         self.inner.len()
     }
 
     #[allow(dead_code)]
+    #[inline]
     fn get_word_at(&self, index: usize) -> Share<T> {
         self.inner.get_at(index)
     }
@@ -102,6 +104,7 @@ fn a2b_pre<T: IntRing2k>(session: &Session, x: Share<T>) -> Result<(Share<T>, Sh
 }
 
 /// Computes in place binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecShare<T>]) {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -112,6 +115,7 @@ fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecSha
 }
 
 /// Computes binary XOR of two vectors of bit-sliced shares.
+#[inline]
 fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> Vec<VecShare<T>> {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
@@ -132,11 +136,13 @@ async fn and_many_iter_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     // Caller should ensure that size_hint == a.len() == b.len()
     let mut shares_a = VecRingElement::with_capacity(size_hint);
-    for (a_, b_) in a.zip(b) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    let (mine, prev) = session.prf.gen_rands_batch(size_hint);
+    for (a_, b_, mine_, prev_) in izip!(a, b, mine, prev) {
+        let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = &a_ & &b_;
         c ^= rand;
         shares_a.push(c);
@@ -160,13 +166,15 @@ async fn and_many_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
     }
     let mut shares_a = VecRingElement::with_capacity(a.len());
-    for (a_, b_) in a.iter().zip(b.iter()) {
-        let rand = session.prf.gen_binary_zero_share::<T>();
+    let (mine, prev) = session.prf.gen_rands_batch(a.len());
+    for (a_, b_, mine_, prev_) in izip!(a.iter(), b.iter(), mine, prev) {
+        let rand = mine_ ^ prev_; // equivalent to gen_binary_zero_share()
         let mut c = a_ & b_;
         c ^= rand;
         shares_a.push(c);
@@ -207,6 +215,7 @@ async fn and_many<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let shares_a = and_many_send(session, a, b).await?;
     let shares_b = and_many_receive(session).await?;
@@ -264,11 +273,11 @@ async fn transposed_pack_and<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<VecShare<T>>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
     }
-    let x1_length = x1.len();
 
     let chunk_sizes = x1.iter().map(VecShare::len).collect::<Vec<_>>();
     for (chunk_size1, chunk_size2) in izip!(chunk_sizes.iter(), x2.iter().map(VecShare::len)) {
@@ -277,17 +286,20 @@ where
         }
     }
 
+    let flattened_len: usize = chunk_sizes.iter().sum();
     let x1 = VecShare::flatten(x1);
     let x2 = VecShare::flatten(x2);
-    let mut shares_a = and_many_iter_send(session, x1, x2, x1_length).await?;
-    let mut shares_b = and_many_receive(session).await?;
+    let shares_a = and_many_iter_send(session, x1, x2, flattened_len).await?;
+    let shares_b = and_many_receive(session).await?;
 
     // Unflatten the shares vectors
     let mut res = Vec::with_capacity(chunk_sizes.len());
+    let mut offset = 0;
     for l in chunk_sizes {
-        let a = shares_a.drain(..l);
-        let b = shares_b.drain(..l);
+        let a = shares_a[offset..offset + l].iter().copied();
+        let b = shares_b[offset..offset + l].iter().copied();
         res.push(VecShare::from_iter_ab(a, b));
+        offset += l;
     }
     Ok(res)
 }
@@ -305,6 +317,7 @@ async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
 ) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = x1.len();
     if len != x2.len() || len != x3.len() {
@@ -435,6 +448,7 @@ pub async fn bit_inject<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let res = match role_index {
@@ -449,6 +463,7 @@ where
 }
 
 /// Returns an iterator that yields `len` zero RingElements of type T.
+#[inline(always)]
 fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
     repeat_n(RingElement::<T>::zero(), len)
 }
@@ -479,9 +494,9 @@ async fn bit_inject_party0<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
-    let prf = &mut session.prf;
 
     // Prepare b2 shares
     let b2: VecRingElement<T> = input
@@ -489,7 +504,7 @@ where
         .map(|bit_share| {
             // b2 is the share of b owned by Party 0 at the start of the protocol
             // Party 0 holds shares (0, b_2)
-            if bit_share.clone().get_b().convert().into() {
+            if bit_share.b.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())
@@ -499,12 +514,7 @@ where
 
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 0 generates random masks r_01 and r_02 using their shared PRFs with Party 1 and Party 2, respectively.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
-        .collect();
-    let r_02: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    let (r_01, r_02) = session.prf.gen_rands_batch(len);
 
     // 2. Party 0 computes y = (r_01 * b_2) - r_02 and sends it to Party 1.
     let y = ((r_01.clone() * &b2)? - &r_02)?;
@@ -518,26 +528,40 @@ where
     // Pack shares
     // By the end of Round 3, Party 0 holds the following shares:
     // - s1 = (r_01, 0) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(r_01.into_iter(), zero_iter(len));
+    // let s1 = Share::iter_from_iter_ab(r_01.into_iter(), zero_iter(len));
     // - s2 = (0, b_2) of [b_2]
-    let s2 = Share::iter_from_iter_ab(zero_iter(len), b2.into_iter());
+    // let s2 = Share::iter_from_iter_ab(zero_iter(len), b2.into_iter());
     // - s3 = (y, r_02) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(y.into_iter(), r_02.into_iter());
+    // let s3 = Share::iter_from_iter_ab(y.into_iter(), r_02.into_iter());
     // - s4 = (0, z) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(zero_iter(len), z.into_iter());
+    // let s4 = Share::iter_from_iter_ab(zero_iter(len), z.into_iter());
     // Local computation of the final shares:
     //
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + &s2;
-                let sum34 = s3 + &s4;
-                sum12 - &sum34 - &sum34
-            })
-            .collect_vec(),
+        izip!(
+            r_01.into_iter(),
+            b2.into_iter(),
+            y.into_iter(),
+            r_02.into_iter(),
+            z.into_iter()
+        )
+        .map(|(s1a, s2b, s3a, s3b, s4b)| {
+            let s1 = Share::new(s1a, RingElement::zero());
+            let s2 = Share::new(RingElement::zero(), s2b);
+            let s3 = Share::new(s3a, s3b);
+            let s4 = Share::new(RingElement::zero(), s4b);
+            let sum12 = s1 + s2;
+            let sum34 = s3 + s4;
+            sum12 - sum34 - sum34
+        })
+        .collect_vec(),
     ))
 }
 
@@ -568,15 +592,13 @@ async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
-    let prf = &mut session.prf;
 
     //Rounds 1 and 2 (computed in parallel):
     // 1. Party 1 generates a random mask r_01 using their shared PRF with Party 0.
-    let r_01: VecRingElement<T> = (0..len)
-        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
-        .collect();
+    let r_01 = session.prf.gen_rands_prev(len);
 
     // 2. Party 1 sends x = (b_0 XOR b_1) - r_01 to Party 2.
     let x: VecRingElement<T> = izip!(input, r_01.0.iter())
@@ -593,27 +615,34 @@ where
 
     // Round 3:
     // 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
-    let r_12 = (0..len).map(|_| prf.get_my_prf().gen::<RingElement<T>>());
+    let r_12 = session.prf.gen_rands_mine(len).into_iter();
 
     // Pack shares
     // By the end of Round 3, Party 1 holds the following shares:
     // - s1 = (x, r_01) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(x.into_iter(), r_01.into_iter());
+    // let s1 = Share::iter_from_iter_ab(x.into_iter(), r_01.into_iter());
     // - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
     // - s3 = (0, y) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
+    // let s3 = Share::iter_from_iter_ab(zero_iter(len), y.into_iter());
     // - s4 = (r_12, 0) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
+    // let s4 = Share::iter_from_iter_ab(r_12, zero_iter(len));
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s3, s4)
-            .map(|(s1, s3, s4)| {
-                let sum34 = s3 + &s4;
-                s1 - &sum34 - &sum34
+        izip!(x.into_iter(), r_01.into_iter(), y.into_iter(), r_12)
+            .map(|(s1a, s1b, s3b, s4a)| {
+                let s1 = Share::new(s1a, s1b);
+                let s3 = Share::new(RingElement::zero(), s3b);
+                let s4 = Share::new(s4a, RingElement::zero());
+                let sum34 = s3 + s4;
+                s1 - sum34 - sum34
             })
             .collect_vec(),
     ))
@@ -646,22 +675,20 @@ async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let len = input.len();
-    let prf = &mut session.prf;
     // Rounds 1 and 2 (computed in parallel):
     // 1. Party 2 receives x from Party 1.
     let network = &mut session.network_session;
     let x: VecRingElement<T> = network.receive_ring_vec_prev().await?;
 
     // 2. Party 2 generates a random mask r_02 using their shared PRF with Party 0.
-    let my_prf = &mut prf.my_prf;
-    let r_02 = (0..len).map(|_| my_prf.gen::<RingElement<T>>());
+    let r_02 = session.prf.gen_rands_mine(len).into_iter();
 
     // Round 3:
     // 1. Party 2 generates a random mask r_12 using their shared PRF with Party 1.
-    let prev_prf = &mut prf.prev_prf;
-    let r_12: VecRingElement<T> = (0..len).map(|_| prev_prf.gen::<RingElement<T>>()).collect();
+    let r_12 = session.prf.gen_rands_prev(len);
 
     // 2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
     let b2: VecRingElement<T> = input
@@ -669,7 +696,7 @@ where
         .map(|bit_share| {
             // b2 is the share of b owned by Party 2 at the start of the protocol
             // Party 2 holds shares (b_2, 0)
-            if bit_share.clone().get_a().convert().into() {
+            if bit_share.a.convert().into() {
                 RingElement(T::one())
             } else {
                 RingElement(T::zero())
@@ -681,26 +708,40 @@ where
 
     // By the end of Round 3, Party 2 holds the following shares:
     // - s1 = (0, x) of [b_0 XOR b_1]
-    let s1 = Share::iter_from_iter_ab(zero_iter(len), x.into_iter());
+    // let s1 = Share::iter_from_iter_ab(zero_iter(len), x.into_iter());
     // - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
-    let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
+    // let s2 = Share::iter_from_iter_ab(b2.into_iter(), zero_iter(len));
     // - s3 = (r_02, 0) of [r_01 * b_2]
-    let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
+    // let s3 = Share::iter_from_iter_ab(r_02, zero_iter(len));
     // - s4 = (z, r_12) of [x * b_2]
-    let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
+    // let s4 = Share::iter_from_iter_ab(z.into_iter(), r_12.into_iter());
 
     // Local computation of the final shares:
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 + s2 - 2 * (s3 + s4)
+
+    // note: this has been optimized to use fewer iterators and zips. the unoptimized
+    // variable creation is commented out in the above comment.
+    // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
     Ok(VecShare::new_vec(
-        izip!(s1, s2, s3, s4)
-            .map(|(s1, s2, s3, s4)| {
-                let sum12 = s1 + &s2;
-                let sum34 = s3 + &s4;
-                sum12 - &sum34 - &sum34
-            })
-            .collect_vec(),
+        izip!(
+            x.into_iter(),
+            b2.into_iter(),
+            r_02,
+            z.into_iter(),
+            r_12.into_iter()
+        )
+        .map(|(s1b, s2a, s3a, s4a, s4b)| {
+            let s1 = Share::new(RingElement::zero(), s1b);
+            let s2 = Share::new(s2a, RingElement::zero());
+            let s3 = Share::new(s3a, RingElement::zero());
+            let s4 = Share::new(s4a, s4b);
+            let sum12 = s1 + s2;
+            let sum34 = s3 + s4;
+            sum12 - sum34 - sum34
+        })
+        .collect_vec(),
     ))
 }
 
@@ -709,6 +750,7 @@ where
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
 #[allow(dead_code)]
+#[inline]
 pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
@@ -717,6 +759,7 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
+#[inline]
 fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
 }
@@ -960,6 +1003,7 @@ async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1066,6 +1110,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
@@ -1085,6 +1130,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
@@ -1102,6 +1148,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
@@ -1195,6 +1242,7 @@ mod tests {
     async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
     where
         Standard: Distribution<T>,
+        [T]: Fill,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
@@ -1321,6 +1369,7 @@ mod tests {
     where
         VecShare<T>: Transpose64,
         Standard: Distribution<T>,
+        [T]: Fill,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
