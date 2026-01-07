@@ -319,15 +319,15 @@ impl NetworkValue {
                 )))
             }
             DescriptorByte::VecRing16 => {
-                let res = deserialize_vec_ring::<u16, 2, _>(serialized, u16::from_le_bytes)?;
+                let res = deserialize_vec_ring::<u16, 2, _>(&serialized, u16::from_le_bytes)?;
                 Ok(NetworkValue::VecRing16(res))
             }
             DescriptorByte::VecRing32 => {
-                let res = deserialize_vec_ring::<u32, 4, _>(serialized, u32::from_le_bytes)?;
+                let res = deserialize_vec_ring::<u32, 4, _>(&serialized, u32::from_le_bytes)?;
                 Ok(NetworkValue::VecRing32(res))
             }
             DescriptorByte::VecRing64 => {
-                let res = deserialize_vec_ring::<u64, 8, _>(serialized, u64::from_le_bytes)?;
+                let res = deserialize_vec_ring::<u64, 8, _>(&serialized, u64::from_le_bytes)?;
                 Ok(NetworkValue::VecRing64(res))
             }
             DescriptorByte::StateChecksum => {
@@ -352,6 +352,7 @@ impl NetworkValue {
                         5 + len
                     );
                 }
+                // this isn't used enough to justify the effort to eliminate the copy
                 Ok(NetworkValue::Bytes(serialized[5..5 + len].to_vec()))
             }
             _ => Err(eyre!("Invalid network value type")),
@@ -382,7 +383,7 @@ impl NetworkValue {
 }
 
 fn deserialize_vec_ring<T, const N: usize, F>(
-    serialized: Bytes,
+    serialized: &Bytes,
     #[allow(unused_variables)] from_bytes: F,
 ) -> Result<Vec<RingElement<T>>>
 where
