@@ -5,7 +5,7 @@ use std::{collections::HashMap, io, time::Instant};
 use crate::fast_metrics::FastHistogram;
 use bytes::BytesMut;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
+    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
 };
 
@@ -156,6 +156,10 @@ async fn fill_to<T: NetworkConnection>(
     buf: &mut BytesMut,
     min_len: usize,
 ) -> io::Result<()> {
+    if buf.capacity() < min_len {
+        buf.reserve(READ_BUF_SIZE - buf.capacity());
+    }
+
     while buf.len() < min_len {
         let n_read = reader.read_buf(buf).await?;
         if n_read == 0 {
@@ -173,7 +177,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
     mut reader: ReadHalf<T>,
     inbound_tx: HashMap<SessionId, UnboundedSender<NetworkValue>>,
 ) -> io::Result<()> {
-    let mut buf = BytesMut::with_capacity(BUFFER_CAPACITY);
+    let mut buf = BytesMut::with_capacity(READ_BUF_SIZE);
 
     loop {
         // read the session id and descriptor byte
