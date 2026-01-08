@@ -786,6 +786,81 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     Ok(x_a)
 }
 
+/// Lifts the given shares of u16 to shares of u40.
+#[allow(dead_code)]
+pub async fn lift_40(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u64>> {
+    let len = shares.len();
+    let mut padded_len = len.div_ceil(64);
+    padded_len *= 64;
+
+    // Interpret the shares as u32
+    let mut x_a = VecShare::with_capacity(padded_len);
+    for share in shares.iter() {
+        x_a.push(Share::new(
+            RingElement(share.a.0 as u64),
+            RingElement(share.b.0 as u64),
+        ));
+    }
+
+    // Bit-slice the shares into 64-bit shares
+    let x = shares.transpose_pack_u64();
+
+    // Prepare the local input shares to be summed by the binary adder
+    let len_ = x.len();
+    let mut x1 = Vec::with_capacity(len_);
+    let mut x2 = Vec::with_capacity(len_);
+    let mut x3 = Vec::with_capacity(len_);
+
+    for x_ in x.into_iter() {
+        let len__ = x_.len();
+        let mut x1_ = VecShare::with_capacity(len__);
+        let mut x2_ = VecShare::with_capacity(len__);
+        let mut x3_ = VecShare::with_capacity(len__);
+        for x__ in x_.into_iter() {
+            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
+            x1_.push(x1__);
+            x2_.push(x2__);
+            x3_.push(x3__);
+        }
+        x1.push(x1_);
+        x2.push(x2_);
+        x3.push(x3_);
+    }
+
+    // Sum the binary shares using the binary parallel prefix adder.
+    // Since the input shares are u16 and we sum over u32, the two carries arise, i.e.,
+    // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^32
+    let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
+
+    // Lift b1 and b2 into u24 via bit injection
+    b1.extend(b2);
+    let mut b = bit_inject::<u32>(session, b1).await?; // TODO we should only inject into u24 here to save communication
+    let (b1, b2) = b.split_at_mut(len);
+
+    let pow40 = 1u64 << 40;
+    let mask40 = pow40 - 1;
+    // Lift b1 and b2 into u64 and multiply them by 2^16 and 2^17, respectively. Take the result mod 2^40
+    // This can be done by computing b1 as u32 << 16 and b2 as u32 << 17.
+    // Also compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^40
+    for (x_, (b1, b2)) in x_a.iter_mut().zip(b1.iter().zip(b2.iter())) {
+        let a = ((u64::from(b1.a.0)) << 16) & mask40;
+        let b = ((u64::from(b1.b.0)) << 16) & mask40;
+        let b1 = Share::new(RingElement(a), RingElement(b));
+
+        let a = ((u64::from(b2.a.0)) << 17) & mask40;
+        let b = ((u64::from(b2.b.0)) << 17) & mask40;
+        let b2 = Share::new(RingElement(a), RingElement(b));
+
+        x_.add_assign_const_role(pow40 + pow40, session.own_role()); // For the subtraction mod 2^40
+        x_.sub_assign(b1);
+        x_.sub_assign(b2);
+        x_.a &= RingElement(mask40);
+        x_.b &= RingElement(mask40);
+    }
+
+    Ok(x_a)
+}
+
 /// Splits every share in `input` into two binary shares such that their sum is equal to a secret share of the originally secret shared value. In other words, if `v` is the input secret share of a value `x`, the function produces two secret shared binary strings `s1` and `s2` such that `s1 + s2` is a secret share of `x`.
 ///
 /// The protocol follows the description of Protocol 18 from <https://eprint.iacr.org/2025/919.pdf>, see Section 6.1.
@@ -911,6 +986,17 @@ where
 #[allow(dead_code)]
 #[cfg(feature = "ripple_carry_adder")]
 async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    x1: Vec<VecShare<T>>,
+    x2: Vec<VecShare<T>>,
+) -> Result<VecShare<T>, Error>
+where
+    Standard: Distribution<T>,
+{
+    binary_add_2_get_msb_ripple_carry(session, x1, x2).await
+}
+
+async fn binary_add_2_get_msb_ripple_carry<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
@@ -1062,8 +1148,29 @@ where
     Ok(msb)
 }
 
+/// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares when interpreting the input as element mod 2^k, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
+pub async fn extract_msb_mod_2k<T, const K: usize>(
+    session: &mut Session,
+    x_: VecShare<T>,
+) -> Result<VecShare<u64>, Error>
+where
+    T: IntRing2k + NetworkInt,
+    VecShare<T>: Transpose64,
+    Standard: Distribution<T>,
+{
+    // Split the input shares into the sum of two shares
+    let (x1, x2) = two_way_split(session, x_).await?;
+
+    // Bit-slice the shares into 64-bit shares
+    let x1_t = x1.inner.transpose_pack_u64_with_len::<K>();
+    let x2_t = x2.inner.transpose_pack_u64_with_len::<K>();
+
+    // Sum the binary shares using a binary adder and return the MSB.
+    binary_add_2_get_msb_ripple_carry::<u64>(session, x1_t, x2_t).await
+}
+
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
-async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
+pub async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
 where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
