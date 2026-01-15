@@ -529,6 +529,7 @@ mod tests {
                     job,
                     &config,
                     Some(crate::AnonStatsOperation::Reauth),
+                    None,
                 )
                 .await
                 .unwrap();
