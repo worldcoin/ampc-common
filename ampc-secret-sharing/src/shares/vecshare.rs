@@ -368,7 +368,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let share1: Share<T> = Share::new(rng.gen(), rng.gen());
 
-        let mut vec_share = VecShare::new_share(share1.clone());
+        let mut vec_share = VecShare::new_share(share1);
         assert!(!vec_share.is_empty());
         let popped_share = vec_share.pop();
         assert!(popped_share.is_some());
@@ -378,7 +378,7 @@ mod tests {
         let mut shares = vec![Share::zero()];
         let one_share = Share::new(RingElement::one(), RingElement::one());
         for i in 1..17 {
-            shares.push(one_share.clone() + &shares[i - 1]);
+            shares.push(one_share + shares[i - 1]);
         }
         vec_share = VecShare::new_vec(shares);
         let (slice1, slice2) = vec_share.split_at(3);
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(slice2.len(), 14);
         for chunk in slice2.chunks(2) {
             assert_eq!(chunk.len(), 2);
-            assert_eq!(one_share.clone() + &chunk[0], chunk[1]);
+            assert_eq!(one_share + chunk[0], chunk[1]);
         }
 
         let mut vec_share = VecShare::new_share(Share::zero());
@@ -395,15 +395,15 @@ mod tests {
         assert_eq!(vec_share.len(), 4);
         let slice_mut = vec_share.as_slice_mut();
         let vec_share_tmp = slice_mut.to_vec();
-        let three_share = one_share.clone() + one_share.clone() + one_share.clone();
+        let three_share = one_share + one_share + one_share;
         assert_eq!(vec_share_tmp.sum(), three_share);
         let (slice21, slice22) = slice2.split_at(2);
         assert_eq!(slice21.len(), 2);
         assert_eq!(slice22.len(), 12);
         assert_eq!(slice21[0], three_share);
-        assert_eq!(slice21[1], one_share.clone() + three_share);
+        assert_eq!(slice21[1], one_share + three_share);
 
-        vec_share = VecShare::new_vec(vec![share1.clone(), !&share1]);
+        vec_share = VecShare::new_vec(vec![share1, !&share1]);
         let mut not_vec_share = vec_share.clone();
         not_vec_share.not_inplace();
         assert_eq!(vec_share.get_at(0), not_vec_share.get_at(1));
@@ -418,7 +418,7 @@ mod tests {
         let share1: Share<T> = Share::new(rng.gen(), rng.gen());
 
         // NOT
-        let vec_share = VecShare::new_vec(vec![share1.clone(), !&share1]);
+        let vec_share = VecShare::new_vec(vec![share1, !&share1]);
         let mut not_vec_share = vec_share.clone();
         not_vec_share.not_inplace();
         assert_eq!(vec_share.get_at(0), not_vec_share.get_at(1));
@@ -462,7 +462,7 @@ mod tests {
     {
         let mut rng = rand::thread_rng();
         let share: Share<T> = Share::new(rng.gen(), rng.gen());
-        let bit_vec_share = VecShare::from_share(share.clone());
+        let bit_vec_share = VecShare::from_share(share);
         assert_eq!(bit_vec_share.len(), T::K);
         for (i_bit, bit) in bit_vec_share.into_iter().enumerate() {
             assert_eq!(bit.a, share.a.get_bit_as_bit(i_bit));

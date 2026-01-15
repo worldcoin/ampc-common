@@ -1,23 +1,23 @@
-name: Run unit tests
+name: Lint Clippy
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize]
 
 concurrency:
   group: "${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
   cancel-in-progress: true
 
-jobs:
-  unit-tests:
-    timeout-minutes: 20
-    runs-on: ubuntu-24.04-arm
-    permissions:
-      contents: read
+permissions:
+  # Leaving clippy annotations on commits...
+  contents: write
+  # And on PRs
+  pull-requests: write
+  # Updating commit and PR statuses
+  checks: write
 
+jobs:
+  lint-clippy:
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout code
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
@@ -33,7 +33,7 @@ jobs:
               - rust-toolchain.toml
               - ampc-*/**
               - key-manager/**
-              - .github/workflows/run-unit-tests.yaml
+              - .github/workflows/lint-clippy.yaml
 
       - name: Cache Rust build
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
@@ -48,6 +48,7 @@ jobs:
           restore-keys: |
             rust-build-${{ runner.os }}-
 
+      # The following steps will only run if any of the src files have changed
       - name: Install Rust
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
         run: rustup toolchain install 1.90.0
@@ -56,6 +57,10 @@ jobs:
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
         run: rustup default 1.90.0
 
-      - name: Run Tests
+      - name: Install Rust clippy for checking clippy errors
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
-        run: cargo test --release
+        run: rustup component add clippy
+
+      - name: Clippy
+        if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
+        run: cargo clippy --all-targets --all-features -- -D warnings --no-deps

@@ -197,8 +197,8 @@ mod tests {
                 let distances = shares[..]
                     .chunks_exact(2)
                     .map(|x| DistanceShare {
-                        code_dot: x[0].clone(),
-                        mask_dot: x[1].clone(),
+                        code_dot: x[0],
+                        mask_dot: x[1],
                     })
                     .collect_vec();
 
@@ -303,8 +303,8 @@ mod tests {
                         .map(|&size| {
                             (0..size)
                                 .map(|_| {
-                                    let code_dot = shares[counter].clone();
-                                    let mask_dot = shares[counter + 1].clone();
+                                    let code_dot = shares[counter];
+                                    let mask_dot = shares[counter + 1];
                                     counter += 2;
                                     DistanceShare { code_dot, mask_dot }
                                 })

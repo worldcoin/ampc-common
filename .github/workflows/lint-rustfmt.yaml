@@ -1,23 +1,17 @@
-name: Run unit tests
+name: Lint Rustfmt
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize]
 
 concurrency:
   group: "${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
   cancel-in-progress: true
 
 jobs:
-  unit-tests:
-    timeout-minutes: 20
+  fmt:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
-
     steps:
       - name: Checkout code
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8
@@ -31,9 +25,10 @@ jobs:
               - Cargo.lock
               - Cargo.toml
               - rust-toolchain.toml
+              - rustfmt.toml
               - ampc-*/**
               - key-manager/**
-              - .github/workflows/run-unit-tests.yaml
+              - .github/workflows/lint-rustfmt.yaml
 
       - name: Cache Rust build
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
@@ -48,6 +43,10 @@ jobs:
           restore-keys: |
             rust-build-${{ runner.os }}-
 
+      - name: Show errors inline
+        if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
+        uses: r7kamura/rust-problem-matchers@9fe7ca9f6550e5d6358e179d451cc25ea6b54f98
+
       - name: Install Rust
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
         run: rustup toolchain install 1.90.0
@@ -56,6 +55,10 @@ jobs:
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
         run: rustup default 1.90.0
 
-      - name: Run Tests
+      - name: Install Rustfmt for formatting
         if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
-        run: cargo test --release
+        run: rustup component add rustfmt
+
+      - name: Run Rustfmt
+        if: steps.changed-files-yaml.outputs.src_any_changed == 'true'
+        run: cargo fmt -- --check
