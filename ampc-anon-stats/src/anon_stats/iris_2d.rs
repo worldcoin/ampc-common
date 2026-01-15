@@ -7,6 +7,7 @@ use ampc_actor_utils::{
     },
 };
 use ampc_secret_sharing::RingElement;
+use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::{izip, Itertools};
 
@@ -43,6 +44,7 @@ pub async fn process_2d_anon_stats_job(
     job: AnonStatsMapping<DistanceBundle2D>,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics2D> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -122,7 +124,7 @@ pub async fn process_2d_anon_stats_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
-    anon_stats.fill_buckets(&buckets, upper_threshold, None);
+    anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
     Ok(anon_stats)
 }
 
@@ -429,6 +431,7 @@ mod tests {
                     job,
                     &config,
                     Some(crate::AnonStatsOperation::Uniqueness),
+                    None,
                 )
                 .await
                 .unwrap();

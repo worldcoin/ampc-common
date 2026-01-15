@@ -148,9 +148,9 @@ impl BucketStatistics {
             });
         }
 
-        // If the start timestamp is provided, we use it as the start timestamp,
-        // otherwise, it means it was the first iteration (ServerActor
-        // instantiation)
+        // If the start timestamp is provided, we use it as the report window start
+        // (e.g., the previous SNS report time). Otherwise, this is the first report
+        // for this key and we keep the initial timestamp.
         if let Some(start_timestamp) = start_timestamp {
             self.start_time_utc_timestamp = start_timestamp;
         }
@@ -340,6 +340,7 @@ impl BucketStatistics2D {
             }
         }
 
+        // If the start timestamp is provided, use it as the report window start.
         if let Some(start_timestamp) = start_timestamp {
             self.start_time_utc_timestamp = start_timestamp;
         }

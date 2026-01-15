@@ -11,6 +11,7 @@ use ampc_actor_utils::{
     },
 };
 use ampc_secret_sharing::shares::DistanceShare;
+use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::Itertools;
 
@@ -53,6 +54,7 @@ pub async fn process_1d_anon_stats_job(
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -84,7 +86,7 @@ pub async fn process_1d_anon_stats_job(
         operation,
     );
 
-    anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
+    anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, start_timestamp);
     Ok(anon_stats)
 }
 
@@ -94,6 +96,7 @@ pub async fn process_1d_lifted_anon_stats_job(
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
@@ -123,7 +126,7 @@ pub async fn process_1d_lifted_anon_stats_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
-    anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, None);
+    anon_stats.fill_buckets(&buckets, MATCH_THRESHOLD_RATIO, start_timestamp);
     Ok(anon_stats)
 }
 
@@ -416,6 +419,7 @@ mod tests {
                     &origin,
                     &config,
                     Some(crate::AnonStatsOperation::Uniqueness),
+                    None,
                 )
                 .await
                 .unwrap();
