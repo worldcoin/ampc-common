@@ -3,7 +3,7 @@ use ampc_actor_utils::protocol::binary::{bit_inject, extract_msb_batch};
 use ampc_actor_utils::protocol::ops::{open_ring, sub_pub};
 use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::{RingElement, Share};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::Itertools;
 
@@ -19,6 +19,8 @@ pub type FaceDistance = Share<u16>;
 /// * `session` - The MPC session to use
 /// * `job` - The job to process, a vector of FaceDistance shares
 /// * `config` - The server configuration
+/// * `operation` - The operation that generated this job, if any
+/// * `start_timestamp` - The timestamp when the job started, if any
 ///
 /// The strategy to compute the bucketed statistics is as follows:
 /// * For each threshold, we compute the number of distances below that threshold.
@@ -38,6 +40,7 @@ pub async fn process_face_distance_job(
     job: Vec<FaceDistance>,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics> {
     let thresholds = &config.face_bucket_thresholds;
     let n_buckets = thresholds.len();
@@ -71,7 +74,11 @@ pub async fn process_face_distance_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
-    stats.start_time_utc_timestamp = Utc::now();
+    if let Some(start_timestamp) = start_timestamp {
+        stats.start_time_utc_timestamp = start_timestamp
+    } else {
+        stats.start_time_utc_timestamp = Utc::now();
+    }
 
     // we want non-cumulative data, so we iterate over consecutive pairs of cumulative data and subtract the start from the end to the the actual bucket count
     // This will create 1 less bucket than thresholds, which is what we want
@@ -240,6 +247,7 @@ mod tests {
                     &mut session,
                     shares,
                     &config,
+                    None,
                     None,
                 )
                 .await
