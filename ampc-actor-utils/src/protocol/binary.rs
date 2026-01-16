@@ -958,6 +958,7 @@ async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
+    [T]: Fill,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
