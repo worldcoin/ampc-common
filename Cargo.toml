@@ -38,6 +38,7 @@ futures = "0.3"
 uuid = { version = "1.11", features = ["v4"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 hex = "0.4"
+sha2 = "0.10"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "migrate"] }
 bincode = "1.3"
 

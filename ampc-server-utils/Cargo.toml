@@ -26,6 +26,7 @@ itertools = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
+sha2 = { workspace = true }
 base64 = { workspace = true }
 sodiumoxide = { workspace = true }
 zeroize = "1.8.1"
