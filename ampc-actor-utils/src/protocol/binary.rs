@@ -887,12 +887,12 @@ where
     let mut s1_b = Vec::with_capacity(len);
     let mut s2_a = Vec::with_capacity(len);
     let mut s2_b = Vec::with_capacity(len);
-    for chunk_id in 0..3 {
+    for (chunk_id, piece_len) in piece_lens.into_iter().enumerate() {
         if input_iter.len() == 0 {
             break;
         }
         if chunk_id == role_index {
-            let my_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
+            let my_chunk = input_iter.by_ref().take(piece_len);
             // Share my chunk
             // Split into a and b components
             let (a, b): (VecRingElement<_>, VecRingElement<_>) =
@@ -913,7 +913,7 @@ where
             s2_a.extend(zero_iter(chunk_len));
             s2_b.extend(zero_iter(chunk_len));
         } else if (chunk_id + 1) % 3 == role_index {
-            let next_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
+            let next_chunk = input_iter.by_ref().take(piece_len);
             // Extract the first component of the shares
             let c: VecRingElement<T> = next_chunk.map(|share| share.a).collect();
             // Receive t from the previous party
@@ -926,7 +926,7 @@ where
             s2_a.extend(c);
             s2_b.extend(zero_iter(chunk_len));
         } else {
-            let prev_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
+            let prev_chunk = input_iter.by_ref().take(piece_len);
             // Extract the second component of the shares
             let c: VecRingElement<T> = prev_chunk.map(|share| share.b).collect();
             // Generate randomness shared between the current party and the next party
