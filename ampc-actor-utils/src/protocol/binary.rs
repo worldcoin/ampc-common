@@ -874,8 +874,13 @@ where
 {
     // Split input into 3 pieces
     let len = input.len();
-    let piece_len = len.div_ceil(3);
-    let party_index = session.own_role().index();
+    // Lengths of pieces are as balanced as possible.
+    // If `len = m + 3 * k` with `m` in `[0, 2]`, then pieces have lengths `[k, k + floor(m/2), k + ceil(m/2)]`.
+    let piece_len1 = len / 3;
+    let piece_len2 = (len - piece_len1) / 2;
+    let piece_len3 = len - piece_len1 - piece_len2;
+    let piece_lens = [piece_len1, piece_len2, piece_len3];
+    let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let network = &mut session.network_session;
     let mut input_iter = input.iter();
     let mut s1_a = Vec::with_capacity(len);
@@ -886,8 +891,8 @@ where
         if input_iter.len() == 0 {
             break;
         }
-        if chunk_id == party_index {
-            let my_chunk = input_iter.by_ref().take(piece_len);
+        if chunk_id == role_index {
+            let my_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
             // Share my chunk
             // Split into a and b components
             let (a, b): (VecRingElement<_>, VecRingElement<_>) =
@@ -907,8 +912,8 @@ where
             // Collect second shares (0, 0)
             s2_a.extend(zero_iter(chunk_len));
             s2_b.extend(zero_iter(chunk_len));
-        } else if (chunk_id + 1) % 3 == party_index {
-            let next_chunk = input_iter.by_ref().take(piece_len);
+        } else if (chunk_id + 1) % 3 == role_index {
+            let next_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
             // Extract the first component of the shares
             let c: VecRingElement<T> = next_chunk.map(|share| share.a).collect();
             // Receive t from the previous party
@@ -921,7 +926,7 @@ where
             s2_a.extend(c);
             s2_b.extend(zero_iter(chunk_len));
         } else {
-            let prev_chunk = input_iter.by_ref().take(piece_len);
+            let prev_chunk = input_iter.by_ref().take(piece_lens[chunk_id]);
             // Extract the second component of the shares
             let c: VecRingElement<T> = prev_chunk.map(|share| share.b).collect();
             // Generate randomness shared between the current party and the next party
