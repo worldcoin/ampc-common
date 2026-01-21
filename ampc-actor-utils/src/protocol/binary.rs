@@ -18,6 +18,8 @@ use rand::{distributions::Standard, prelude::Distribution, Fill, Rng};
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
+use fss_rs::icf::{IcShare, Icf, InG, IntvFn, OutG};
+use fss_rs::prg::Aes128MatyasMeyerOseasPrg;
 thread_local! {
     static ROUNDS_METRICS: RefCell<FastHistogram> = RefCell::new(
         FastHistogram::new("smpc.rounds")
@@ -1169,6 +1171,404 @@ where
     Ok(res)
 }
 
+// same as above but with fss instead
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub(crate) async fn extract_msb_u16_batch_fss(
+    session: &mut Session,
+    x: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>> {
+    // FSS: loop over the get msb funcgtion for all entries of x & collect results
+    // open_bin_fss XORs the msb shares from each party
+
+    let batch_size: usize = 512;
+
+    let mut vec_of_msb_shares: Vec<Share<Bit>> = Vec::with_capacity(x.len());
+    for batch in x.chunks(batch_size) {
+        tracing::debug!("Inside extract_msb_u16_fss, batch size: {}", batch.len());
+        let batch_out = add_3_get_msb_fss_batch_u16(session, batch).await?;
+        vec_of_msb_shares.extend(batch_out);
+    }
+    Ok(vec_of_msb_shares)
+}
+
+/// Implementation of the extract MSB function using Functional Secret Sharing
+/// Description of the protocol below
+///  t |              Party 0                      |              Party 1                     |                Party 2 (dealer)
+///  --+-------------------------------------------+------------------------------------------+----------------------------------------
+///    | has shares (d0, d2), and keys k0, k2      | has shares (d1, d0), and keys k1, k0     | has shares (d2, d1), and keys k2, k1
+///  1 | Use k2 to generate a prf key r2 (also r') | Use k1 to generate a prf key r1 (also r')| Use k2,k1 to generate prf keys r2,r1
+///  2 | send_next(d2+r2)   to Party 1             | send_prev(d1+r1)   to Party 0            | (kFss0, kFss1) = gen_IC(r_in = r1+r2)
+///  3 | d1+r1 = receive_next() from Party 1       | d2+r2 = receive_prev() from Party 0      | send_next(kFss0) To Party 0
+///  4 | kFss0 = receive_prev() from Party 2       |                                          | send_prev(kFss1) To Party 1
+///  5 |                                           | kFss1 = receive_next() from Party 2  |
+///  6 | Can reconstruct: d+r = d1+r1+d2+r2+d0     | Can reconstruct: d+r = d1+r1+d2+r2+d0|
+///  7 | f_x_0 = eval_IC(kFss0, d+r)               | f_x_1 = eval_IC(kFss1, d+r)              |
+///  8 | use k0 to generate r' (done above)        | use k0 to generate r'  (done above)      |  
+///  --------------------------------------Excanging the shares ------------------------------------
+///   | send_prev(r'+f_x_0) to Party 2 <send LSB> | send_next(f_x_1-r') to Party 2 <send LSB>|
+///   | send_next(f_x_0 + r') to Party 1   <..>   | send_prev(f_x_1-r') to Party 0    <..>   | f_x_1-r' = receive_prev() from Party 1
+///   | f_x_1 - r'= receive_next() from Party 1   | f_x_0 + r' = receive_prev() from Party 0 | f_x_0+r' = receive_next() from Party 0
+///   ------ everyone has the same 2 shares, open_bin will just add the two shares, no communication
+///  these shares are BITS not u128
+async fn add_3_get_msb_fss_batch_u16(
+    session: &mut Session,
+    x: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>, Error>
+where
+    Standard: Distribution<u32>,
+{
+    // Input is Share {a,b}, in the notation below we have:
+    // Party0: a=d0, b=d2
+    // Party1: a=d1, b=d0
+    // Party2: a=d2, b=d1
+
+    // Get party number
+    let role = session.own_role().index();
+    match role {
+        0 => {
+            let batch_size = x.len();
+
+            //Generate all r2 prf key, keep the r0 keys for later
+            let mut r_prime_keys = Vec::with_capacity(batch_size);
+            let mut d2r2_vec = Vec::with_capacity(batch_size);
+            for i in 0..batch_size {
+                let (r_prime_temp, _) = session.prf.gen_rands::<RingElement<u16>>(); //_ is r2
+                r_prime_keys.push(RingElement::<u128>(u128::from(r_prime_temp.0))); //convet to this for later
+                d2r2_vec.push(x[i].b + RingElement(0)); // change this to take the second thing gen_rands returns
+            }
+
+            // Send the vector of d2+r2 to party 1
+            let clone_d2r2_vec = d2r2_vec.clone();
+            session
+                .network_session
+                .send_next(u16::new_network_vec(clone_d2r2_vec))
+                .await?;
+
+            // Set up the function for FSS
+            // we need this below to handle signed numbers, if input is unsigned no need to add N/2
+            let n_half_u32 = 1u16 << 15;
+            let n_half = InG::from(n_half_u32);
+            // make the interval so that we return 1 when MSB == 1
+            // this is (our number + n/2 ) % n. The modulo is handled by U16Group
+            let p = InG::from(1u16 << 15) + n_half;
+            let q = InG::from(u16::MAX) + n_half; // modulo is handled by U16Group
+            let keys: Vec<[u8; 16]> = vec![[0u8; 16]; 4];
+            let prg =
+                Aes128MatyasMeyerOseasPrg::<16, 2, 4>::new(&std::array::from_fn(|i| &keys[i]));
+            let icf = Icf::new(p, q, prg);
+
+            // store all the eval results
+            let mut f_x_0_bits = Vec::with_capacity(batch_size);
+
+            // Receive d1+r1 from party 1
+            let d1r1 = match session.network_session.receive_next().await {
+                Ok(v) => u16::into_vec(v),
+                Err(e) => Err(eyre!("FSS: Party 0 cannot receive d1+r1 from party 1: {e}")),
+            }?;
+
+            // Receive batch_size number of fss keys from dealer, the key is an ICShare that is serialized to u32
+            let k_fss_0_vec = match session.network_session.receive_prev().await {
+                Ok(v) => u32::into_vec(v),
+                Err(e) => Err(eyre!("Party 0 cannot receive my fss key from dealer {e}")),
+            }?;
+
+            // Deserialize each to find original IcShare and call eval
+            let key_words_fss_0: Vec<u32> = RingElement::<u32>::convert_vec(k_fss_0_vec); //need to un-flatten key vector
+            let mut offset: usize = 0;
+
+            for i in 0..batch_size {
+                // "unflatten" to get batch_size number of fss keys
+                // offset index has the byte length
+                let curr_key_byte_len = 1 + (key_words_fss_0[offset] as usize + 3) / 4;
+
+                // Get current key (ICShare)
+                let k_fss_0_icshare: IcShare =
+                    IcShare::deserialize(&key_words_fss_0[offset..offset + curr_key_byte_len])?;
+
+                //update offset to point to next cell that contains size of next key
+                offset += curr_key_byte_len;
+
+                // reconstruct the input d+r [recall x.a=d0] for each x[i]
+                // this should be wrapping addition, implemented by RingElement
+                let d_plus_r: RingElement<u16> =
+                    d1r1[i] + d2r2_vec[i] + x[i].a + RingElement(n_half_u32);
+
+                //Call eval & convert from from ByteGroup<16> to RingElement<u128>
+                let eval_result = icf.eval(
+                    false,
+                    &k_fss_0_icshare,
+                    fss_rs::group::int::U16Group(d_plus_r.0),
+                );
+
+                let temp_eval = RingElement::<u128>(u128::from_le_bytes(eval_result.0));
+
+                // Add the respective r_prime and add to the vector of results and take only the LSB
+                // Make them RingElements so it's easy to send to network
+                f_x_0_bits.push(RingElement(Bit::new(
+                    ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0,
+                )));
+            }
+
+            // Prepare bits in a vector to send to dealer and next party
+            let f_0_res_network: Vec<NetworkValue> = f_x_0_bits
+                .iter()
+                .copied()
+                .map(NetworkValue::RingElementBit)
+                .collect();
+
+            let cloned_f_0_res_network = f_0_res_network.clone();
+            // send to party 1
+            session
+                .network_session
+                .send_next(NetworkValue::vec_to_network(cloned_f_0_res_network))
+                .await?;
+            // send to the dealer (party 2)
+            session
+                .network_session
+                .send_prev(NetworkValue::vec_to_network(f_0_res_network))
+                .await?;
+
+            // Receive Bits of share of party 1 --> this is a vec of network values
+            let f_x_1_bits_net = match session.network_session.receive_next().await {
+                Ok(v) => NetworkValue::vec_from_network(v),
+                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
+            }?;
+
+            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
+            let f_x_1_bits: Vec<RingElement<Bit>> = f_x_1_bits_net
+                .into_iter()
+                .map(|nv| match nv {
+                    NetworkValue::RingElementBit(b) => Ok(b),
+                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Return a vector of Share<Bit> where the a is from f_x_0_bits
+            // and the b is from f_x_1_bits
+            let shares: Vec<Share<Bit>> = f_x_0_bits
+                .into_iter()
+                .zip(f_x_1_bits)
+                .map(|(a, b)| Share { a, b })
+                .collect();
+            Ok(shares)
+        }
+        1 => {
+            let batch_size = x.len();
+            let mut r_prime_keys = Vec::with_capacity(batch_size);
+            let mut d1r1_vec = Vec::with_capacity(batch_size);
+            for i in 0..batch_size {
+                let (_, r_prime_temp) = session.prf.gen_rands::<RingElement<u16>>(); //.clone(); //_ is r1
+                r_prime_keys.push(RingElement::<u128>(u128::from(r_prime_temp.0))); //convet to this for later
+                d1r1_vec.push(x[i].a + RingElement(0)); // change this to take the first thing gen_rands returns
+            }
+
+            // Send the vector of d1+r1 to party 0
+            let cloned_d1r1_vec = d1r1_vec.clone();
+            session
+                .network_session
+                .send_prev(u16::new_network_vec(cloned_d1r1_vec))
+                .await?;
+
+            // Set up the function for FSS [see party 0 for details]
+            let n_half_u32 = 1u16 << 15;
+            let n_half = InG::from(n_half_u32);
+            let p = InG::from(1u16 << 15) + n_half;
+            let q = InG::from(u16::MAX) + n_half;
+            let keys: Vec<[u8; 16]> = vec![[0u8; 16]; 4];
+            let prg =
+                Aes128MatyasMeyerOseasPrg::<16, 2, 4>::new(&std::array::from_fn(|i| &keys[i]));
+
+            let icf = Icf::new(p, q, prg);
+            let mut f_x_1_bits = Vec::with_capacity(batch_size); // store all the eval results
+
+            // Receive d2+r2 from party 0
+            let d2r2_vec = match session.network_session.receive_prev().await {
+                Ok(v) => u16::into_vec(v),
+                Err(e) => Err(eyre!("FSS: Party 1 cannot receive d2+r2 from party 0: {e}")),
+            }?;
+
+            // Receive batch_size number of fss keys from dealer
+            let k_fss_1_vec = match session.network_session.receive_next().await {
+                Ok(v) => u32::into_vec(v),
+                Err(e) => Err(eyre!("Party 1 cannot receive my fss key from dealer {e}")),
+            }?;
+
+            // Deserialize each to find original IcShare and call eval
+            let key_words_fss_1: Vec<u32> = RingElement::<u32>::convert_vec(k_fss_1_vec); //need to un-flatten key vector
+            let mut offset: usize = 0;
+
+            for i in 0..batch_size {
+                // "unflatten" to get batch_size number of fss keys
+                let curr_key_byte_len = 1 + (key_words_fss_1[offset] as usize + 3) / 4; // offset index has the byte length, then find total u32s for this key
+
+                // Get current key
+                let k_fss_1_icshare: IcShare =
+                    IcShare::deserialize(&key_words_fss_1[offset..offset + curr_key_byte_len])?;
+                offset += curr_key_byte_len;
+
+                // reconstruct the input d+r [recall d0=x.b] for each x[i]
+                let d_plus_r: RingElement<u16> =
+                    d1r1_vec[i] + d2r2_vec[i] + x[i].b + RingElement(n_half_u32);
+
+                //Call eval & convert from from ByteGroup<16> to RingElement<u128>
+                let eval_result = icf.eval(
+                    true,
+                    &k_fss_1_icshare,
+                    fss_rs::group::int::U16Group(d_plus_r.0),
+                );
+
+                let temp_eval = RingElement::<u128>(u128::from_le_bytes(eval_result.0));
+
+                // Add the respective r_prime and add to the vector of results and take only the LSB
+                // Make them RingElements so it's easy to send to network
+                f_x_1_bits.push(RingElement(Bit::new(
+                    ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0,
+                )));
+            }
+
+            // Prepare them in a vector to send to dealer and next party
+            let f_1_res_network: Vec<NetworkValue> = f_x_1_bits
+                .iter()
+                .copied()
+                .map(NetworkValue::RingElementBit)
+                .collect();
+
+            let cloned_f_1_res_network = f_1_res_network.clone();
+            // send to party 0
+            session
+                .network_session
+                .send_prev(NetworkValue::vec_to_network(cloned_f_1_res_network))
+                .await?;
+
+            // send to the dealer (party 2)
+            session
+                .network_session
+                .send_next(NetworkValue::vec_to_network(f_1_res_network))
+                .await?;
+
+            // Receive Bits of share of party 0 --> this is a vec of network values
+            let f_x_0_bits_net = match session.network_session.receive_prev().await {
+                Ok(v) => NetworkValue::vec_from_network(v),
+                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
+            }?;
+
+            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
+            let f_x_0_bits: Vec<RingElement<Bit>> = f_x_0_bits_net
+                .into_iter()
+                .map(|nv| match nv {
+                    NetworkValue::RingElementBit(b) => Ok(b),
+                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Return a vector of Share<Bit> where the a is from f_x_0_bits
+            // and the b is from f_x_1_bits
+            let shares: Vec<Share<Bit>> = f_x_0_bits
+                .into_iter()
+                .zip(f_x_1_bits)
+                .map(|(a, b)| Share { a, b })
+                .collect();
+            Ok(shares)
+        }
+        2 => {
+            let batch_size = x.len();
+
+            // Setting up the Interval Containment function [see party 0 for details
+            let n_half = InG::from(1u16 << 15);
+            let keys: Vec<[u8; 16]> = vec![[0u8; 16]; 4];
+            let p = InG::from(1u16 << 15) + n_half;
+            let q = InG::from(u16::MAX) + n_half;
+            let prg =
+                Aes128MatyasMeyerOseasPrg::<16, 2, 4>::new(&std::array::from_fn(|i| &keys[i]));
+            let icf = Icf::new(p, q, prg);
+
+            // Store the fss keys
+            let mut k_fss_0_vec_flat = Vec::with_capacity(batch_size);
+            let mut k_fss_1_vec_flat = Vec::with_capacity(batch_size);
+            {
+                let mut rng = rand::thread_rng();
+                for _i in 0..batch_size {
+                    // Draw r1 + r2 (aka r_in)
+                    let (_r2, _r1) = session.prf.gen_rands::<RingElement<u16>>().clone();
+                    let r2 = RingElement(0); //remove these when correctness of fss crate is fixed
+                    let r1 = RingElement(0);
+
+                    let r1_plus_r2_u32: u16 = (r1 + r2).convert();
+                    // Defining the function f using r_in
+                    let f = IntvFn {
+                        r_in: InG::from(r1_plus_r2_u32), //rin = r1+r2
+                        r_out: OutG::from(0u128),        // rout=0
+                    };
+                    // now we can call gen to generate the FSS keys for each party
+                    let (k_fss_0_pre_ser, k_fss_1_pre_ser): (IcShare, IcShare) =
+                        { icf.gen(f, &mut rng) };
+
+                    // Serialize the ICShare into u32 (no need to use u16 here)
+                    let temp_key0 = k_fss_0_pre_ser.serialize()?;
+                    k_fss_0_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key0));
+
+                    let temp_key1 = k_fss_1_pre_ser.serialize()?;
+                    k_fss_1_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key1));
+                }
+            }
+            // Send the flattened FSS keys to parties 0 and 1, so they can do Eval
+            // Send to party 0
+            session
+                .network_session
+                .send_next(NetworkInt::new_network_vec(k_fss_0_vec_flat))
+                .await?;
+
+            //Send to party 1
+            session
+                .network_session
+                .send_prev(NetworkInt::new_network_vec(k_fss_1_vec_flat))
+                .await?;
+
+            // Receive bit of share from party 0
+            let f_x_0_bits_net = match session.network_session.receive_next().await {
+                Ok(v) => NetworkValue::vec_from_network(v),
+                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
+            }?;
+
+            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
+            let f_x_0_bits: Vec<RingElement<Bit>> = f_x_0_bits_net
+                .into_iter()
+                .map(|nv| match nv {
+                    NetworkValue::RingElementBit(b) => Ok(b),
+                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Receive Bits of share of party 1
+            let f_x_1_bits_net = match session.network_session.receive_prev().await {
+                Ok(v) => NetworkValue::vec_from_network(v),
+                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
+            }?;
+
+            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
+            let f_x_1_bits: Vec<RingElement<Bit>> = f_x_1_bits_net
+                .into_iter()
+                .map(|nv| match nv {
+                    NetworkValue::RingElementBit(b) => Ok(b),
+                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
+                })
+                .collect::<Result<_, _>>()?;
+
+            // Return a vector of Share<Bit> where the a is from f_x_0_bits
+            // and the b is from f_x_1_bits
+            let shares: Vec<Share<Bit>> = f_x_0_bits
+                .into_iter()
+                .zip(f_x_1_bits)
+                .map(|(a, b)| Share { a, b })
+                .collect();
+            Ok(shares)
+        }
+        _ => {
+            // this is not a valid party number
+            Err(eyre!("Party no is invalid for FSS."))
+        }
+    }
+}
 /// Opens a vector of binary additive replicated secret shares as described in the ABY3 framework.
 ///
 /// In particular, each party holds a share of the form `(a, b)` where `a` and `b` are already known to the next and previous parties, respectively.
@@ -1224,6 +1624,23 @@ pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Ve
     izip!(shares.iter(), b_from_previous.iter())
         .map(|(s, prev_b)| Ok((s.a ^ s.b ^ prev_b).convert()))
         .collect::<Result<Vec<_>>>()
+}
+
+/// This open bin does NOT communicate
+/// Assume each party has the same 2 shares (i.e.
+/// a = the LSB of (fss_0+r')
+/// b = the LSB of (fss_1-r')
+/// For whoever called open_bit_fss, for each of our Share<Bit> we just XOR each of the two shares and return
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub(crate) async fn open_bin_fss(
+    _session: &mut Session,
+    shares: &[Share<Bit>],
+) -> Result<Vec<Bit>> {
+    let mut res = Vec::new();
+    for sh in shares {
+        res.push(sh.a.0 ^ sh.b.0);
+    }
+    Ok(res)
 }
 
 #[cfg(test)]
