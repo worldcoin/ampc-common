@@ -31,8 +31,8 @@ pub trait NetworkHandle: Send + Sync {
     // raise an error due to the connection being closed.
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)>;
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
-    // allows unit and integration tests to wait for MPC instances to finish working before sessions are dropped.
-    async fn sync_peers(&mut self) -> Result<()>;
+    // acts as a code barrier. also allows peers to agree on when a shutdown signal was received
+    async fn sync_peers(&mut self, shutdown: bool) -> Result<bool>;
 }
 
 #[async_trait]
