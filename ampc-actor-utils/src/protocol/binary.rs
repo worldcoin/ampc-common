@@ -1182,48 +1182,32 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Vec<Bit>> {
     let network = &mut session.network_session;
+
+    // Pack the b shares for transmission (8 bits per byte)
     let message = if shares.len() == 1 {
         NetworkValue::RingElementBit(shares[0].b)
     } else {
-        // TODO: could be optimized by packing bits
-        let bits = shares
-            .iter()
-            .map(|x| NetworkValue::RingElementBit(x.b))
-            .collect::<Vec<_>>();
-        NetworkValue::vec_to_network(bits)
+        let b_shares: Vec<_> = shares.iter().map(|x| x.b).collect();
+        NetworkValue::pack_bits(&b_shares)
     };
 
     network.send_next(message).await?;
 
     // Receiving `b` from previous party
-    let b_from_previous = {
-        let other_shares = network
-            .receive_prev()
-            .await
-            .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-        if shares.len() == 1 {
-            match other_shares {
-                NetworkValue::RingElementBit(message) => Ok(vec![message]),
-                _ => Err(eyre!("Wrong value type is received in open_bin operation")),
-            }
-        } else {
-            match NetworkValue::vec_from_network(other_shares) {
-                Ok(v) => {
-                    if matches!(v[0], NetworkValue::RingElementBit(_)) {
-                        Ok(v.into_iter()
-                            .map(|x| match x {
-                                NetworkValue::RingElementBit(message) => message,
-                                _ => unreachable!(),
-                            })
-                            .collect())
-                    } else {
-                        Err(eyre!("Wrong value type is received in open_bin operation"))
-                    }
-                }
-                Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
-            }
-        }
-    }?;
+    let b_from_previous = network
+        .receive_prev()
+        .await
+        .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?
+        .unpack_bits()
+        .map_err(|e| eyre!("Wrong value type received in open_bin operation: {}", e))?;
+
+    if b_from_previous.len() != shares.len() {
+        return Err(eyre!(
+            "Bit count mismatch in open_bin: expected {} but received {}",
+            shares.len(),
+            b_from_previous.len()
+        ));
+    }
 
     // XOR shares with the received shares
     izip!(shares.iter(), b_from_previous.iter())
