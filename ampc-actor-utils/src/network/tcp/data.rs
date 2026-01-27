@@ -87,7 +87,7 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
-        Ok(!replies.into_iter().any(|x| !x))
+        Ok(replies.into_iter().all(|x| x))
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {
