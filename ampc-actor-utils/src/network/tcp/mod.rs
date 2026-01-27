@@ -32,6 +32,7 @@ pub trait NetworkHandle: Send + Sync {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)>;
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
     // acts as a code barrier. also allows peers to agree on when a shutdown signal was received
+    // returns false if any shutdown signals mismatch
     async fn sync_peers(&mut self, shutdown: bool) -> Result<bool>;
 }
 

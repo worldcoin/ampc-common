@@ -79,6 +79,7 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
+    // returns false if any shutdown signals mismatch
     pub async fn sync(&mut self, shutdown: bool) -> Result<bool> {
         let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
         let replies =
@@ -86,7 +87,7 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
-        Ok(replies.into_iter().any(|x| !x))
+        Ok(!replies.into_iter().any(|x| !x))
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {
@@ -108,6 +109,7 @@ impl<T: NetworkConnection + 'static> IntoIterator for PeerConnections<T> {
 }
 
 // ensure all peers are connected to each other.
+// returns false if the shutdown signals mismatch
 async fn send_and_receive<T: NetworkConnection>(conn: &mut T, shutdown: bool) -> Result<bool> {
     let snd_buf: [u8; 4] = [3, b'o', b'k', if shutdown { 1 } else { 0 }];
     let mut rcv_buf = [0_u8; 4];
