@@ -3,7 +3,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex, OnceLock,
+        OnceLock, RwLock,
     },
     time::Instant,
 };
@@ -11,7 +11,7 @@ use std::{
 const FLUSH_AFTER_COUNT: u64 = 1000;
 
 /// Per-metric aggregated statistics, stored with atomic counters for thread-safety.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct GlobalMetricEntry {
     count: AtomicU64,
     /// Sum stored as bits of f64 for atomic operations.
@@ -22,8 +22,8 @@ struct GlobalMetricEntry {
     max_bits: AtomicU64,
 }
 
-impl GlobalMetricEntry {
-    fn new() -> Self {
+impl Default for GlobalMetricEntry {
+    fn default() -> Self {
         Self {
             count: AtomicU64::new(0),
             sum_bits: AtomicU64::new(0f64.to_bits()),
@@ -31,7 +31,9 @@ impl GlobalMetricEntry {
             max_bits: AtomicU64::new(f64::NEG_INFINITY.to_bits()),
         }
     }
+}
 
+impl GlobalMetricEntry {
     fn accumulate(&self, count: u64, sum: f64, min: f64, max: f64) {
         self.count.fetch_add(count, Ordering::Relaxed);
 
@@ -148,13 +150,13 @@ impl fmt::Display for MetricSnapshot {
 /// Global metrics collector that aggregates metrics from all FastHistogram instances.
 /// Thread-safe and accessible as a static singleton.
 pub struct GlobalMetricsCollector {
-    metrics: Mutex<HashMap<String, GlobalMetricEntry>>,
+    metrics: RwLock<HashMap<String, GlobalMetricEntry>>,
 }
 
 impl GlobalMetricsCollector {
     fn new() -> Self {
         Self {
-            metrics: Mutex::new(HashMap::new()),
+            metrics: RwLock::new(HashMap::new()),
         }
     }
 
@@ -166,24 +168,23 @@ impl GlobalMetricsCollector {
 
     /// Accumulate metrics from a FastHistogram flush.
     pub fn accumulate(&self, name: &str, count: u64, sum: f64, min: f64, max: f64) {
-        let metrics = self.metrics.lock().unwrap();
+        // Try read lock first for the common case where the entry already exists
+        let metrics = self.metrics.read().unwrap();
         if let Some(entry) = metrics.get(name) {
             entry.accumulate(count, sum, min, max);
         } else {
             drop(metrics);
-            // Need to insert a new entry
-            let mut metrics = self.metrics.lock().unwrap();
+            // Need to insert a new entry with write lock
+            let mut metrics = self.metrics.write().unwrap();
             // Double-check after re-acquiring lock
-            let entry = metrics
-                .entry(name.to_string())
-                .or_insert_with(GlobalMetricEntry::new);
+            let entry = metrics.entry(name.to_string()).or_default();
             entry.accumulate(count, sum, min, max);
         }
     }
 
     /// Reset all metrics. Call this at the start of a new job.
     pub fn reset(&self) {
-        let metrics = self.metrics.lock().unwrap();
+        let metrics = self.metrics.read().unwrap();
         for entry in metrics.values() {
             entry.reset();
         }
@@ -191,7 +192,7 @@ impl GlobalMetricsCollector {
 
     /// Get a snapshot of all metrics.
     pub fn snapshot(&self) -> HashMap<String, MetricSnapshot> {
-        let metrics = self.metrics.lock().unwrap();
+        let metrics = self.metrics.read().unwrap();
         metrics
             .iter()
             .map(|(name, entry)| (name.clone(), entry.snapshot()))
