@@ -52,9 +52,6 @@ pub enum NetworkValue {
     // used to verify that the PRFs aren't out of sync
     PrfCheck(RingElement<u128>),
     Bytes(Vec<u8>),
-    /// Packed bit vector: (packed_bytes, bit_count)
-    /// Each byte contains 8 bits in LSB-first order
-    VecRingBit(Vec<u8>, usize),
 }
 
 #[repr(u8)]
@@ -74,7 +71,6 @@ pub enum DescriptorByte {
     NetworkVec = 0x0A,
     PrfCheck = 0x0B,
     Bytes = 0x0C,
-    VecRingBit = 0x0D,
 }
 
 impl DescriptorByte {
@@ -91,7 +87,6 @@ impl DescriptorByte {
             DescriptorByte::NetworkVec => 5,
             DescriptorByte::PrfCheck => 1 + size_of::<u128>(),
             DescriptorByte::Bytes => 5,
-            DescriptorByte::VecRingBit => 5, // 1 descriptor + 4 byte bit_count
         }
     }
 }
@@ -133,7 +128,6 @@ impl NetworkValue {
             NetworkValue::NetworkVec(_) => DescriptorByte::NetworkVec,
             NetworkValue::PrfCheck(_) => DescriptorByte::PrfCheck,
             NetworkValue::Bytes(_) => DescriptorByte::Bytes,
-            NetworkValue::VecRingBit(_, _) => DescriptorByte::VecRingBit,
         };
         descriptor_byte.into()
     }
@@ -149,7 +143,6 @@ impl NetworkValue {
             NetworkValue::VecRing64(v) => base_len + size_of::<u64>() * v.len(),
             NetworkValue::NetworkVec(v) => base_len + v.iter().map(|x| x.byte_len()).sum::<usize>(),
             NetworkValue::Bytes(v) => base_len + v.len(),
-            NetworkValue::VecRingBit(bytes, _) => base_len + bytes.len(),
             _ => base_len,
         }
     }
@@ -201,10 +194,6 @@ impl NetworkValue {
             NetworkValue::Bytes(v) => {
                 res.extend_from_slice(&(v.len() as u32).to_le_bytes());
                 res.extend_from_slice(v);
-            }
-            NetworkValue::VecRingBit(bytes, bit_count) => {
-                res.extend_from_slice(&(*bit_count as u32).to_le_bytes());
-                res.extend_from_slice(bytes);
             }
             NetworkValue::NetworkVec(_v) => unreachable!(),
         }
@@ -260,16 +249,6 @@ impl NetworkValue {
                         u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[idx + 1..idx + 5])?)
                             as usize;
                     5 + len
-                }
-                DescriptorByte::VecRingBit => {
-                    if end_idx < idx + 5 {
-                        bail!("Invalid length for VecRingBit: can't parse bit count");
-                    }
-                    let bit_count =
-                        u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[idx + 1..idx + 5])?)
-                            as usize;
-                    let byte_len = bit_count.div_ceil(8);
-                    5 + byte_len
                 }
                 _ => bail!("Invalid type for NetworkVec"),
             };
@@ -375,28 +354,6 @@ impl NetworkValue {
                 }
                 Ok(NetworkValue::Bytes(serialized[5..5 + len].to_vec()))
             }
-            DescriptorByte::VecRingBit => {
-                if serialized.len() < 5 {
-                    bail!(
-                        "Invalid length for VecRingBit: too short: {}",
-                        serialized.len()
-                    );
-                }
-                let bit_count =
-                    u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[1..5])?) as usize;
-                let byte_len = bit_count.div_ceil(8);
-                if serialized.len() != 5 + byte_len {
-                    bail!(
-                        "Invalid length for VecRingBit: expected {} but got {}",
-                        5 + byte_len,
-                        serialized.len()
-                    );
-                }
-                Ok(NetworkValue::VecRingBit(
-                    serialized[5..5 + byte_len].to_vec(),
-                    bit_count,
-                ))
-            }
             _ => Err(eyre!("Invalid network value type")),
         }
     }
@@ -419,43 +376,6 @@ impl NetworkValue {
             _ => Err(eyre!(
                 "expected NetworkVec but got {}",
                 nv.get_descriptor_byte()
-            )),
-        }
-    }
-
-    /// Pack a slice of RingElement<Bit> into a VecRingBit.
-    /// Bits are packed in LSB-first order within each byte.
-    pub fn pack_bits(bits: &[RingElement<Bit>]) -> Self {
-        let bit_count = bits.len();
-        let byte_len = bit_count.div_ceil(8);
-        let mut packed = vec![0u8; byte_len];
-
-        for (i, bit) in bits.iter().enumerate() {
-            if bit.convert().convert() {
-                packed[i / 8] |= 1 << (i % 8);
-            }
-        }
-
-        NetworkValue::VecRingBit(packed, bit_count)
-    }
-
-    /// Unpack a VecRingBit (or single RingElementBit) into a Vec of RingElement<Bit>.
-    pub fn unpack_bits(self) -> Result<Vec<RingElement<Bit>>> {
-        match self {
-            NetworkValue::VecRingBit(packed, bit_count) => {
-                let mut bits = Vec::with_capacity(bit_count);
-                for i in 0..bit_count {
-                    let byte_idx = i / 8;
-                    let bit_idx = i % 8;
-                    let bit_val = (packed[byte_idx] >> bit_idx) & 1;
-                    bits.push(RingElement(Bit::new(bit_val == 1)));
-                }
-                Ok(bits)
-            }
-            NetworkValue::RingElementBit(bit) => Ok(vec![bit]),
-            _ => Err(eyre!(
-                "expected VecRingBit or RingElementBit, got {}",
-                self.get_descriptor_byte()
             )),
         }
     }
@@ -621,56 +541,6 @@ mod tests {
         let serialized = nv_empty.to_network();
         let deserialized = NetworkValue::deserialize(&serialized)?;
         assert_eq!(NetworkValue::VecRing16(empty16), deserialized);
-
-        Ok(())
-    }
-
-    /// Test round-trip serialization for VecRingBit
-    #[test]
-    fn test_vec_ring_bit_roundtrip() -> Result<()> {
-        fn roundtrip(bits: Vec<RingElement<Bit>>) -> Result<()> {
-            let packed = NetworkValue::pack_bits(&bits);
-            let serialized = packed.to_network();
-            let unpacked = NetworkValue::deserialize(&serialized)?.unpack_bits()?;
-            assert_eq!(unpacked, bits);
-            Ok(())
-        }
-
-        roundtrip(vec![])?; // empty
-        roundtrip(vec![RingElement(Bit::new(true))])?; // single true
-        roundtrip(vec![RingElement(Bit::new(false))])?; // single false
-        roundtrip((0..7).map(|i| RingElement(Bit::new(i % 3 == 0))).collect())?; // 7 bits
-        roundtrip((0..8).map(|i| RingElement(Bit::new(i % 2 == 0))).collect())?; // 8 bits
-        roundtrip((0..9).map(|i| RingElement(Bit::new(i % 2 == 1))).collect())?; // 9 bits
-        roundtrip(
-            (0..1000)
-                .map(|i| RingElement(Bit::new(i % 7 == 0)))
-                .collect(),
-        )?; // 1000 bits
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_vec_ring_bit_byte_len() {
-        // (bit_count, expected_byte_len): 1 descriptor + 4 bit_count + ceil(n/8) bytes
-        let test_cases = [(0, 5), (8, 6), (100, 18), (1000, 130)];
-        for (bit_count, expected) in test_cases {
-            let bits: Vec<_> = (0..bit_count)
-                .map(|_| RingElement(Bit::new(true)))
-                .collect();
-            assert_eq!(NetworkValue::pack_bits(&bits).byte_len(), expected);
-        }
-    }
-
-    #[test]
-    fn test_unpack_single_ring_element_bit() -> Result<()> {
-        // unpack_bits should also work on a single RingElementBit
-        let bit = NetworkValue::RingElementBit(RingElement(Bit::new(true)));
-        assert_eq!(bit.unpack_bits()?, vec![RingElement(Bit::new(true))]);
-
-        let bit = NetworkValue::RingElementBit(RingElement(Bit::new(false)));
-        assert_eq!(bit.unpack_bits()?, vec![RingElement(Bit::new(false))]);
 
         Ok(())
     }
