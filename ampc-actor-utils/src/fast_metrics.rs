@@ -501,4 +501,68 @@ mod tests {
                 .unwrap();
         }
     }
+
+    #[test]
+    fn test_global_metrics_collector_accumulate_and_snapshot() {
+        let collector = GlobalMetricsCollector::new();
+
+        // Accumulate some metrics
+        collector.accumulate("metric_a", 10, 100.0, 5.0, 15.0);
+        collector.accumulate("metric_a", 5, 50.0, 3.0, 20.0);
+        collector.accumulate("metric_b", 3, 30.0, 10.0, 10.0);
+
+        let snapshot = collector.snapshot();
+
+        // Check metric_a (should be aggregated)
+        let a = snapshot.get("metric_a").unwrap();
+        assert_eq!(a.count, 15);
+        assert_eq!(a.sum, 150.0);
+        assert_eq!(a.min, 3.0); // min of 5.0 and 3.0
+        assert_eq!(a.max, 20.0); // max of 15.0 and 20.0
+        assert!((a.avg() - 10.0).abs() < 1e-9);
+
+        // Check metric_b
+        let b = snapshot.get("metric_b").unwrap();
+        assert_eq!(b.count, 3);
+        assert_eq!(b.sum, 30.0);
+        assert_eq!(b.min, 10.0);
+        assert_eq!(b.max, 10.0);
+    }
+
+    #[test]
+    fn test_global_metrics_collector_reset() {
+        let collector = GlobalMetricsCollector::new();
+
+        collector.accumulate("metric_x", 10, 100.0, 1.0, 10.0);
+
+        // Reset
+        collector.reset();
+
+        let snapshot = collector.snapshot();
+        let x = snapshot.get("metric_x").unwrap();
+        assert_eq!(x.count, 0);
+        assert_eq!(x.sum, 0.0);
+        assert_eq!(x.min, f64::INFINITY);
+        assert_eq!(x.max, f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_global_metrics_collector_format_summary() {
+        let collector = GlobalMetricsCollector::new();
+
+        // Empty collector
+        assert_eq!(collector.format_summary(), "No metrics collected");
+
+        // Add metrics but then reset (count=0)
+        collector.accumulate("empty_metric", 1, 1.0, 1.0, 1.0);
+        collector.reset();
+        assert_eq!(collector.format_summary(), "No metrics recorded");
+
+        // Add actual metrics
+        collector.accumulate("test_metric", 5, 25.0, 2.0, 8.0);
+        let summary = collector.format_summary();
+        assert!(summary.contains("Job metrics summary:"));
+        assert!(summary.contains("test_metric"));
+        assert!(summary.contains("count=5"));
+    }
 }
