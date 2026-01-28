@@ -2,7 +2,7 @@ use crate::{
     execution::{player::Identity, session::SessionId},
     network::{tcp::NetworkConnection, value::NetworkValue},
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use socket2::{SockRef, TcpKeepalive};
 use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -79,15 +79,13 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
-    // returns false if any shutdown signals mismatch
-    pub async fn sync(&mut self, shutdown: bool) -> Result<bool> {
+    pub async fn sync(&mut self) -> Result<()> {
         let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
-        let replies =
-            futures::future::join_all(all_conns.map(|conn| send_and_receive(conn, shutdown)))
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
-        Ok(replies.into_iter().all(|x| x))
+        let _replies = futures::future::join_all(all_conns.map(send_and_receive))
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {
@@ -109,21 +107,14 @@ impl<T: NetworkConnection + 'static> IntoIterator for PeerConnections<T> {
 }
 
 // ensure all peers are connected to each other.
-// returns false if the shutdown signals mismatch
-async fn send_and_receive<T: NetworkConnection>(conn: &mut T, shutdown: bool) -> Result<bool> {
-    let snd_buf: [u8; 4] = [3, b'o', b'k', if shutdown { 1 } else { 0 }];
-    let mut rcv_buf = [0_u8; 4];
+async fn send_and_receive<T: NetworkConnection>(conn: &mut T) -> Result<()> {
+    let snd_buf: [u8; 3] = [2, b'o', b'k'];
+    let mut rcv_buf = [0_u8; 3];
     conn.write_all(&snd_buf).await?;
     conn.flush().await?;
     conn.read_exact(&mut rcv_buf).await?;
     if rcv_buf != snd_buf {
-        tracing::error!(
-            "handshake failed. got: {}, expected: {}",
-            rcv_buf[3] == 1,
-            shutdown
-        );
-        Ok(false)
-    } else {
-        Ok(true)
+        bail!("ok failed");
     }
+    Ok(())
 }

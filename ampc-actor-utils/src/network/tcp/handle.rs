@@ -66,7 +66,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
             .make_peer_connections(self.config.num_connections)
             .await?;
 
-        connections.sync(false).await?;
+        connections.sync().await?;
 
         // calls multiplexer::run() on each TCP/TLS stream
         let mut tcp_sessions = super::session::make_sessions(
@@ -128,15 +128,16 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         Ok((r, ct))
     }
 
-    async fn sync_peers(&mut self, shutdown: bool) -> Result<bool> {
+    async fn sync_peers(&mut self) -> Result<()> {
         let mut connections = self
             .make_peer_connections(1)
             .await
             .map_err(|e| eyre!("make_peer_connections failed: {}", e))?;
         connections
-            .sync(shutdown)
+            .sync()
             .await
-            .map_err(|_| eyre!("sync connections failed"))
+            .map_err(|_| eyre!("sync connections failed"))?;
+        Ok(())
     }
 }
 
