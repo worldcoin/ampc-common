@@ -1185,7 +1185,7 @@ pub(crate) async fn extract_msb_u16_batch_fss(
     // FSS: loop over the get msb funcgtion for all entries of x & collect results
     // open_bin_fss XORs the msb shares from each party
 
-    let batch_size: usize = 512;
+    let batch_size: usize = 8192;
 
     let mut vec_of_msb_shares: Vec<Share<Bit>> = Vec::with_capacity(x.len());
     for batch in x.chunks(batch_size) {
@@ -1308,52 +1308,44 @@ where
                 let temp_eval = RingElement::<u128>(u128::from_le_bytes(eval_result.0));
 
                 // Add the respective r_prime and add to the vector of results and take only the LSB
-                // Make them RingElements so it's easy to send to network
-                f_x_0_bits.push(RingElement(Bit::new(
-                    ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0,
-                )));
+                let bit_bool = ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0;
+                f_x_0_bits.push(bit_bool as u8);
             }
 
-            // Prepare bits in a vector to send to dealer and next party
-            let f_0_res_network: Vec<NetworkValue> = f_x_0_bits
-                .iter()
-                .copied()
-                .map(NetworkValue::RingElementBit)
-                .collect();
-
-            let cloned_f_0_res_network = f_0_res_network.clone();
             // send to party 1
             session
                 .network_session
-                .send_next(NetworkValue::vec_to_network(cloned_f_0_res_network))
+                .send_next(NetworkValue::Bytes(f_x_0_bits.clone()))
                 .await?;
+
             // send to the dealer (party 2)
             session
                 .network_session
-                .send_prev(NetworkValue::vec_to_network(f_0_res_network))
+                .send_prev(NetworkValue::Bytes(f_x_0_bits.clone()))
                 .await?;
 
             // Receive Bits of share of party 1 --> this is a vec of network values
-            let f_x_1_bits_net = match session.network_session.receive_next().await {
-                Ok(v) => NetworkValue::vec_from_network(v),
-                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
-            }?;
-
-            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
-            let f_x_1_bits: Vec<RingElement<Bit>> = f_x_1_bits_net
-                .into_iter()
-                .map(|nv| match nv {
-                    NetworkValue::RingElementBit(b) => Ok(b),
-                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
-                })
-                .collect::<Result<_, _>>()?;
+            let f_x_1_bits: Vec<RingElement<Bit>> =
+                match session.network_session.receive_next().await {
+                    Ok(NetworkValue::Bytes(v)) => v
+                        .into_iter()
+                        .map(|x| RingElement(Bit::new(x != 0)))
+                        .collect(),
+                    Ok(other) => return Err(eyre!("Party 0 expected Bytes but got: {:?}", other)),
+                    Err(e) => {
+                        return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}"))
+                    }
+                };
 
             // Return a vector of Share<Bit> where the a is from f_x_0_bits
             // and the b is from f_x_1_bits
             let shares: Vec<Share<Bit>> = f_x_0_bits
                 .into_iter()
                 .zip(f_x_1_bits)
-                .map(|(a, b)| Share { a, b })
+                .map(|(a, b)| Share {
+                    a: RingElement(Bit::new(a != 0)),
+                    b,
+                })
                 .collect();
             Ok(shares)
         }
@@ -1425,53 +1417,46 @@ where
                 let temp_eval = RingElement::<u128>(u128::from_le_bytes(eval_result.0));
 
                 // Add the respective r_prime and add to the vector of results and take only the LSB
-                // Make them RingElements so it's easy to send to network
-                f_x_1_bits.push(RingElement(Bit::new(
-                    ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0,
-                )));
+                let bit_bool = ((temp_eval ^ r_prime_keys[i]).0 & 1) != 0;
+                f_x_1_bits.push(bit_bool as u8);
             }
 
-            // Prepare them in a vector to send to dealer and next party
-            let f_1_res_network: Vec<NetworkValue> = f_x_1_bits
-                .iter()
-                .copied()
-                .map(NetworkValue::RingElementBit)
-                .collect();
-
-            let cloned_f_1_res_network = f_1_res_network.clone();
             // send to party 0
             session
                 .network_session
-                .send_prev(NetworkValue::vec_to_network(cloned_f_1_res_network))
+                .send_prev(NetworkValue::Bytes(f_x_1_bits.clone()))
                 .await?;
 
             // send to the dealer (party 2)
             session
                 .network_session
-                .send_next(NetworkValue::vec_to_network(f_1_res_network))
+                .send_next(NetworkValue::Bytes(f_x_1_bits.clone()))
                 .await?;
 
             // Receive Bits of share of party 0 --> this is a vec of network values
-            let f_x_0_bits_net = match session.network_session.receive_prev().await {
-                Ok(v) => NetworkValue::vec_from_network(v),
-                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
-            }?;
-
-            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
-            let f_x_0_bits: Vec<RingElement<Bit>> = f_x_0_bits_net
-                .into_iter()
-                .map(|nv| match nv {
-                    NetworkValue::RingElementBit(b) => Ok(b),
-                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
-                })
-                .collect::<Result<_, _>>()?;
+            let f_x_0_bits: Vec<RingElement<Bit>> =
+                match session.network_session.receive_prev().await {
+                    Ok(NetworkValue::Bytes(v)) => {
+                        // each byte is expected to be 0 or 1 (unpacked)
+                        v.into_iter()
+                            .map(|x| RingElement(Bit::new(x != 0)))
+                            .collect()
+                    }
+                    Ok(other) => return Err(eyre!("Party 1 expected Bytes but got: {:?}", other)),
+                    Err(e) => {
+                        return Err(eyre!("Party 1 cannot receive bit shares from party 0: {e}"))
+                    }
+                };
 
             // Return a vector of Share<Bit> where the a is from f_x_0_bits
             // and the b is from f_x_1_bits
             let shares: Vec<Share<Bit>> = f_x_0_bits
                 .into_iter()
                 .zip(f_x_1_bits)
-                .map(|(a, b)| Share { a, b })
+                .map(|(a, b)| Share {
+                    a,
+                    b: RingElement(Bit::new(b != 0)),
+                })
                 .collect();
             Ok(shares)
         }
@@ -1517,47 +1502,44 @@ where
                 }
             }
             // Send the flattened FSS keys to parties 0 and 1, so they can do Eval
-            // Send to party 0
+            // Send key to party 0
             session
                 .network_session
                 .send_next(NetworkInt::new_network_vec(k_fss_0_vec_flat))
                 .await?;
 
-            //Send to party 1
+            //Send key to party 1
             session
                 .network_session
                 .send_prev(NetworkInt::new_network_vec(k_fss_1_vec_flat))
                 .await?;
 
             // Receive bit of share from party 0
-            let f_x_0_bits_net = match session.network_session.receive_next().await {
-                Ok(v) => NetworkValue::vec_from_network(v),
-                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
-            }?;
-
-            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
-            let f_x_0_bits: Vec<RingElement<Bit>> = f_x_0_bits_net
-                .into_iter()
-                .map(|nv| match nv {
-                    NetworkValue::RingElementBit(b) => Ok(b),
-                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
-                })
-                .collect::<Result<_, _>>()?;
-
+            let f_x_0_bits: Vec<RingElement<Bit>> =
+                match session.network_session.receive_next().await {
+                    Ok(NetworkValue::Bytes(v)) => {
+                        // each byte is expected to be 0 or 1 (unpacked)
+                        v.into_iter()
+                            .map(|x| RingElement(Bit::new(x != 0)))
+                            .collect()
+                    }
+                    Ok(other) => return Err(eyre!("Party 2 expected Bytes but got: {:?}", other)),
+                    Err(e) => {
+                        return Err(eyre!("Party 2 cannot receive bit shares from party 0: {e}"))
+                    }
+                };
             // Receive Bits of share of party 1
-            let f_x_1_bits_net = match session.network_session.receive_prev().await {
-                Ok(v) => NetworkValue::vec_from_network(v),
-                Err(e) => return Err(eyre!("Party 0 cannot receive bit shares from party 1: {e}")),
-            }?;
-
-            // Convert Vec<NetworkValue> to Vec<RingElement<Bit>>
-            let f_x_1_bits: Vec<RingElement<Bit>> = f_x_1_bits_net
-                .into_iter()
-                .map(|nv| match nv {
-                    NetworkValue::RingElementBit(b) => Ok(b),
-                    other => Err(eyre!("expected RingElementBit, got {:?}", other)),
-                })
-                .collect::<Result<_, _>>()?;
+            let f_x_1_bits: Vec<RingElement<Bit>> =
+                match session.network_session.receive_prev().await {
+                    Ok(NetworkValue::Bytes(v)) => v
+                        .into_iter()
+                        .map(|x| RingElement(Bit::new(x != 0)))
+                        .collect(),
+                    Ok(other) => return Err(eyre!("Party 2 expected Bytes but got: {:?}", other)),
+                    Err(e) => {
+                        return Err(eyre!("Party 2 cannot receive bit shares from party 1: {e}"))
+                    }
+                };
 
             // Return a vector of Share<Bit> where the a is from f_x_0_bits
             // and the b is from f_x_1_bits
