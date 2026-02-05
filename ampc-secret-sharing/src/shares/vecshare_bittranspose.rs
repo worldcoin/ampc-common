@@ -1,7 +1,146 @@
-use super::{ring_impl::RingElement, share::Share, vecshare::VecShare};
+use super::{
+    int_ring::IntRing2k,
+    ring_impl::RingElement,
+    share::Share,
+    vecshare::{SliceShare, VecShare},
+};
+
+/// Flat, bit-lane-major storage for bit-transposed packed shares.
+///
+/// Logically represents `num_bits` bit lanes, each containing `chunk_count`
+/// shares of type T. Stored as a single contiguous allocation.
+///
+/// Layout: `data[bit_index * chunk_count + chunk_index]`
+#[derive(Clone, Debug)]
+pub struct TransposedPack<T: IntRing2k> {
+    data: Vec<Share<T>>,
+    num_bits: usize,
+    chunk_count: usize,
+}
+
+impl<T: IntRing2k> TransposedPack<T> {
+    /// Create a new TransposedPack filled with default shares.
+    pub fn new(num_bits: usize, chunk_count: usize) -> Self {
+        Self {
+            data: vec![Share::default(); num_bits * chunk_count],
+            num_bits,
+            chunk_count,
+        }
+    }
+
+    /// Construct from a pre-built flat data vector with known dimensions.
+    pub fn from_flat(data: Vec<Share<T>>, num_bits: usize, chunk_count: usize) -> Self {
+        debug_assert_eq!(data.len(), num_bits * chunk_count);
+        Self {
+            data,
+            num_bits,
+            chunk_count,
+        }
+    }
+
+    pub fn num_bits(&self) -> usize {
+        self.num_bits
+    }
+
+    pub fn chunk_count(&self) -> usize {
+        self.chunk_count
+    }
+
+    /// Access a single bit lane as a slice.
+    pub fn lane(&self, bit: usize) -> &[Share<T>] {
+        let start = bit * self.chunk_count;
+        &self.data[start..start + self.chunk_count]
+    }
+
+    /// Access a single bit lane as a mutable slice.
+    pub fn lane_mut(&mut self, bit: usize) -> &mut [Share<T>] {
+        let start = bit * self.chunk_count;
+        &mut self.data[start..start + self.chunk_count]
+    }
+
+    /// Access a single bit lane as a SliceShare (for passing to and_many etc.).
+    pub fn lane_as_slice(&self, bit: usize) -> SliceShare<'_, T> {
+        SliceShare::from_slice(self.lane(bit))
+    }
+
+    /// Pop the last bit lane, returning it as a VecShare.
+    /// Decrements num_bits and truncates the backing storage.
+    pub fn pop_lane(&mut self) -> Option<VecShare<T>> {
+        if self.num_bits == 0 {
+            return None;
+        }
+        self.num_bits -= 1;
+        let start = self.num_bits * self.chunk_count;
+        let lane_data = self.data[start..].to_vec();
+        self.data.truncate(start);
+        Some(VecShare::new_vec(lane_data))
+    }
+
+    /// Convert to Vec<VecShare<T>> for code that needs lane-level ownership
+    /// (e.g. the prefix tree in binary_add_2_get_msb).
+    pub fn into_lanes(self) -> Vec<VecShare<T>> {
+        self.data
+            .chunks_exact(self.chunk_count)
+            .map(|chunk| VecShare::new_vec(chunk.to_vec()))
+            .collect()
+    }
+
+    /// XOR-assign element-wise with another TransposedPack.
+    pub fn xor_assign(&mut self, other: &Self) {
+        debug_assert_eq!(self.num_bits, other.num_bits);
+        debug_assert_eq!(self.chunk_count, other.chunk_count);
+        for (a, b) in self.data.iter_mut().zip(other.data.iter()) {
+            *a ^= b;
+        }
+    }
+
+    /// XOR element-wise, producing a new TransposedPack.
+    pub fn xor(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.num_bits, other.num_bits);
+        debug_assert_eq!(self.chunk_count, other.chunk_count);
+        let data = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a ^ b)
+            .collect();
+        Self {
+            data,
+            num_bits: self.num_bits,
+            chunk_count: self.chunk_count,
+        }
+    }
+
+    /// XOR a single lane in-place with a SliceShare (e.g. for carry propagation).
+    pub fn xor_lane_assign(&mut self, bit: usize, other: SliceShare<'_, T>) {
+        debug_assert_eq!(self.chunk_count, other.len());
+        for (a, b) in self.lane_mut(bit).iter_mut().zip(other.iter()) {
+            *a ^= b;
+        }
+    }
+
+    /// Iterate over all elements in flat (lane-major) order.
+    pub fn iter(&self) -> impl Iterator<Item = &Share<T>> {
+        self.data.iter()
+    }
+
+    /// Consume self and return the flat backing data.
+    pub fn into_flat_data(self) -> Vec<Share<T>> {
+        self.data
+    }
+}
+
+impl<T: IntRing2k> IntoIterator for TransposedPack<T> {
+    type Item = Share<T>;
+    type IntoIter = std::vec::IntoIter<Share<T>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.into_iter()
+    }
+}
 
 pub trait Transpose64 {
-    fn transpose_pack_u64(self) -> Vec<VecShare<u64>>;
+    fn transpose_pack_u64(self) -> TransposedPack<u64>;
 }
 
 pub trait Transpose128 {
@@ -137,23 +276,19 @@ impl VecShare<u16> {
 }
 
 impl Transpose64 for VecShare<u16> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
-        // Pad to multiple of 64
-        let len = self.shares.len().div_ceil(64);
-        self.shares.resize(len * 64, Share::default());
+    fn transpose_pack_u64(mut self) -> TransposedPack<u64> {
+        let chunk_count = self.shares.len().div_ceil(64);
+        self.shares.resize(chunk_count * 64, Share::default());
 
-        let mut res = (0..16)
-            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
-            .collect::<Vec<_>>();
+        let mut result = TransposedPack::new(16, chunk_count);
 
         for (j, x) in self.shares.chunks_exact(64).enumerate() {
             let trans = Self::share_transpose16x64(x.try_into().unwrap());
-            for (src, des) in trans.into_iter().zip(res.iter_mut()) {
-                des.shares[j] = src;
+            for (bit, src) in trans.into_iter().enumerate() {
+                result.lane_mut(bit)[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), 16);
-        res
+        result
     }
 }
 
@@ -275,25 +410,20 @@ impl VecShare<u32> {
 
 impl Transpose64 for VecShare<u32> {
     /// Transposes `u32` shares into slices of bits and packs them into `u64` shares.
-    /// The result is a vector of `VecShare<u64>` with 32 elements corresponding to each bit.
-    /// The length of each `VecShare<u64>` is ceil(length of self / 64).
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
-        // Pad to multiple of 64
-        let len = self.shares.len().div_ceil(64);
-        self.shares.resize(len * 64, Share::default());
+    /// The result has 32 bit lanes, each of length ceil(input_len / 64).
+    fn transpose_pack_u64(mut self) -> TransposedPack<u64> {
+        let chunk_count = self.shares.len().div_ceil(64);
+        self.shares.resize(chunk_count * 64, Share::default());
 
-        let mut res = (0..32)
-            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
-            .collect::<Vec<_>>();
+        let mut result = TransposedPack::new(32, chunk_count);
 
         for (j, x) in self.shares.chunks_exact(64).enumerate() {
             let trans = Self::share_transpose32x64(x.try_into().unwrap());
-            for (src, des) in trans.into_iter().zip(res.iter_mut()) {
-                des.shares[j] = src;
+            for (bit, src) in trans.into_iter().enumerate() {
+                result.lane_mut(bit)[j] = src;
             }
         }
-        debug_assert_eq!(res.len(), 32);
-        res
+        result
     }
 }
 
@@ -386,23 +516,19 @@ impl VecShare<u64> {
 }
 
 impl Transpose64 for VecShare<u64> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
-        // Pad to multiple of 64
-        let len = self.shares.len().div_ceil(64);
-        self.shares.resize(len * 64, Share::default());
+    fn transpose_pack_u64(mut self) -> TransposedPack<u64> {
+        let chunk_count = self.shares.len().div_ceil(64);
+        self.shares.resize(chunk_count * 64, Share::default());
 
-        let mut res = (0..64)
-            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
-            .collect::<Vec<_>>();
+        let mut result = TransposedPack::new(64, chunk_count);
 
         for (j, x) in self.shares.chunks_exact_mut(64).enumerate() {
             Self::share_transpose64x64(x.try_into().unwrap());
-            for (src, des) in x.iter().cloned().zip(res.iter_mut()) {
-                des.shares[j] = src;
+            for (bit, src) in x.iter().enumerate() {
+                result.lane_mut(bit)[j] = *src;
             }
         }
-        debug_assert_eq!(res.len(), 64);
-        res
+        result
     }
 }
 
@@ -433,7 +559,32 @@ mod tests {
     use crate::shares::{vecshare::VecShare, IntRing2k};
     use rand::Rng;
 
-    fn check_transposed<T: IntRing2k, U: IntRing2k>(
+    fn check_transposed_flat<T: IntRing2k, U: IntRing2k>(
+        transposed: &TransposedPack<T>,
+        original: &VecShare<U>,
+    ) {
+        assert_eq!(transposed.num_bits(), U::K);
+        let expected_bitslice_len = original.len().div_ceil(T::K);
+        assert_eq!(transposed.chunk_count(), expected_bitslice_len);
+
+        for (i_share, share) in original.iter().enumerate() {
+            for i_bit in 0..transposed.num_bits() {
+                let expected_a_bit = share.a.get_bit_as_bit(i_bit);
+                let expected_b_bit = share.b.get_bit_as_bit(i_bit);
+                let transposed_share_batch = i_share / T::K;
+                let transposed_bit_index = i_share % T::K;
+                let lane = transposed.lane(i_bit);
+                let transposed_a_bit =
+                    lane[transposed_share_batch].a.get_bit_as_bit(transposed_bit_index);
+                let transposed_b_bit =
+                    lane[transposed_share_batch].b.get_bit_as_bit(transposed_bit_index);
+                assert_eq!(expected_a_bit, transposed_a_bit);
+                assert_eq!(expected_b_bit, transposed_b_bit);
+            }
+        }
+    }
+
+    fn check_transposed_128<T: IntRing2k, U: IntRing2k>(
         transposed: Vec<VecShare<T>>,
         original: VecShare<U>,
     ) {
@@ -468,7 +619,7 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_flat(&transposed, &vec_share);
     }
 
     #[test]
@@ -478,7 +629,7 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_flat(&transposed, &vec_share);
     }
 
     #[test]
@@ -488,7 +639,7 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_flat(&transposed, &vec_share);
     }
 
     #[test]
@@ -498,7 +649,7 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_128(transposed, vec_share);
     }
 
     #[test]
@@ -508,7 +659,7 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_128(transposed, vec_share);
     }
 
     #[test]
@@ -518,6 +669,29 @@ mod tests {
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
-        check_transposed(transposed, vec_share);
+        check_transposed_128(transposed, vec_share);
+    }
+
+    #[test]
+    fn test_into_lanes_roundtrip() {
+        let mut rng = rand::thread_rng();
+        let shares: Vec<Share<u16>> = (0..200).map(|_| Share::new(rng.gen(), rng.gen())).collect();
+        let vec_share = VecShare { shares };
+        let transposed = vec_share.clone().transpose_pack_u64();
+        let chunk_count = transposed.chunk_count();
+
+        // into_lanes and back should preserve data
+        let lanes = transposed.clone().into_lanes();
+        assert_eq!(lanes.len(), 16);
+        for (bit, lane) in lanes.iter().enumerate() {
+            assert_eq!(lane.shares.as_slice(), transposed.lane(bit));
+        }
+
+        // pop_lane should give the last lane
+        let mut transposed2 = transposed.clone();
+        let last = transposed2.pop_lane().unwrap();
+        assert_eq!(last.len(), chunk_count);
+        assert_eq!(last.shares.as_slice(), transposed.lane(15));
+        assert_eq!(transposed2.num_bits(), 15);
     }
 }

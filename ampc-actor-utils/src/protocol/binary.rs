@@ -3,7 +3,7 @@ use crate::{
     execution::session::{Session, SessionHandles},
     network::value::{NetworkInt, NetworkValue},
 };
-use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
+use ampc_secret_sharing::shares::vecshare_bittranspose::{Transpose64, TransposedPack};
 use ampc_secret_sharing::shares::{
     bit::Bit,
     int_ring::IntRing2k,
@@ -103,18 +103,8 @@ fn a2b_pre<T: IntRing2k>(session: &Session, x: Share<T>) -> Result<(Share<T>, Sh
     Ok((x1, x2, x3))
 }
 
-/// Computes in place binary XOR of two vectors of bit-sliced shares.
-#[inline]
-fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecShare<T>]) {
-    let len = x1.len();
-    debug_assert_eq!(len, x2.len());
-
-    for (x1, x2) in x1.iter_mut().zip(x2.iter()) {
-        *x1 ^= x2.as_slice();
-    }
-}
-
 /// Computes binary XOR of two vectors of bit-sliced shares.
+/// Used by the prefix tree in binary_add_2_get_msb.
 #[inline]
 fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> Vec<VecShare<T>> {
     let len = x1.len();
@@ -265,6 +255,7 @@ pub async fn and_product(
 }
 
 /// Computes binary AND of two vectors of bit-sliced shares.
+/// Used by the prefix tree in binary_add_2_get_msb which needs lane-level ownership.
 #[instrument(level = "trace", target = "searcher::network", skip(session, x1, x2))]
 async fn transposed_pack_and<T: IntRing2k + NetworkInt>(
     session: &mut Session,
@@ -304,33 +295,77 @@ where
     Ok(res)
 }
 
+/// Computes binary AND of two flat TransposedPacks.
+/// Data is already contiguous — no flatten/unflatten overhead.
+#[instrument(level = "trace", target = "searcher::network", skip(session, x1, x2))]
+async fn transposed_pack_and_flat<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    x1: TransposedPack<T>,
+    x2: TransposedPack<T>,
+) -> Result<TransposedPack<T>, Error>
+where
+    Standard: Distribution<T>,
+    [T]: Fill,
+{
+    if x1.num_bits() != x2.num_bits() {
+        bail!(
+            "Inputs have different num_bits {} {}",
+            x1.num_bits(),
+            x2.num_bits()
+        );
+    }
+    if x1.chunk_count() != x2.chunk_count() {
+        bail!(
+            "Inputs have different chunk_count {} {}",
+            x1.chunk_count(),
+            x2.chunk_count()
+        );
+    }
+
+    let num_bits = x1.num_bits();
+    let chunk_count = x1.chunk_count();
+    let total_len = num_bits * chunk_count;
+
+    let shares_a =
+        and_many_iter_send(session, x1.into_iter(), x2.into_iter(), total_len).await?;
+    let shares_b = and_many_receive(session).await?;
+
+    let data = shares_a
+        .into_iter()
+        .zip(shares_b)
+        .map(|(a, b)| Share::new(a, b))
+        .collect();
+
+    Ok(TransposedPack::from_flat(data, num_bits, chunk_count))
+}
+
 /// Computes the sum of three integers using the binary ripple-carry adder and return two resulting overflow carries.
-/// Input integers are given in binary form.
+/// Input integers are given in binary form as flat TransposedPacks.
 #[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
-    x3: Vec<VecShare<T>>,
+    x1: TransposedPack<T>,
+    x2: TransposedPack<T>,
+    x3: TransposedPack<T>,
     truncate_len: usize,
 ) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
 where
     Standard: Distribution<T>,
     [T]: Fill,
 {
-    let len = x1.len();
-    if len != x2.len() || len != x3.len() {
+    let len = x1.num_bits();
+    if len != x2.num_bits() || len != x3.num_bits() {
         bail!(
-            "Inputs have different length {} {} {}",
+            "Inputs have different num_bits {} {} {}",
             len,
-            x2.len(),
-            x3.len()
+            x2.num_bits(),
+            x3.num_bits()
         );
     };
 
     if len < 16 {
-        bail!("Input length should be at least 16: {len}");
+        bail!("Input num_bits should be at least 16: {len}");
     }
 
     // Let x1, x2, x3 are integers modulo 2^k.
@@ -341,33 +376,34 @@ where
     // Note that x1 + x2 + x3 = 2 * c + s mod 2^k
 
     let mut x2x3 = x2;
-    transposed_pack_xor_assign(&mut x2x3, &x3);
+    x2x3.xor_assign(&x3);
     // x1 XOR x2 XOR x3
-    let mut s = transposed_pack_xor(&x1, &x2x3);
+    let mut s = x1.xor(&x2x3);
     let mut x1x3 = x1;
-    transposed_pack_xor_assign(&mut x1x3, &x3);
+    x1x3.xor_assign(&x3);
     // (x1 XOR x3) AND (x2 XOR x3) = (x1 AND x2) XOR (x3 AND (x1 XOR x2)) XOR x3
-    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
+    let mut c = transposed_pack_and_flat(session, x1x3, x2x3).await?;
     // (x1 AND x2) XOR (x3 AND (x1 XOR x2))
-    transposed_pack_xor_assign(&mut c, &x3);
+    c.xor_assign(&x3);
 
     // Find the MSB of 2 * c + s using the parallel prefix adder
-    let and_many_span = trace_span!(target: "searcher::network", "and_many_calls", n = c.len());
+    let and_many_span = trace_span!(target: "searcher::network", "and_many_calls", n = c.num_bits());
 
     // First full adder (carry is 0)
     // The LSB of 2 * c is zero, so we can ignore the LSB of s
-    let mut carry = and_many(session, s[1].as_slice(), c[0].as_slice())
+    let mut carry = and_many(session, s.lane_as_slice(1), c.lane_as_slice(0))
         .instrument(and_many_span.clone())
         .await?;
 
     // Keep the MSB of c to compute the carries
-    let mut c_msb = c.pop().ok_or(eyre!("Not enough elements"))?;
+    let mut c_msb = c.pop_lane().ok_or(eyre!("Not enough elements"))?;
 
     // Compute carry of the sum of 2*c without MSB and s
-    for (s_, c_) in s.iter_mut().skip(2).zip(c.iter_mut().skip(1)) {
-        *s_ ^= carry.as_slice();
-        *c_ ^= carry.as_slice();
-        let tmp_c = and_many(session, s_.as_slice(), c_.as_slice())
+    // After pop, c has lanes 0..num_bits-1. We iterate c lanes 1.. and s lanes 2..
+    for i in 1..c.num_bits() {
+        s.xor_lane_assign(i + 1, carry.as_slice());
+        c.xor_lane_assign(i, carry.as_slice());
+        let tmp_c = and_many(session, s.lane_as_slice(i + 1), c.lane_as_slice(i))
             .instrument(and_many_span.clone())
             .await?;
         carry ^= tmp_c;
@@ -768,11 +804,9 @@ fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
 #[allow(dead_code)]
 pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
     let len = shares.len();
-    let mut padded_len = len.div_ceil(64);
-    padded_len *= 64;
 
     // Interpret the shares as u32
-    let mut x_a = VecShare::with_capacity(padded_len);
+    let mut x_a = VecShare::with_capacity(len);
     for share in shares.iter() {
         x_a.push(Share::new(
             RingElement(share.a.0 as u32),
@@ -780,30 +814,27 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
         ));
     }
 
-    // Bit-slice the shares into 64-bit shares
+    // Bit-slice the shares into 64-bit shares (flat TransposedPack)
     let x = shares.transpose_pack_u64();
+    let num_bits = x.num_bits();
+    let chunk_count = x.chunk_count();
+    let total_len = num_bits * chunk_count;
 
-    // Prepare the local input shares to be summed by the binary adder
-    let len_ = x.len();
-    let mut x1 = Vec::with_capacity(len_);
-    let mut x2 = Vec::with_capacity(len_);
-    let mut x3 = Vec::with_capacity(len_);
+    // Split each share via a2b_pre, producing 3 flat TransposedPacks
+    let mut x1_data = Vec::with_capacity(total_len);
+    let mut x2_data = Vec::with_capacity(total_len);
+    let mut x3_data = Vec::with_capacity(total_len);
 
-    for x_ in x.into_iter() {
-        let len__ = x_.len();
-        let mut x1_ = VecShare::with_capacity(len__);
-        let mut x2_ = VecShare::with_capacity(len__);
-        let mut x3_ = VecShare::with_capacity(len__);
-        for x__ in x_.into_iter() {
-            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
-            x1_.push(x1__);
-            x2_.push(x2__);
-            x3_.push(x3__);
-        }
-        x1.push(x1_);
-        x2.push(x2_);
-        x3.push(x3_);
+    for share in x.iter() {
+        let (s1, s2, s3) = a2b_pre(session, *share)?;
+        x1_data.push(s1);
+        x2_data.push(s2);
+        x3_data.push(s3);
     }
+
+    let x1 = TransposedPack::from_flat(x1_data, num_bits, chunk_count);
+    let x2 = TransposedPack::from_flat(x2_data, num_bits, chunk_count);
+    let x3 = TransposedPack::from_flat(x3_data, num_bits, chunk_count);
 
     // Sum the binary shares using the binary parallel prefix adder.
     // Since the input shares are u16 and we sum over u32, the two carries arise, i.e.,
@@ -950,7 +981,7 @@ where
 }
 
 /// Returns the MSB of the sum of two integers using the binary ripple-carry adder.
-/// Input integers are given in binary form.
+/// Input integers are given in binary form as flat TransposedPacks.
 ///
 /// NOTE: This adder has a linear multiplicative depth, which is way worse than the logarithmic depth of the parallel prefix adder below.
 /// However, its throughput is almost two times better.
@@ -958,38 +989,41 @@ where
 #[cfg(feature = "ripple_carry_adder")]
 async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
+    x1: TransposedPack<T>,
+    x2: TransposedPack<T>,
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
     [T]: Fill,
 {
-    if x1.len() != x2.len() {
-        bail!("Inputs have different length {} {}", x1.len(), x2.len());
+    if x1.num_bits() != x2.num_bits() {
+        bail!(
+            "Inputs have different num_bits {} {}",
+            x1.num_bits(),
+            x2.num_bits()
+        );
     };
 
-    // Add a and b using the ripple-carry adder
     let mut a = x1;
     let mut b = x2;
 
     // To compute the MSB of the sum we have to add the MSB of s and c later
-    let a_msb = a.pop().ok_or(eyre!("Not enough elements"))?;
-    let b_msb = b.pop().ok_or(eyre!("Not enough elements"))?;
+    let a_msb = a.pop_lane().ok_or(eyre!("Not enough elements"))?;
+    let b_msb = b.pop_lane().ok_or(eyre!("Not enough elements"))?;
 
-    let and_many_span = trace_span!(target: "searcher::network", "and_many_calls", n = a.len() - 1);
+    let and_many_span =
+        trace_span!(target: "searcher::network", "and_many_calls", n = a.num_bits() - 1);
 
     // Initialize carry for the second LSB of the sum
-    let mut carry = and_many(session, a[0].as_slice(), b[0].as_slice())
+    let mut carry = and_many(session, a.lane_as_slice(0), b.lane_as_slice(0))
         .instrument(and_many_span.clone())
         .await?;
 
     // Compute carry for the MSB of the sum
-    for (a_, b_) in a.iter_mut().skip(1).zip(b.iter_mut().skip(1)) {
-        // carry = s_ AND c_ XOR carry AND (s_ XOR c_) = (s_ XOR carry) AND (c_ XOR carry) XOR carry
-        *a_ ^= carry.as_slice();
-        *b_ ^= carry.as_slice();
-        let tmp_c = and_many(session, a_.as_slice(), b_.as_slice())
+    for bit in 1..a.num_bits() {
+        a.xor_lane_assign(bit, carry.as_slice());
+        b.xor_lane_assign(bit, carry.as_slice());
+        let tmp_c = and_many(session, a.lane_as_slice(bit), b.lane_as_slice(bit))
             .instrument(and_many_span.clone())
             .await?;
         carry ^= tmp_c;
@@ -1000,34 +1034,43 @@ where
 }
 
 /// Returns the MSB of the sum of two integers of type T using the binary parallel prefix adder tree.
-/// Input integers are given in binary form.
+/// Input integers are given in binary form as flat TransposedPacks.
 #[cfg(not(feature = "ripple_carry_adder"))]
 async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
+    x1: TransposedPack<T>,
+    x2: TransposedPack<T>,
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
     [T]: Fill,
 {
-    if x1.len() != x2.len() {
-        bail!("Inputs have different length {} {}", x1.len(), x2.len());
+    if x1.num_bits() != x2.num_bits() {
+        bail!(
+            "Inputs have different num_bits {} {}",
+            x1.num_bits(),
+            x2.num_bits()
+        );
     };
 
     let mut a = x1;
     let mut b = x2;
 
     // Compute carry propagates p = a XOR b and carry generates g = a AND b
-    let mut p = transposed_pack_xor(&a, &b);
+    let mut p = a.xor(&b);
 
     // The MSB of g is used to compute the carry of the whole sum; we don't need it as there is reduction modulo 2^k, where x1 and x2 are k-bit integers.
-    a.pop();
-    b.pop();
-    let g = transposed_pack_and(session, a, b).await?;
+    a.pop_lane();
+    b.pop_lane();
+    let g = transposed_pack_and_flat(session, a, b).await?;
 
     // The MSB of p is needed to compute the MSB of the sum, but it isn't needed for the carry computation
-    let msb_p = p.pop().ok_or(eyre!("Not enough elements"))?;
+    let msb_p = p.pop_lane().ok_or(eyre!("Not enough elements"))?;
+
+    // Convert to Vec<VecShare<T>> for the prefix tree which needs lane-level shuffling
+    let mut p_lanes = p.into_lanes();
+    let mut temp_p = p_lanes.drain(1..).collect::<Vec<_>>();
+    let mut temp_g = g.into_lanes();
 
     // Compute the carry for the MSB of the sum
     //
@@ -1036,8 +1079,6 @@ where
     // g = (g0, g1, g2, g3,...) -> (g1 XOR g0 AND p1, g3 XOR g2 AND p3,...)
     // Note that p0 is not needed to compute g, thus we can omit it as follows
     // p = (p1, p2, p3,...) -> (p2 AND p3, p4 AND p5...)
-    let mut temp_p = p.drain(1..).collect::<Vec<_>>();
-    let mut temp_g = g;
 
     while temp_g.len() != 1 {
         let (maybe_extra_p, maybe_extra_g) = if temp_g.len() % 2 == 1 {
@@ -1121,7 +1162,7 @@ where
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
 
-    // Bit-slice the shares into 64-bit shares
+    // Bit-slice the shares into flat TransposedPacks
     let x1_t = x1.inner.transpose_pack_u64();
     let x2_t = x2.inner.transpose_pack_u64();
 

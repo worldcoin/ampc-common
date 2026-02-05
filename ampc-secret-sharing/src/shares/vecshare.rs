@@ -11,6 +11,10 @@ pub struct SliceShare<'a, T: IntRing2k> {
 
 #[allow(clippy::needless_lifetimes)]
 impl<'a, T: IntRing2k> SliceShare<'a, T> {
+    pub fn from_slice(shares: &'a [Share<T>]) -> Self {
+        Self { shares }
+    }
+
     pub fn split_at(&self, mid: usize) -> (SliceShare<'_, T>, SliceShare<'_, T>) {
         let (a, b) = self.shares.split_at(mid);
         (SliceShare { shares: a }, SliceShare { shares: b })
