@@ -99,6 +99,7 @@ dependencies = [
  "dashmap",
  "eyre",
  "fss-rs",
+ "fss-rs",
  "futures",
  "itertools 0.13.0",
  "metrics",

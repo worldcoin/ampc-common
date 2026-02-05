@@ -15,6 +15,8 @@ use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
 use rand::{distributions::Standard, prelude::Distribution, Fill, Rng};
+use std::hint::black_box;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
@@ -24,6 +26,42 @@ thread_local! {
     static ROUNDS_METRICS: RefCell<FastHistogram> = RefCell::new(
         FastHistogram::new("smpc.rounds")
     );
+}
+
+static FSS_NETWORK_BYTES_SENT: AtomicU64 = AtomicU64::new(0);
+
+/// Record bytes sent over the network.
+#[inline]
+fn record_network_bytes_sent(bytes: u64) {
+    FSS_NETWORK_BYTES_SENT.fetch_add(bytes, Ordering::Relaxed);
+}
+
+/// Format bytes in appropriate units (B, KB, MB, or GB).
+fn format_bytes(bytes: u64) -> String {
+    const GB: f64 = 1000.0 * 1000.0 * 1000.0;
+    const MB: f64 = 1000.0 * 1000.0;
+    const KB: f64 = 1000.0;
+
+    let bytes_f = bytes as f64;
+    if bytes_f >= GB {
+        format!("{:.2} GB", bytes_f / GB)
+    } else if bytes_f >= MB {
+        format!("{:.2} MB", bytes_f / MB)
+    } else if bytes_f >= KB {
+        format!("{:.2} KB", bytes_f / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+pub fn print_fss_timing_summary(role: u8) {
+    let net_bytes = FSS_NETWORK_BYTES_SENT.load(Ordering::Relaxed);
+    if net_bytes > 0 {
+        tracing::info!(
+            "Actor {role}: Network Bytes Sent: {}",
+            format_bytes(net_bytes)
+        );
+    }
 }
 
 struct VecBinShare<T: IntRing2k> {
@@ -1243,6 +1281,9 @@ where
             }
 
             // Send the vector of d2+r2 to party 1
+            record_network_bytes_sent(
+                (d2r2_vec.len() * std::mem::size_of::<RingElement<u16>>()) as u64,
+            );
             let clone_d2r2_vec = d2r2_vec.clone();
             session
                 .network_session
@@ -1360,6 +1401,9 @@ where
             }
 
             // Send the vector of d1+r1 to party 0
+            record_network_bytes_sent(
+                (d1r1_vec.len() * std::mem::size_of::<RingElement<u16>>()) as u64,
+            );
             let cloned_d1r1_vec = d1r1_vec.clone();
             session
                 .network_session
@@ -1561,6 +1605,114 @@ where
         }
     }
 }
+
+/// Dummy alternative to `add_3_get_msb_fss_batch_u16` for testing network communication without
+/// performing actual FSS computations.
+#[allow(dead_code)]
+async fn add_3_get_msb_dummy_network_batch_u16(
+    session: &mut Session,
+    x: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>, Error>
+where
+    Standard: Distribution<u32>,
+{
+    // Get party number
+    let role = session.own_role().index();
+    // Depending on the role, do different stuff
+    match role {
+        0 => {
+            let batch_size = x.len();
+
+            let k_fss_0_vec = match session.network_session.receive_prev().await {
+                Ok(v) => u32::into_vec(v),
+                Err(e) => Err(eyre!("Party 0 cannot receive my fss key from dealer {e}")),
+            }?;
+
+            black_box(k_fss_0_vec);
+
+            // Return dummy result shares of the appropriate size.
+            Ok(vec![
+                Share::<Bit>::new(
+                    RingElement(Bit::new(false)),
+                    RingElement(Bit::new(false))
+                );
+                batch_size
+            ])
+        }
+        1 => {
+            let batch_size = x.len();
+
+            let k_fss_1_vec = match session.network_session.receive_next().await {
+                Ok(v) => u32::into_vec(v),
+                Err(e) => Err(eyre!("Party 1 cannot receive my fss key from dealer {e}")),
+            }?;
+
+            black_box(k_fss_1_vec);
+
+            // Return dummy result shares of the appropriate size.
+            Ok(vec![
+                Share::<Bit>::new(
+                    RingElement(Bit::new(false)),
+                    RingElement(Bit::new(false))
+                );
+                batch_size
+            ])
+        }
+        2 => {
+            let batch_size = x.len();
+
+            // Cycle between two dummy keys (probably overlkill, but wanted to make sure there isn't
+            // any trivial compression going on).
+
+            // For Face MPC (16-bit).
+            // Need keys of length 636 bytes (159 u32s) to match the size of serialized ICShare for
+            // 16-bit inputs.
+            let ks = [vec![42_u32; 159], vec![17_u32; 159]];
+
+            // For Iris MPC (32-bit).
+            // Need keys of length 1,212 bytes (303 u32s) to match the size of serialized ICShare
+            // for 32-bit inputs.
+            // let ks = [vec![42_u32; 303], vec![17_u32; 303]];
+
+            let mut k_fss_0_vec_flat = Vec::with_capacity(batch_size); // to store the fss keys
+            let mut k_fss_1_vec_flat = Vec::with_capacity(batch_size);
+            for i in 0..batch_size {
+                // Serialize the ICShare into u32 (no need to use u16 here)
+                let temp_key0 = ks[i % 2].clone();
+                k_fss_0_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key0.clone()));
+
+                let temp_key1 = ks[(i + 1) % 2].clone();
+                k_fss_1_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key1.clone()));
+            }
+
+            record_network_bytes_sent((k_fss_0_vec_flat.len() * std::mem::size_of::<u32>()) as u64);
+            session
+                .network_session
+                .send_next(NetworkInt::new_network_vec(k_fss_0_vec_flat))
+                .await?; //next is party 0
+
+            record_network_bytes_sent((k_fss_1_vec_flat.len() * std::mem::size_of::<u32>()) as u64);
+            session
+                .network_session
+                .send_prev(NetworkInt::new_network_vec(k_fss_1_vec_flat))
+                .await?; //previous is party 1
+
+            // Return dummy result shares of the appropriate size.
+            Ok(vec![
+                Share::<Bit>::new(
+                    RingElement(Bit::new(false)),
+                    RingElement(Bit::new(false))
+                );
+                batch_size
+            ])
+        }
+        _ => {
+            // this is not a valid party number
+            Err(eyre!("Party no is invalid for FSS."))
+        }
+    }
+}
+
 /// Opens a vector of binary additive replicated secret shares as described in the ABY3 framework.
 ///
 /// In particular, each party holds a share of the form `(a, b)` where `a` and `b` are already known to the next and previous parties, respectively.
