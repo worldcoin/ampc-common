@@ -1185,7 +1185,7 @@ pub(crate) async fn extract_msb_u16_batch_fss(
     // FSS: loop over the get msb funcgtion for all entries of x & collect results
     // open_bin_fss XORs the msb shares from each party
 
-    let batch_size: usize = 8192;
+    let batch_size: usize = 512;
 
     let mut vec_of_msb_shares: Vec<Share<Bit>> = Vec::with_capacity(x.len());
     for batch in x.chunks(batch_size) {
@@ -1272,25 +1272,25 @@ where
             }?;
 
             // Receive batch_size number of fss keys from dealer, the key is an ICShare that is serialized to u32
-            let k_fss_0_vec = match session.network_session.receive_prev().await {
-                Ok(v) => u32::into_vec(v),
-                Err(e) => Err(eyre!("Party 0 cannot receive my fss key from dealer {e}")),
-            }?;
-
+            let key_words_fss_0: Vec<u8> = match session.network_session.receive_prev().await {
+                Ok(NetworkValue::Bytes(v)) => v,
+                Ok(other) => return Err(eyre!("expected Bytes for FSS keys, got {:?}", other)),
+                Err(e) => return Err(eyre!("Party 0 cannot receive my fss key from dealer {e}")),
+            };
             // Deserialize each to find original IcShare and call eval
-            let key_words_fss_0: Vec<u32> = RingElement::<u32>::convert_vec(k_fss_0_vec); //need to un-flatten key vector
             let mut offset: usize = 0;
 
             for i in 0..batch_size {
-                // "unflatten" to get batch_size number of fss keys
-                // offset index has the byte length
-                let curr_key_byte_len = 1 + (key_words_fss_0[offset] as usize + 3) / 4;
+                // Get tthe key size
+                let curr_key_byte_len =
+                    u32::from_le_bytes(key_words_fss_0[offset..offset + 4].try_into()?) as usize;
+
+                offset += 4;
 
                 // Get current key (ICShare)
                 let k_fss_0_icshare: IcShare =
-                    IcShare::deserialize(&key_words_fss_0[offset..offset + curr_key_byte_len])?;
+                    IcShare::deserialize_u8(&key_words_fss_0[offset..offset + curr_key_byte_len])?;
 
-                //update offset to point to next cell that contains size of next key
                 offset += curr_key_byte_len;
 
                 // reconstruct the input d+r [recall x.a=d0] for each x[i]
@@ -1385,23 +1385,26 @@ where
             }?;
 
             // Receive batch_size number of fss keys from dealer
-            let k_fss_1_vec = match session.network_session.receive_next().await {
-                Ok(v) => u32::into_vec(v),
-                Err(e) => Err(eyre!("Party 1 cannot receive my fss key from dealer {e}")),
-            }?;
+            let key_words_fss_1: Vec<u8> = match session.network_session.receive_next().await {
+                Ok(NetworkValue::Bytes(v)) => v,
+                Ok(other) => return Err(eyre!("expected Bytes for FSS keys, got {:?}", other)),
+                Err(e) => return Err(eyre!("Party 1 cannot receive my fss key from dealer {e}")),
+            };
 
             // Deserialize each to find original IcShare and call eval
-            let key_words_fss_1: Vec<u32> = RingElement::<u32>::convert_vec(k_fss_1_vec); //need to un-flatten key vector
             let mut offset: usize = 0;
 
             for i in 0..batch_size {
-                // "unflatten" to get batch_size number of fss keys
-                let curr_key_byte_len = 1 + (key_words_fss_1[offset] as usize + 3) / 4; // offset index has the byte length, then find total u32s for this key
+                // Get size of key
+                let curr_key_byte_len =
+                    u32::from_le_bytes(key_words_fss_1[offset..offset + 4].try_into()?) as usize;
+
+                offset += 4;
 
                 // Get current key
                 let k_fss_1_icshare: IcShare =
-                    IcShare::deserialize(&key_words_fss_1[offset..offset + curr_key_byte_len])?;
-                offset += curr_key_byte_len;
+                    IcShare::deserialize_u8(&key_words_fss_1[offset..offset + curr_key_byte_len])?;
+                offset += curr_key_byte_len; //move offset to next key start
 
                 // reconstruct the input d+r [recall d0=x.b] for each x[i]
                 let d_plus_r: RingElement<u16> =
@@ -1493,25 +1496,27 @@ where
                     let (k_fss_0_pre_ser, k_fss_1_pre_ser): (IcShare, IcShare) =
                         { icf.gen(f, &mut rng) };
 
-                    // Serialize the ICShare into u32 (no need to use u16 here)
-                    let temp_key0 = k_fss_0_pre_ser.serialize()?;
-                    k_fss_0_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key0));
+                    // Serialize the ICShare into u8
+                    let temp_key0 = k_fss_0_pre_ser.serialize_u8()?;
+                    k_fss_0_vec_flat.extend_from_slice(&(temp_key0.len() as u32).to_le_bytes());
+                    k_fss_0_vec_flat.extend(temp_key0);
 
-                    let temp_key1 = k_fss_1_pre_ser.serialize()?;
-                    k_fss_1_vec_flat.extend(RingElement::<u32>::convert_vec_rev(temp_key1));
+                    let temp_key1 = k_fss_1_pre_ser.serialize_u8()?;
+                    k_fss_1_vec_flat.extend_from_slice(&(temp_key1.len() as u32).to_le_bytes());
+                    k_fss_1_vec_flat.extend(temp_key1);
                 }
             }
             // Send the flattened FSS keys to parties 0 and 1, so they can do Eval
             // Send key to party 0
             session
                 .network_session
-                .send_next(NetworkInt::new_network_vec(k_fss_0_vec_flat))
+                .send_next(NetworkValue::Bytes(k_fss_0_vec_flat))
                 .await?;
 
             //Send key to party 1
             session
                 .network_session
-                .send_prev(NetworkInt::new_network_vec(k_fss_1_vec_flat))
+                .send_prev(NetworkValue::Bytes(k_fss_1_vec_flat))
                 .await?;
 
             // Receive bit of share from party 0

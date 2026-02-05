@@ -1755,7 +1755,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 [[package]]
 name = "fss-rs"
 version = "0.6.0"
-source = "git+https://github.com/marsenis/fss?rev=c6d9342#c6d93426ab27109568b7cb030fd33061dd1344c8"
+source = "git+https://github.com/marsenis/fss?rev=597ef85#597ef853c14ffc885592f4400e9661d219aa7fc3"
 dependencies = [
  "aes",
  "ark-std",
