@@ -118,6 +118,18 @@ pub async fn compare_min_threshold_buckets(
     Ok(buckets)
 }
 
+pub async fn compare_min_threshold_buckets_score_normalization(
+    session: &mut Session,
+    threshold_score_normalization_terms: &[u32],
+    distances: &[Vec<DistanceShare<u64>>],
+) -> Result<Vec<Share<u32>>> {
+    let reduced_distances = reduce_to_min_distance_batch(session, distances).await?;
+    // Now we have a single distance for each group, we can compare it to the thresholds
+    let buckets = compare_threshold_buckets(session, threshold_a_terms, &reduced_distances).await?;
+
+    Ok(buckets)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};

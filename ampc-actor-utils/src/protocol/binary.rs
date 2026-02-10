@@ -749,7 +749,6 @@ where
 ///
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
 /// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
-#[allow(dead_code)]
 #[inline]
 pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
@@ -758,7 +757,6 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
-#[allow(dead_code)]
 #[inline]
 fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
@@ -820,6 +818,73 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     // This can be done by computing b1 as u32 << 16 and b2 as u32 << 17.
     let b1 = mul_lift_2k_many::<16>(b1.to_slice());
     let b2 = mul_lift_2k_many::<17>(b2.to_slice());
+
+    // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^32
+    x_a.sub_assign(b1);
+    x_a.sub_assign(b2);
+    Ok(x_a)
+}
+
+/// Lifts the given shares of u16 to shares of u64.
+#[allow(dead_code)]
+pub async fn lift_u64(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u64>> {
+    let len = shares.len();
+    let mut padded_len = len.div_ceil(64);
+    padded_len *= 64;
+
+    // Interpret the shares as u32
+    let mut x_a = VecShare::with_capacity(padded_len);
+    for share in shares.iter() {
+        x_a.push(Share::new(
+            RingElement(share.a.0 as u64),
+            RingElement(share.b.0 as u64),
+        ));
+    }
+
+    // Bit-slice the shares into 64-bit shares
+    let x = shares.transpose_pack_u64();
+
+    // Prepare the local input shares to be summed by the binary adder
+    let len_ = x.len();
+    let mut x1 = Vec::with_capacity(len_);
+    let mut x2 = Vec::with_capacity(len_);
+    let mut x3 = Vec::with_capacity(len_);
+
+    for x_ in x.into_iter() {
+        let len__ = x_.len();
+        let mut x1_ = VecShare::with_capacity(len__);
+        let mut x2_ = VecShare::with_capacity(len__);
+        let mut x3_ = VecShare::with_capacity(len__);
+        for x__ in x_.into_iter() {
+            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
+            x1_.push(x1__);
+            x2_.push(x2__);
+            x3_.push(x3__);
+        }
+        x1.push(x1_);
+        x2.push(x2_);
+        x3.push(x3_);
+    }
+
+    // Sum the binary shares using the binary parallel prefix adder.
+    // Since the input shares are u16 and we sum over u32, the two carries arise, i.e.,
+    // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^64
+    let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
+
+    // Lift b1 and b2 into u64 via bit injection
+    // This slightly deviates from Algorithm 10 from ePrint/2024/705 as bit injection to integers modulo 2^15 doesn't give any advantage.
+    b1.extend(b2);
+    let mut b: VecShare<u64> = bit_inject(session, b1).await?;
+    let (mut b1, mut b2) = b.split_at_mut(len);
+    b1.iter_mut().for_each(|share| {
+        share.a.0 <<= 16;
+        share.b.0 <<= 16;
+    });
+    b2.iter_mut().for_each(|share| {
+        share.a.0 <<= 17;
+        share.b.0 <<= 17;
+    });
+    let (b1, b2) = b.split_at(len);
 
     // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^32
     x_a.sub_assign(b1);

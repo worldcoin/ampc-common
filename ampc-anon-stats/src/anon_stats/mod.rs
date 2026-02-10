@@ -20,3 +20,21 @@ pub fn calculate_iris_threshold_a(n_buckets: usize, upper_match_threshold_ratio:
         })
         .collect_vec()
 }
+
+// thresholds for anon stats with score normalization are realized as a fraction of x/2^16, represented by x
+fn translate_threshold_score_normalization(threshold: f64) -> u64 {
+    (threshold * (65536u64 as f64)) as u64
+}
+
+pub fn calculate_iris_threshold_score_normalization(
+    n_buckets: usize,
+    upper_match_threshold_ratio: f64,
+) -> Vec<u64> {
+    (1..=n_buckets)
+        .map(|x: usize| {
+            translate_threshold_score_normalization(
+                upper_match_threshold_ratio / (n_buckets as f64) * (x as f64),
+            )
+        })
+        .collect_vec()
+}

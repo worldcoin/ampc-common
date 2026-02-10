@@ -3,7 +3,7 @@
 
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
-use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
+use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_u64, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
@@ -412,6 +412,27 @@ pub async fn batch_signed_lift_vec(
 ) -> Result<Vec<Share<u32>>> {
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
+}
+
+/// Wrapper over batch_signed_lift that lifts a vector (Vec) of 16-bit shares to
+/// a vector (Vec) of 64-bit shares.
+pub async fn batch_signed_lift_vec_u64(
+    session: &mut Session,
+    pre_lift: Vec<Share<u16>>,
+) -> Result<Vec<Share<u64>>> {
+    let mut pre_lift = VecShare::new_vec(pre_lift);
+    for v in pre_lift.iter_mut() {
+        v.add_assign_const_role(1_u16 << 15, session.own_role());
+    }
+    let mut lifted_values = lift_u64(session, pre_lift).await?;
+    // Now we got shares of d1' over 2^64 such that d1' = (d1'_1 + d1'_2 + d1'_3) %
+    // 2^{16} = d1 Next we subtract the 2^15 term we've added previously to
+    // get signed shares over 2^{64}
+    const SIGNED_LIFT_CONST_U64: u64 = (-(1_i64 << 15)) as u64;
+    for v in lifted_values.iter_mut() {
+        v.add_assign_const_role(SIGNED_LIFT_CONST_U64, session.own_role());
+    }
+    Ok(lifted_values.inner())
 }
 
 #[cfg(test)]
