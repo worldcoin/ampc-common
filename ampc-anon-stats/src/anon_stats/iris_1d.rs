@@ -1,7 +1,12 @@
-use crate::anon_stats::{calculate_iris_threshold_a, MATCH_THRESHOLD_RATIO_REAUTH};
+use crate::anon_stats::{
+    calculate_iris_threshold_a, calculate_iris_threshold_score_normalization,
+    MATCH_THRESHOLD_RATIO_REAUTH,
+};
 use crate::server::config::AnonStatsServerConfig;
 use crate::types::{AnonStatsOrientation, AnonStatsResultSource};
 use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin, BucketStatistics};
+use ampc_actor_utils::protocol::anon_stats::compare_min_threshold_buckets_score_normalization;
+use ampc_actor_utils::protocol::nhd_ops::nhd_lift_distances;
 use ampc_actor_utils::{
     constants::MATCH_THRESHOLD_RATIO,
     execution::session::Session,
@@ -10,13 +15,14 @@ use ampc_actor_utils::{
         ops::{batch_signed_lift_vec, open_ring},
     },
 };
-use ampc_secret_sharing::shares::DistanceShare;
+use ampc_secret_sharing::shares::{DistanceShare, Ring48};
 use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::Itertools;
 
 pub type DistanceBundle1D = Vec<DistanceShare<u16>>;
 pub type LiftedDistanceBundle1D = Vec<DistanceShare<u32>>;
+pub type LiftedU48DistanceBundle1D = Vec<DistanceShare<Ring48>>;
 
 pub async fn lift_bundles_1d(
     session: &mut Session,
@@ -126,6 +132,74 @@ pub async fn process_1d_lifted_anon_stats_job(
         operation,
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
+    anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
+    Ok(anon_stats)
+}
+
+pub async fn lift_bundles_u48_1d(
+    session: &mut Session,
+    bundles: &[DistanceBundle1D],
+) -> Result<Vec<LiftedU48DistanceBundle1D>> {
+    let flattened = bundles
+        .iter()
+        .flat_map(|x| x.iter().flat_map(|y| [y.code_dot, y.mask_dot]))
+        .collect_vec();
+    let lifted_flattened = nhd_lift_distances(session, flattened.clone()).await?;
+
+    // reconstruct lifted bundles in original shape
+    let mut idx = 0;
+    let lifted = bundles
+        .iter()
+        .map(|b| b.len())
+        .map(|chunk_size| {
+            let mut lifted_bundle = Vec::with_capacity(chunk_size);
+            for _ in 0..chunk_size {
+                lifted_bundle.push(lifted_flattened[idx]);
+                idx += 1;
+            }
+            lifted_bundle
+        })
+        .collect();
+    assert!(idx == lifted_flattened.len());
+    Ok(lifted)
+}
+
+pub async fn process_1d_lifted_anon_stats_score_normalization_job(
+    session: &mut Session,
+    job: AnonStatsMapping<LiftedU48DistanceBundle1D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics> {
+    let job_size = job.len();
+    let job_data = job.into_bundles();
+    let (num_buckets, match_threshold_ratio) = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) => (config.n_buckets_1d, MATCH_THRESHOLD_RATIO),
+    };
+    let translated_thresholds =
+        calculate_iris_threshold_score_normalization(num_buckets, match_threshold_ratio);
+
+    // execute anon stats MPC protocol
+    let bucket_result_shares = compare_min_threshold_buckets_score_normalization(
+        session,
+        translated_thresholds.as_slice(),
+        job_data.as_slice(),
+    )
+    .await?;
+
+    let buckets = open_ring(session, &bucket_result_shares).await?;
+    let mut anon_stats = BucketStatistics::new(
+        job_size,
+        num_buckets,
+        config.party_id,
+        origin.side,
+        AnonStatsResultSource::Aggregator,
+        operation,
+    );
     anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
     Ok(anon_stats)
 }
