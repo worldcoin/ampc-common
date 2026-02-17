@@ -318,6 +318,25 @@ impl IntRing2k for Ring48 {
     const BYTES: usize = 6;
 }
 
+impl super::ring_impl::RingRandFillable for Ring48 {
+    #[inline]
+    fn fill_vec_ring<R: Rng + ?Sized>(
+        slice: &mut [super::ring_impl::RingElement<Self>],
+        rng: &mut R,
+    ) -> Result<(), rand::Error> {
+        // Fast path: bulk fill as u64, then mask each element to 48 bits.
+        // SAFETY: RingElement<Ring48> is repr(transparent) over Ring48 which is
+        // repr(transparent) over u64, so the slice has the same memory layout as [u64].
+        let len = slice.len();
+        let raw = unsafe { std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut u64, len) };
+        rng.try_fill(raw)?;
+        for elem in slice.iter_mut() {
+            elem.0 .0 &= MASK_48;
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Random generation
 // ---------------------------------------------------------------------------
@@ -328,7 +347,6 @@ impl Distribution<Ring48> for Standard {
         Ring48(rng.gen::<u64>() & MASK_48)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

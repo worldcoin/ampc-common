@@ -7,14 +7,14 @@ use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
     bit::Bit,
     int_ring::IntRing2k,
-    ring_impl::{RingElement, VecRingElement},
+    ring_impl::{RingElement, RingRandFillable, VecRingElement},
     share::Share,
     vecshare::{SliceShare, VecShare},
 };
 use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
-use rand::{distributions::Standard, prelude::Distribution, Fill, Rng};
+use rand::{distributions::Standard, prelude::Distribution, Rng};
 use std::{cell::RefCell, ops::SubAssign};
 use tracing::{instrument, trace_span, Instrument};
 
@@ -136,7 +136,7 @@ async fn and_many_iter_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     // Caller should ensure that size_hint == a.len() == b.len()
     let mut shares_a = VecRingElement::with_capacity(size_hint);
@@ -166,7 +166,7 @@ async fn and_many_send<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<RingElement<T>>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
@@ -215,7 +215,7 @@ async fn and_many<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let shares_a = and_many_send(session, a, b).await?;
     let shares_b = and_many_receive(session).await?;
@@ -273,7 +273,7 @@ async fn transposed_pack_and<T: IntRing2k + NetworkInt>(
 ) -> Result<Vec<VecShare<T>>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -317,7 +317,7 @@ async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
 ) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let len = x1.len();
     if len != x2.len() || len != x3.len() {
@@ -448,7 +448,7 @@ pub async fn bit_inject<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let res = match role_index {
@@ -494,7 +494,7 @@ async fn bit_inject_party0<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let len = input.len();
 
@@ -592,7 +592,7 @@ async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let len = input.len();
 
@@ -675,7 +675,7 @@ async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let len = input.len();
     // Rounds 1 and 2 (computed in parallel):
@@ -963,7 +963,7 @@ async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1009,7 +1009,7 @@ async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
 ) -> Result<VecShare<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1116,7 +1116,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
@@ -1136,7 +1136,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
@@ -1154,7 +1154,7 @@ where
     T: IntRing2k + NetworkInt,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    [T]: Fill,
+    T: RingRandFillable,
 {
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
@@ -1248,7 +1248,7 @@ mod tests {
     async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
     where
         Standard: Distribution<T>,
-        [T]: Fill,
+        T: RingRandFillable,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
@@ -1375,7 +1375,7 @@ mod tests {
     where
         VecShare<T>: Transpose64,
         Standard: Distribution<T>,
-        [T]: Fill,
+        T: RingRandFillable,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
