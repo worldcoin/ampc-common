@@ -3,11 +3,13 @@
 
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
-use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
+use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
+use ampc_secret_sharing::shares::{
+    ring_impl::RingElement, share::Share, IntRing2k, Ring48, VecShare,
+};
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
 use tracing::instrument;
@@ -412,6 +414,39 @@ pub async fn batch_signed_lift_vec(
 ) -> Result<Vec<Share<u32>>> {
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
+}
+
+/// Signed lift from u16 to Ring48. Same logic as batch_signed_lift but
+/// targets 48-bit ring arithmetic.
+pub async fn batch_signed_lift_ring48(
+    session: &mut Session,
+    mut pre_lift: VecShare<u16>,
+) -> Result<VecShare<Ring48>> {
+    // Compute (v + 2^{15}) % 2^{16}, to make values positive.
+    for v in pre_lift.iter_mut() {
+        v.add_assign_const_role(1_u16 << 15, session.own_role());
+    }
+    let mut lifted_values = lift_to_ring48(session, pre_lift).await?;
+    // Now we got shares of d1' over 2^48 such that d1' = (d1'_1 + d1'_2 + d1'_3) %
+    // 2^{16} = d1. Next we subtract the 2^15 term we've added previously to
+    // get signed shares over 2^{48}.
+    for v in lifted_values.iter_mut() {
+        v.add_assign_const_role(
+            Ring48::masked((1_u64 << 48) - (1_u64 << 15)),
+            session.own_role(),
+        );
+    }
+    Ok(lifted_values)
+}
+
+/// Wrapper over batch_signed_lift_ring48 that lifts a vector (Vec) of 16-bit
+/// shares to a vector (Vec) of Ring48 shares.
+pub async fn batch_signed_lift_vec_ring48(
+    session: &mut Session,
+    pre_lift: Vec<Share<u16>>,
+) -> Result<Vec<Share<Ring48>>> {
+    let pre_lift = VecShare::new_vec(pre_lift);
+    Ok(batch_signed_lift_ring48(session, pre_lift).await?.inner())
 }
 
 #[cfg(test)]

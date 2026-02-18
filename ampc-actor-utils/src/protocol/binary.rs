@@ -7,6 +7,7 @@ use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
     bit::Bit,
     int_ring::IntRing2k,
+    ring48::Ring48,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
     share::Share,
     vecshare::{SliceShare, VecShare},
@@ -827,6 +828,70 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     Ok(x_a)
 }
 
+/// Lifts the given shares of u16 to shares of Ring48.
+#[allow(dead_code)]
+pub async fn lift_to_ring48(
+    session: &mut Session,
+    shares: VecShare<u16>,
+) -> Result<VecShare<Ring48>> {
+    let len = shares.len();
+    let mut padded_len = len.div_ceil(64);
+    padded_len *= 64;
+
+    // Interpret the shares as Ring48
+    let mut x_a = VecShare::with_capacity(padded_len);
+    for share in shares.iter() {
+        x_a.push(Share::new(
+            RingElement(Ring48(share.a.0 as u64)),
+            RingElement(Ring48(share.b.0 as u64)),
+        ));
+    }
+
+    // Bit-slice the shares into 64-bit shares
+    let x = shares.transpose_pack_u64();
+
+    // Prepare the local input shares to be summed by the binary adder
+    let len_ = x.len();
+    let mut x1 = Vec::with_capacity(len_);
+    let mut x2 = Vec::with_capacity(len_);
+    let mut x3 = Vec::with_capacity(len_);
+
+    for x_ in x.into_iter() {
+        let len__ = x_.len();
+        let mut x1_ = VecShare::with_capacity(len__);
+        let mut x2_ = VecShare::with_capacity(len__);
+        let mut x3_ = VecShare::with_capacity(len__);
+        for x__ in x_.into_iter() {
+            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
+            x1_.push(x1__);
+            x2_.push(x2__);
+            x3_.push(x3__);
+        }
+        x1.push(x1_);
+        x2.push(x2_);
+        x3.push(x3_);
+    }
+
+    // Sum the binary shares using the binary parallel prefix adder.
+    // Since the input shares are u16 and we sum over Ring48, the two carries arise, i.e.,
+    // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^48
+    let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
+
+    // Lift b1 and b2 into u16 via bit injection
+    b1.extend(b2);
+    let mut b = bit_inject::<Ring48>(session, b1).await?;
+    let (b1, b2) = b.split_at_mut(len);
+
+    // Lift b1 and b2 into Ring48 and multiply them by 2^16 and 2^17, respectively.
+    let b1 = VecShare::new_vec(b1.iter().map(|x| x << 16).collect());
+    let b2 = VecShare::new_vec(b2.iter().map(|x| x << 17).collect());
+
+    // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^48
+    x_a.sub_assign(b1);
+    x_a.sub_assign(b2);
+    Ok(x_a)
+}
+
 /// Splits every share in `input` into two binary shares such that their sum is equal to a secret share of the originally secret shared value. In other words, if `v` is the input secret share of a value `x`, the function produces two secret shared binary strings `s1` and `s2` such that `s1 + s2` is a secret share of `x`.
 ///
 /// The protocol follows the description of Protocol 18 from <https://eprint.iacr.org/2025/919.pdf>, see Section 6.1.
@@ -1440,5 +1505,48 @@ mod tests {
     #[tokio::test]
     async fn test_extract_msb_u32() -> Result<()> {
         test_extract_msb_generic::<u32>().await
+    }
+
+    #[tokio::test]
+    async fn test_lift_to_ring48() -> Result<()> {
+        let mut rng = AesRng::from_random_seed();
+        let len = 10;
+
+        // Generate random u16 inputs and their shares
+        let inputs: Vec<u16> = (0..len).map(|_| rng.gen::<u16>()).collect();
+        let shares = create_array_sharing(&mut rng, &inputs);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let lifted = lift_to_ring48(&mut session, shares_i).await.unwrap();
+                open_ring(&mut session, lifted.shares()).await
+            });
+        }
+        let res = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], res[1]);
+        assert_eq!(res[1], res[2]);
+
+        for (i, &expected) in inputs.iter().enumerate() {
+            assert_eq!(
+                res[0][i],
+                Ring48(expected as u64),
+                "Lift mismatch at index {}",
+                i
+            );
+        }
+
+        Ok(())
     }
 }
