@@ -428,17 +428,25 @@ impl Transpose128 for VecShare<u64> {
 }
 
 impl Transpose64 for VecShare<Ring48> {
-    fn transpose_pack_u64(self) -> Vec<VecShare<u64>> {
-        // Convert Ring48 shares to u64 shares (Ring48 is repr(transparent) over u64).
-        let u64_shares: VecShare<u64> = VecShare::new_vec(
-            self.into_iter()
-                .map(|s| Share::new(RingElement(s.a.0 .0), RingElement(s.b.0 .0)))
-                .collect(),
-        );
-        // Transpose as u64 (64 bit-planes), then keep only the 48 meaningful planes.
-        let mut result = u64_shares.transpose_pack_u64();
-        result.truncate(48);
-        result
+    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+        let len = self.shares.len().div_ceil(64);
+        self.shares.resize(len * 64, Share::default());
+
+        let mut res = (0..48) // not 64
+            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
+            .collect::<Vec<_>>();
+
+        for (j, chunk) in self.shares.chunks_exact(64).enumerate() {
+            // stack-allocated, no heap alloc
+            let mut u64_chunk: [Share<u64>; 64] = core::array::from_fn(|i| {
+                Share::new(RingElement(chunk[i].a.0 .0), RingElement(chunk[i].b.0 .0))
+            });
+            VecShare::<u64>::share_transpose64x64(&mut u64_chunk);
+            for (src, des) in u64_chunk.into_iter().take(48).zip(res.iter_mut()) {
+                des.shares[j] = src;
+            }
+        }
+        res
     }
 }
 
