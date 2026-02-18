@@ -121,10 +121,7 @@ impl Prf {
 
     // returns the ring elements corresponding to (mine, prev). can be used to create zero shares (mine - prev) or binary shares (mine ^ prev)
     #[inline(always)]
-    pub fn gen_rands_batch<T>(
-        &mut self,
-        len: usize,
-    ) -> (VecRingElement<T>, VecRingElement<T>)
+    pub fn gen_rands_batch<T>(&mut self, len: usize) -> (VecRingElement<T>, VecRingElement<T>)
     where
         T: RingRandFillable,
     {

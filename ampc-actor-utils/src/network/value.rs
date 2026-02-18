@@ -1,4 +1,6 @@
-use ampc_secret_sharing::shares::{self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k};
+use ampc_secret_sharing::shares::{
+    self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
+};
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -106,7 +108,10 @@ impl DescriptorByte {
             DescriptorByte::RingElement32 => 5,
             DescriptorByte::RingElement64 => 9,
             DescriptorByte::RingElement48 => 7, // 1 descriptor + 6 bytes
-            DescriptorByte::VecRing16 | DescriptorByte::VecRing32 | DescriptorByte::VecRing64 | DescriptorByte::VecRing48 => 5,
+            DescriptorByte::VecRing16
+            | DescriptorByte::VecRing32
+            | DescriptorByte::VecRing64
+            | DescriptorByte::VecRing48 => 5,
             DescriptorByte::StateChecksum => 1 + 8 + 8,
             DescriptorByte::NetworkVec => 5,
             DescriptorByte::PrfCheck => 1 + size_of::<u128>(),
@@ -215,7 +220,7 @@ impl NetworkValue {
             NetworkValue::VecRing32(v) => serialize_vec_ring(v, res),
             NetworkValue::VecRing64(v) => serialize_vec_ring(v, res),
             NetworkValue::RingElement48(x) => {
-                res.extend_from_slice(&x.0.0.to_le_bytes()[..Ring48::BYTES]);
+                res.extend_from_slice(&x.0 .0.to_le_bytes()[..Ring48::BYTES]);
             }
             NetworkValue::VecRing48(v) => serialize_vec_ring(v, res),
             NetworkValue::StateChecksum(checksums) => {
@@ -374,12 +379,11 @@ impl NetworkValue {
                 ))))
             }
             DescriptorByte::VecRing48 => {
-                let res =
-                    deserialize_vec_ring::<Ring48, 6, _>(serialized, |bytes: [u8; 6]| {
-                        let mut buf = [0u8; 8];
-                        buf[..6].copy_from_slice(&bytes);
-                        Ring48(u64::from_le_bytes(buf))
-                    })?;
+                let res = deserialize_vec_ring::<Ring48, 6, _>(serialized, |bytes: [u8; 6]| {
+                    let mut buf = [0u8; 8];
+                    buf[..6].copy_from_slice(&bytes);
+                    Ring48(u64::from_le_bytes(buf))
+                })?;
                 Ok(NetworkValue::VecRing48(res))
             }
             DescriptorByte::StateChecksum => {
@@ -607,7 +611,11 @@ mod tests {
             .collect();
         let nv48 = NetworkValue::VecRing48(v48.clone());
         let serialized = nv48.to_network();
-        assert_eq!(serialized.len(), 1 + 4 + 6 * 1000, "VecRing48 should use 6 bytes per element");
+        assert_eq!(
+            serialized.len(),
+            1 + 4 + 6 * 1000,
+            "VecRing48 should use 6 bytes per element"
+        );
         let deserialized = NetworkValue::deserialize(&serialized)?;
         assert_eq!(NetworkValue::VecRing48(v48), deserialized);
 
