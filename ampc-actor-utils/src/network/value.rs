@@ -1,4 +1,6 @@
-use ampc_secret_sharing::shares::{self, bit::Bit, ring_impl::RingElement, IntRing2k};
+use ampc_secret_sharing::shares::{
+    self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
+};
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -13,21 +15,40 @@ use std::mem::size_of;
 /// - We're only reading from the slice, not modifying it
 #[inline]
 fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
-    let byte_len = v.len() * size_of::<T>();
+    let wire_bytes = T::BYTES;
+    let byte_len = v.len() * wire_bytes;
     res.extend_from_slice(&(byte_len as u32).to_le_bytes());
 
     #[cfg(target_endian = "little")]
     {
-        // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
-        // the memory layout matches the serialized format (little-endian bytes).
-        let bytes: &[u8] = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, byte_len) };
-        res.extend_from_slice(bytes);
+        if wire_bytes == size_of::<T>() {
+            // Fast path: in-memory layout matches wire format.
+            // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
+            // the memory layout matches the serialized format (little-endian bytes).
+            let bytes: &[u8] =
+                unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, byte_len) };
+            res.extend_from_slice(bytes);
+        } else {
+            // Slow path: wire size differs from memory size (e.g., Ring48: 6 bytes on wire, 8 in memory).
+            for x in v {
+                // SAFETY: T: NoUninit (required by IntRing2k), so reading T as bytes is safe.
+                let elem_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(&x.0 as *const T as *const u8, size_of::<T>())
+                };
+                res.extend_from_slice(&elem_bytes[..wire_bytes]);
+            }
+        }
     }
 
     #[cfg(not(target_endian = "little"))]
     {
         for x in v {
-            res.extend_from_slice(&x.convert().to_le_bytes());
+            let elem_bytes = bytemuck::bytes_of(&x.0);
+            // On big-endian, reverse each element's bytes to get little-endian wire format,
+            // then take the low wire_bytes.
+            let mut le_bytes = elem_bytes.to_vec();
+            le_bytes.reverse();
+            res.extend_from_slice(&le_bytes[..wire_bytes]);
         }
     }
 }
@@ -46,6 +67,8 @@ pub enum NetworkValue {
     VecRing16(Vec<RingElement<u16>>),
     VecRing32(Vec<RingElement<u32>>),
     VecRing64(Vec<RingElement<u64>>),
+    RingElement48(RingElement<Ring48>),
+    VecRing48(Vec<RingElement<Ring48>>),
     StateChecksum(StateChecksum),
     // outside of this module, use vec_to_network() and vec_from_network() instead of accessing this variant directly.
     NetworkVec(Vec<Self>),
@@ -71,6 +94,8 @@ pub enum DescriptorByte {
     NetworkVec = 0x0A,
     PrfCheck = 0x0B,
     Bytes = 0x0C,
+    RingElement48 = 0x0D,
+    VecRing48 = 0x0E,
 }
 
 impl DescriptorByte {
@@ -82,7 +107,11 @@ impl DescriptorByte {
             DescriptorByte::RingElement16 => 3,
             DescriptorByte::RingElement32 => 5,
             DescriptorByte::RingElement64 => 9,
-            DescriptorByte::VecRing16 | DescriptorByte::VecRing32 | DescriptorByte::VecRing64 => 5,
+            DescriptorByte::RingElement48 => 7, // 1 descriptor + 6 bytes
+            DescriptorByte::VecRing16
+            | DescriptorByte::VecRing32
+            | DescriptorByte::VecRing64
+            | DescriptorByte::VecRing48 => 5,
             DescriptorByte::StateChecksum => 1 + 8 + 8,
             DescriptorByte::NetworkVec => 5,
             DescriptorByte::PrfCheck => 1 + size_of::<u128>(),
@@ -124,6 +153,8 @@ impl NetworkValue {
             NetworkValue::VecRing16(_) => DescriptorByte::VecRing16,
             NetworkValue::VecRing32(_) => DescriptorByte::VecRing32,
             NetworkValue::VecRing64(_) => DescriptorByte::VecRing64,
+            NetworkValue::RingElement48(_) => DescriptorByte::RingElement48,
+            NetworkValue::VecRing48(_) => DescriptorByte::VecRing48,
             NetworkValue::StateChecksum(_) => DescriptorByte::StateChecksum,
             NetworkValue::NetworkVec(_) => DescriptorByte::NetworkVec,
             NetworkValue::PrfCheck(_) => DescriptorByte::PrfCheck,
@@ -141,6 +172,7 @@ impl NetworkValue {
             NetworkValue::VecRing16(v) => base_len + size_of::<u16>() * v.len(),
             NetworkValue::VecRing32(v) => base_len + size_of::<u32>() * v.len(),
             NetworkValue::VecRing64(v) => base_len + size_of::<u64>() * v.len(),
+            NetworkValue::VecRing48(v) => base_len + Ring48::BYTES * v.len(),
             NetworkValue::NetworkVec(v) => base_len + v.iter().map(|x| x.byte_len()).sum::<usize>(),
             NetworkValue::Bytes(v) => base_len + v.len(),
             _ => base_len,
@@ -187,6 +219,10 @@ impl NetworkValue {
             NetworkValue::VecRing16(v) => serialize_vec_ring(v, res),
             NetworkValue::VecRing32(v) => serialize_vec_ring(v, res),
             NetworkValue::VecRing64(v) => serialize_vec_ring(v, res),
+            NetworkValue::RingElement48(x) => {
+                res.extend_from_slice(&x.0 .0.to_le_bytes()[..Ring48::BYTES]);
+            }
+            NetworkValue::VecRing48(v) => serialize_vec_ring(v, res),
             NetworkValue::StateChecksum(checksums) => {
                 res.extend_from_slice(&u64::to_le_bytes(checksums.irises));
                 res.extend_from_slice(&u64::to_le_bytes(checksums.graph));
@@ -238,9 +274,11 @@ impl NetworkValue {
                 DescriptorByte::RingElement16 => 3,
                 DescriptorByte::RingElement32 => 5,
                 DescriptorByte::RingElement64 => 9,
+                DescriptorByte::RingElement48 => 1 + Ring48::BYTES,
                 DescriptorByte::VecRing16
                 | DescriptorByte::VecRing32
                 | DescriptorByte::VecRing64
+                | DescriptorByte::VecRing48
                 | DescriptorByte::Bytes => {
                     if end_idx < idx + 5 {
                         bail!("Invalid length for VecRing: can't parse vector length");
@@ -330,6 +368,24 @@ impl NetworkValue {
                 let res = deserialize_vec_ring::<u64, 8, _>(serialized, u64::from_le_bytes)?;
                 Ok(NetworkValue::VecRing64(res))
             }
+            DescriptorByte::RingElement48 => {
+                if serialized.len() != 1 + Ring48::BYTES {
+                    bail!("Invalid length for RingElement48");
+                }
+                let mut buf = [0u8; 8];
+                buf[..Ring48::BYTES].copy_from_slice(&serialized[1..1 + Ring48::BYTES]);
+                Ok(NetworkValue::RingElement48(RingElement(Ring48(
+                    u64::from_le_bytes(buf),
+                ))))
+            }
+            DescriptorByte::VecRing48 => {
+                let res = deserialize_vec_ring::<Ring48, 6, _>(serialized, |bytes: [u8; 6]| {
+                    let mut buf = [0u8; 8];
+                    buf[..6].copy_from_slice(&bytes);
+                    Ring48(u64::from_le_bytes(buf))
+                })?;
+                Ok(NetworkValue::VecRing48(res))
+            }
             DescriptorByte::StateChecksum => {
                 let (a, b, c) = (1, 9, 17);
                 if serialized.len() != 1 + size_of::<u64>() * 2 {
@@ -389,8 +445,8 @@ where
     F: Fn([u8; N]) -> T,
     T: shares::int_ring::IntRing2k,
 {
-    // this variable is for error messages
-    let type_bits = size_of::<T>() * 8;
+    let wire_bytes = T::BYTES;
+    let type_bits = wire_bytes * 8;
 
     if serialized.len() < 5 {
         bail!(
@@ -409,30 +465,43 @@ where
         );
     }
     #[allow(clippy::manual_is_multiple_of)]
-    if len % size_of::<T>() != 0 {
+    if len % wire_bytes != 0 {
         bail!(
             "invalid length for VecRing{}: length {} does not divide type length {}",
             type_bits,
             len,
-            type_bits
+            wire_bytes
         );
     }
-    let num_elements = len / size_of::<T>();
+    let num_elements = len / wire_bytes;
 
     #[cfg(target_endian = "little")]
     {
-        // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
-        // the memory layout matches the serialized format (little-endian bytes).
-        // We allocate a new Vec, copy the bytes, and return it.
-        let mut res = Vec::<RingElement<T>>::with_capacity(num_elements);
-        // SAFETY: We just allocated capacity for num_elements, and we're about to
-        // initialize all of them via copy_from_slice.
-        unsafe {
-            let dst = res.as_mut_ptr() as *mut u8;
-            std::ptr::copy_nonoverlapping(serialized[5..].as_ptr(), dst, len);
-            res.set_len(num_elements);
+        if wire_bytes == size_of::<T>() {
+            // Fast path: in-memory layout matches wire format.
+            // SAFETY: RingElement<T> is repr(transparent) over T, and on little-endian
+            // the memory layout matches the serialized format (little-endian bytes).
+            let mut res = Vec::<RingElement<T>>::with_capacity(num_elements);
+            unsafe {
+                let dst = res.as_mut_ptr() as *mut u8;
+                std::ptr::copy_nonoverlapping(serialized[5..].as_ptr(), dst, len);
+                res.set_len(num_elements);
+            }
+            Ok(res)
+        } else {
+            // Slow path: wire size differs from memory size (e.g., Ring48).
+            // Zero-initialize, then copy wire_bytes per element into the low bytes.
+            let mut res = vec![RingElement(T::default()); num_elements];
+            for (i, elem) in res.iter_mut().enumerate() {
+                let src = &serialized[5 + i * wire_bytes..5 + (i + 1) * wire_bytes];
+                // SAFETY: T: NoUninit + AnyBitPattern (required by IntRing2k), so writing T as bytes is safe.
+                let dst: &mut [u8] = unsafe {
+                    std::slice::from_raw_parts_mut(&mut elem.0 as *mut T as *mut u8, size_of::<T>())
+                };
+                dst[..wire_bytes].copy_from_slice(src);
+            }
+            Ok(res)
         }
-        Ok(res)
     }
 
     #[cfg(not(target_endian = "little"))]
@@ -482,6 +551,7 @@ macro_rules! impl_network_int {
 impl_network_int!(u16, RingElement16, VecRing16);
 impl_network_int!(u32, RingElement32, VecRing32);
 impl_network_int!(u64, RingElement64, VecRing64);
+impl_network_int!(Ring48, RingElement48, VecRing48);
 
 #[cfg(test)]
 mod tests {
@@ -534,6 +604,27 @@ mod tests {
         let serialized = nv64.to_network();
         let deserialized = NetworkValue::deserialize(&serialized)?;
         assert_eq!(NetworkValue::VecRing64(v64), deserialized);
+
+        // Test VecRing48
+        let v48: Vec<RingElement<Ring48>> = (0..1000)
+            .map(|i| RingElement(Ring48((i * 12345) & Ring48::MASK)))
+            .collect();
+        let nv48 = NetworkValue::VecRing48(v48.clone());
+        let serialized = nv48.to_network();
+        assert_eq!(
+            serialized.len(),
+            1 + 4 + 6 * 1000,
+            "VecRing48 should use 6 bytes per element"
+        );
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(NetworkValue::VecRing48(v48), deserialized);
+
+        // Test RingElement48 single
+        let e48 = NetworkValue::RingElement48(RingElement(Ring48(0xABCD_1234_5678)));
+        let serialized = e48.to_network();
+        assert_eq!(serialized.len(), 1 + 6);
+        let deserialized = NetworkValue::deserialize(&serialized)?;
+        assert_eq!(e48, deserialized);
 
         // Test empty vectors
         let empty16: Vec<RingElement<u16>> = vec![];
