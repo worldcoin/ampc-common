@@ -877,12 +877,12 @@ pub async fn lift_to_ring48(
     // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^48
     let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
 
-    // Lift b1 and b2 into u16 via bit injection
+    // Lift b1 and b2 into Ring48 via bit injection
     b1.extend(b2);
     let mut b = bit_inject::<Ring48>(session, b1).await?;
     let (b1, b2) = b.split_at_mut(len);
 
-    // Lift b1 and b2 into Ring48 and multiply them by 2^16 and 2^17, respectively.
+    // Multiply b1 and b2 by 2^16 and 2^17, respectively.
     let b1 = VecShare::new_vec(b1.iter().map(|x| x << 16).collect());
     let b2 = VecShare::new_vec(b2.iter().map(|x| x << 17).collect());
 
