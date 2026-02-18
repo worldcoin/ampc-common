@@ -1,4 +1,4 @@
-use super::{ring_impl::RingElement, share::Share, vecshare::VecShare};
+use super::{ring48::Ring48, ring_impl::RingElement, share::Share, vecshare::VecShare};
 
 pub trait Transpose64 {
     fn transpose_pack_u64(self) -> Vec<VecShare<u64>>;
@@ -427,6 +427,21 @@ impl Transpose128 for VecShare<u64> {
     }
 }
 
+impl Transpose64 for VecShare<Ring48> {
+    fn transpose_pack_u64(self) -> Vec<VecShare<u64>> {
+        // Convert Ring48 shares to u64 shares (Ring48 is repr(transparent) over u64).
+        let u64_shares: VecShare<u64> = VecShare::new_vec(
+            self.into_iter()
+                .map(|s| Share::new(RingElement(s.a.0 .0), RingElement(s.b.0 .0)))
+                .collect(),
+        );
+        // Transpose as u64 (64 bit-planes), then keep only the 48 meaningful planes.
+        let mut result = u64_shares.transpose_pack_u64();
+        result.truncate(48);
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,6 +532,17 @@ mod tests {
         let shares: Vec<Share<u64>> = (0..257).map(|_| Share::new(rng.gen(), rng.gen())).collect();
         let vec_share = VecShare { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
+
+        check_transposed(transposed, vec_share);
+    }
+
+    #[test]
+    fn test_ring48_transpose_pack_u64() {
+        let mut rng = rand::thread_rng();
+        let shares: Vec<Share<Ring48>> =
+            (0..130).map(|_| Share::new(rng.gen(), rng.gen())).collect();
+        let vec_share = VecShare { shares };
+        let transposed = vec_share.clone().transpose_pack_u64();
 
         check_transposed(transposed, vec_share);
     }

@@ -94,6 +94,7 @@ impl From<Ring48> for u128 {
 // std::ops arithmetic (required by Zero/One traits)
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl std::ops::Add for Ring48 {
     type Output = Self;
     #[inline(always)]
@@ -102,6 +103,7 @@ impl std::ops::Add for Ring48 {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl std::ops::Sub for Ring48 {
     type Output = Self;
     #[inline(always)]
@@ -110,6 +112,7 @@ impl std::ops::Sub for Ring48 {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl std::ops::Mul for Ring48 {
     type Output = Self;
     #[inline(always)]

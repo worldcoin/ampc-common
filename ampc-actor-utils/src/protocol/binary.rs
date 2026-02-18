@@ -128,15 +128,15 @@ fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> 
 }
 
 /// Computes and sends a local share of the AND of two vectors of bit-sliced shares.
-async fn and_many_iter_send<T: IntRing2k + NetworkInt>(
+async fn and_many_iter_send<T>(
     session: &mut Session,
     a: impl Iterator<Item = Share<T>>,
     b: impl Iterator<Item = Share<T>>,
     size_hint: usize,
 ) -> Result<Vec<RingElement<T>>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     // Caller should ensure that size_hint == a.len() == b.len()
     let mut shares_a = VecRingElement::with_capacity(size_hint);
@@ -159,14 +159,14 @@ where
     Ok(shares_a.0)
 }
 
-async fn and_many_send<T: IntRing2k + NetworkInt>(
+async fn and_many_send<T>(
     session: &mut Session,
     a: SliceShare<'_, T>,
     b: SliceShare<'_, T>,
 ) -> Result<Vec<RingElement<T>>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     if a.len() != b.len() {
         bail!("InvalidSize in and_many_send");
@@ -208,14 +208,14 @@ async fn and_many_receive<T: IntRing2k + NetworkInt>(
 
 /// Low-level SMPC protocol to compute the AND of two vectors of bit-sliced shares.
 #[allow(dead_code)]
-async fn and_many<T: IntRing2k + NetworkInt>(
+async fn and_many<T>(
     session: &mut Session,
     a: SliceShare<'_, T>,
     b: SliceShare<'_, T>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let shares_a = and_many_send(session, a, b).await?;
     let shares_b = and_many_receive(session).await?;
@@ -266,14 +266,14 @@ pub async fn and_product(
 
 /// Computes binary AND of two vectors of bit-sliced shares.
 #[instrument(level = "trace", target = "searcher::network", skip(session, x1, x2))]
-async fn transposed_pack_and<T: IntRing2k + NetworkInt>(
+async fn transposed_pack_and<T>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
 ) -> Result<Vec<VecShare<T>>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -308,7 +308,7 @@ where
 /// Input integers are given in binary form.
 #[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
+async fn binary_add_3_get_two_carries<T>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
@@ -316,8 +316,8 @@ async fn binary_add_3_get_two_carries<T: IntRing2k + NetworkInt>(
     truncate_len: usize,
 ) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let len = x1.len();
     if len != x2.len() || len != x3.len() {
@@ -442,13 +442,13 @@ where
 ///
 /// Rounds 1 and 2 can be computed in parallel.
 /// The resulting communication complexity is 2 rounds with each party sending 1 element of T per input bit.
-pub async fn bit_inject<T: IntRing2k + NetworkInt>(
+pub async fn bit_inject<T>(
     session: &mut Session,
     input: VecShare<Bit>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let role_index = (session.own_role().index() + session.session_id().0 as usize) % 3;
     let res = match role_index {
@@ -488,13 +488,13 @@ fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
 /// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
 /// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
 /// = s1 + s2 - 2 * (s3 + s4)
-async fn bit_inject_party0<T: IntRing2k + NetworkInt>(
+async fn bit_inject_party0<T>(
     session: &mut Session,
     input: VecShare<Bit>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let len = input.len();
 
@@ -586,13 +586,13 @@ where
 /// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
 /// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
 /// = s1 - 2 * (s3 + s4)
-async fn bit_inject_party1<T: IntRing2k + NetworkInt>(
+async fn bit_inject_party1<T>(
     session: &mut Session,
     input: VecShare<Bit>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let len = input.len();
 
@@ -669,13 +669,13 @@ where
 /// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
 /// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
 /// = s1 + s2 - 2 * (s3 + s4)
-async fn bit_inject_party2<T: IntRing2k + NetworkInt>(
+async fn bit_inject_party2<T>(
     session: &mut Session,
     input: VecShare<Bit>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let len = input.len();
     // Rounds 1 and 2 (computed in parallel):
@@ -956,14 +956,14 @@ where
 /// However, its throughput is almost two times better.
 #[allow(dead_code)]
 #[cfg(feature = "ripple_carry_adder")]
-async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
+async fn binary_add_2_get_msb<T>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1002,14 +1002,14 @@ where
 /// Returns the MSB of the sum of two integers of type T using the binary parallel prefix adder tree.
 /// Input integers are given in binary form.
 #[cfg(not(feature = "ripple_carry_adder"))]
-async fn binary_add_2_get_msb<T: IntRing2k + NetworkInt>(
+async fn binary_add_2_get_msb<T>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,
     x2: Vec<VecShare<T>>,
 ) -> Result<VecShare<T>, Error>
 where
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     if x1.len() != x2.len() {
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
@@ -1113,10 +1113,9 @@ where
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
 async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
 where
-    T: IntRing2k + NetworkInt,
+    T: NetworkInt + RingRandFillable,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
@@ -1133,10 +1132,9 @@ where
 #[allow(dead_code)]
 pub async fn single_extract_msb<T>(session: &mut Session, x: Share<T>) -> Result<Share<Bit>, Error>
 where
-    T: IntRing2k + NetworkInt,
+    T: NetworkInt + RingRandFillable,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
         .await?
@@ -1151,10 +1149,9 @@ where
 #[allow(dead_code)]
 pub async fn extract_msb_batch<T>(session: &mut Session, x: &[Share<T>]) -> Result<Vec<Share<Bit>>>
 where
-    T: IntRing2k + NetworkInt,
+    T: NetworkInt + RingRandFillable,
     VecShare<T>: Transpose64,
     Standard: Distribution<T>,
-    T: RingRandFillable,
 {
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
@@ -1245,10 +1242,10 @@ mod tests {
     use rand::Rng;
     use tokio::task::JoinSet;
 
-    async fn test_bit_inject_generic<T: IntRing2k + NetworkInt>() -> Result<()>
+    async fn test_bit_inject_generic<T>() -> Result<()>
     where
+        T: NetworkInt + RingRandFillable,
         Standard: Distribution<T>,
-        T: RingRandFillable,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
@@ -1371,11 +1368,11 @@ mod tests {
         test_two_split_generic::<u64>().await
     }
 
-    async fn test_extract_msb_generic<T: IntRing2k + NetworkInt>() -> Result<()>
+    async fn test_extract_msb_generic<T>() -> Result<()>
     where
+        T: NetworkInt + RingRandFillable,
         VecShare<T>: Transpose64,
         Standard: Distribution<T>,
-        T: RingRandFillable,
     {
         let mut rng = AesRng::from_random_seed();
         let len = 10;
