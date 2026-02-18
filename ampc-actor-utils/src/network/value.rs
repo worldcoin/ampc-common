@@ -607,7 +607,7 @@ mod tests {
 
         // Test VecRing48
         let v48: Vec<RingElement<Ring48>> = (0..1000)
-            .map(|i| RingElement(Ring48(i * 12345 & Ring48::MASK)))
+            .map(|i| RingElement(Ring48((i * 12345) & Ring48::MASK)))
             .collect();
         let nv48 = NetworkValue::VecRing48(v48.clone());
         let serialized = nv48.to_network();
