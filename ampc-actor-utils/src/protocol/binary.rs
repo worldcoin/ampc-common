@@ -749,10 +749,10 @@ where
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 ///
 /// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
-/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
+/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any 16 <= l <= 32-k.
 #[allow(dead_code)]
 #[inline]
-pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
+pub fn mul_lift_2k_to_32<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
     Share::new(RingElement(a), RingElement(b))
@@ -761,8 +761,27 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
 #[inline]
-fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
-    VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
+fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
+    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
+}
+
+/// Lifts the given shares of u16 to shares of Ring48 by multiplying them by 2^k.
+///
+/// This works since for any k-bit value b = x + y + z mod 2^32 with k < 32, it holds
+/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^48 for any 16 <= l <= 48-k.
+#[allow(dead_code)]
+#[inline]
+pub fn mul_lift_2k_to_48<const K: usize>(val: &Share<u32>) -> Share<Ring48> {
+    let a = (Ring48::from(val.a.0)) << K;
+    let b = (Ring48::from(val.b.0)) << K;
+    Share::new(RingElement(a), RingElement(b))
+}
+
+/// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
+#[allow(dead_code)]
+#[inline]
+fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShare<Ring48> {
+    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_48::<K>).collect())
 }
 
 /// Lifts the given shares of u16 to shares of u32.
@@ -819,8 +838,8 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 
     // Lift b1 and b2 into u32 and multiply them by 2^16 and 2^17, respectively.
     // This can be done by computing b1 as u32 << 16 and b2 as u32 << 17.
-    let b1 = mul_lift_2k_many::<16>(b1.to_slice());
-    let b2 = mul_lift_2k_many::<17>(b2.to_slice());
+    let b1 = mul_lift_2k_to_32_many::<16>(b1.to_slice());
+    let b2 = mul_lift_2k_to_32_many::<17>(b2.to_slice());
 
     // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^32
     x_a.sub_assign(b1);
@@ -877,14 +896,16 @@ pub async fn lift_to_ring48(
     // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^48
     let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
 
-    // Lift b1 and b2 into Ring48 via bit injection
+    // Lift b1 and b2 into u32 via bit injection
+    // This slightly deviates from Algorithm 10 from ePrint/2024/705 as bit injection to integers modulo 2^31 doesn't give any advantage.
     b1.extend(b2);
-    let mut b = bit_inject::<Ring48>(session, b1).await?;
+    let mut b = bit_inject(session, b1).await?;
     let (b1, b2) = b.split_at_mut(len);
 
-    // Multiply b1 and b2 by 2^16 and 2^17, respectively.
-    let b1 = VecShare::new_vec(b1.iter().map(|x| x << 16).collect());
-    let b2 = VecShare::new_vec(b2.iter().map(|x| x << 17).collect());
+    // Lift b1 and b2 into Ring48 and multiply them by 2^16 and 2^17, respectively.
+    // This can be done by computing b1 as Ring48 << 16 and b2 as Ring48 << 17.
+    let b1 = mul_lift_2k_to_48_many::<16>(b1.to_slice());
+    let b2 = mul_lift_2k_to_48_many::<17>(b2.to_slice());
 
     // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^48
     x_a.sub_assign(b1);
