@@ -433,10 +433,10 @@ where
 ///
 /// The final arithmetic shares of b are computed locally by each party as
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2]).
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\]).
 ///
-/// The shares of [b_2] are known to each party at the start of the protocol as follows:
+/// The shares of \[b_2\] are known to each party at the start of the protocol as follows:
 /// - Party 0 holds shares (0, b_2),
 /// - Party 1 holds shares (0, 0),
 /// - Party 2 holds shares (b_2, 0).
@@ -479,15 +479,15 @@ fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
 /// 1. Party 0 receives z from Party 2.
 ///
 /// By the end of Round 3, Party 0 holds the following shares:
-/// - s1 = (r_01, 0) of [b_0 XOR b_1]
-/// - s2 = (0, b_2) of [b_2]
-/// - s3 = (y, r_02) of [r_01 * b_2]
-/// - s4 = (0, z) of [x * b_2]
+/// - s1 = (r_01, 0) of \[b_0 XOR b_1\]
+/// - s2 = (0, b_2) of \[b_2\]
+/// - s3 = (y, r_02) of \[r_01 * b_2\]
+/// - s4 = (0, z) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party0<T>(
     session: &mut Session,
@@ -577,15 +577,15 @@ where
 /// 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
 ///
 /// By the end of Round 3, Party 1 holds the following shares:
-/// - s1 = (x, r_01) of [b_0 XOR b_1]
-/// - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
-/// - s3 = (0, y) of [r_01 * b_2]
-/// - s4 = (r_12, 0) of [x * b_2]
+/// - s1 = (x, r_01) of \[b_0 XOR b_1\]
+/// - s2 = (0, 0) of \[b_2\] (we can ignore this shares as they are zero)
+/// - s3 = (0, y) of \[r_01 * b_2\]
+/// - s4 = (r_12, 0) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 - 2 * (s3 + s4)
 async fn bit_inject_party1<T>(
     session: &mut Session,
@@ -660,15 +660,15 @@ where
 ///     2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
 ///
 /// By the end of Round 3, Party 2 holds the following shares:
-/// - s1 = (0, x) of [b_0 XOR b_1]
-/// - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
-/// - s3 = (r_02, 0) of [r_01 * b_2]
-/// - s4 = (z, r_12) of [x * b_2]
+/// - s1 = (0, x) of \[b_0 XOR b_1\]
+/// - s2 = (b_2, 0) of \[b_2\] (we can ignore this shares as they are zero)
+/// - s3 = (r_02, 0) of \[r_01 * b_2\]
+/// - s4 = (z, r_12) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party2<T>(
     session: &mut Session,
