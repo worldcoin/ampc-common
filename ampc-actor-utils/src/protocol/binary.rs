@@ -7,6 +7,7 @@ use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
     bit::Bit,
     int_ring::IntRing2k,
+    ring48::Ring48,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
     share::Share,
     vecshare::{SliceShare, VecShare},
@@ -432,10 +433,10 @@ where
 ///
 /// The final arithmetic shares of b are computed locally by each party as
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2]).
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\]).
 ///
-/// The shares of [b_2] are known to each party at the start of the protocol as follows:
+/// The shares of \[b_2\] are known to each party at the start of the protocol as follows:
 /// - Party 0 holds shares (0, b_2),
 /// - Party 1 holds shares (0, 0),
 /// - Party 2 holds shares (b_2, 0).
@@ -478,15 +479,15 @@ fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
 /// 1. Party 0 receives z from Party 2.
 ///
 /// By the end of Round 3, Party 0 holds the following shares:
-/// - s1 = (r_01, 0) of [b_0 XOR b_1]
-/// - s2 = (0, b_2) of [b_2]
-/// - s3 = (y, r_02) of [r_01 * b_2]
-/// - s4 = (0, z) of [x * b_2]
+/// - s1 = (r_01, 0) of \[b_0 XOR b_1\]
+/// - s2 = (0, b_2) of \[b_2\]
+/// - s3 = (y, r_02) of \[r_01 * b_2\]
+/// - s4 = (0, z) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party0<T>(
     session: &mut Session,
@@ -576,15 +577,15 @@ where
 /// 1. Party 1 generates a random mask r_12 using their shared PRF with Party 2.
 ///
 /// By the end of Round 3, Party 1 holds the following shares:
-/// - s1 = (x, r_01) of [b_0 XOR b_1]
-/// - s2 = (0, 0) of [b_2] (we can ignore this shares as they are zero)
-/// - s3 = (0, y) of [r_01 * b_2]
-/// - s4 = (r_12, 0) of [x * b_2]
+/// - s1 = (x, r_01) of \[b_0 XOR b_1\]
+/// - s2 = (0, 0) of \[b_2\] (we can ignore this shares as they are zero)
+/// - s3 = (0, y) of \[r_01 * b_2\]
+/// - s4 = (r_12, 0) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 - 2 * (s3 + s4)
 async fn bit_inject_party1<T>(
     session: &mut Session,
@@ -659,15 +660,15 @@ where
 ///     2. Party 2 sends z = (x * b_2) - r_12 to Party 0.
 ///
 /// By the end of Round 3, Party 2 holds the following shares:
-/// - s1 = (0, x) of [b_0 XOR b_1]
-/// - s2 = (b_2, 0) of [b_2] (we can ignore this shares as they are zero)
-/// - s3 = (r_02, 0) of [r_01 * b_2]
-/// - s4 = (z, r_12) of [x * b_2]
+/// - s1 = (0, x) of \[b_0 XOR b_1\]
+/// - s2 = (b_2, 0) of \[b_2\] (we can ignore this shares as they are zero)
+/// - s3 = (r_02, 0) of \[r_01 * b_2\]
+/// - s4 = (z, r_12) of \[x * b_2\]
 ///
 /// Local computation of the final shares:
 ///
-/// [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
-/// = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
+/// \[b_0 XOR b_1 XOR b_2\] = \[b_0 XOR b_1\] + \[b_2\] - 2 * \[(b_0 XOR b_1 ) * b_2\]
+/// = \[b_0 XOR b_1\] + \[b_2\] - 2 * (\[r_01 * b_2\] + \[x * b_2\])
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party2<T>(
     session: &mut Session,
@@ -747,11 +748,11 @@ where
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 ///
-/// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
-/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any l <= 32-k.
+/// This works since for any j-bit value b = x + y + z mod 2^16 with j <= 16, it holds
+/// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^32 for any 16 <= k <= 32-j.
 #[allow(dead_code)]
 #[inline]
-pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
+pub fn mul_lift_2k_to_32<const K: u64>(val: &Share<u16>) -> Share<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
     Share::new(RingElement(a), RingElement(b))
@@ -760,8 +761,27 @@ pub fn mul_lift_2k<const K: u64>(val: &Share<u16>) -> Share<u32> {
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
 #[inline]
-fn mul_lift_2k_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
-    VecShare::new_vec(vals.iter().map(mul_lift_2k::<K>).collect())
+fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
+    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
+}
+
+/// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
+///
+/// This works since for any j-bit value b = x + y + z mod 2^32 with j <= 32, it holds
+/// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^48 for any 16 <= k <= 48-j.
+#[allow(dead_code)]
+#[inline]
+pub fn mul_lift_2k_to_48<const K: usize>(val: &Share<u32>) -> Share<Ring48> {
+    let a = (Ring48::from(val.a.0)) << K;
+    let b = (Ring48::from(val.b.0)) << K;
+    Share::new(RingElement(a), RingElement(b))
+}
+
+/// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
+#[allow(dead_code)]
+#[inline]
+fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShare<Ring48> {
+    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_48::<K>).collect())
 }
 
 /// Lifts the given shares of u16 to shares of u32.
@@ -818,10 +838,76 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 
     // Lift b1 and b2 into u32 and multiply them by 2^16 and 2^17, respectively.
     // This can be done by computing b1 as u32 << 16 and b2 as u32 << 17.
-    let b1 = mul_lift_2k_many::<16>(b1.to_slice());
-    let b2 = mul_lift_2k_many::<17>(b2.to_slice());
+    let b1 = mul_lift_2k_to_32_many::<16>(b1.to_slice());
+    let b2 = mul_lift_2k_to_32_many::<17>(b2.to_slice());
 
     // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^32
+    x_a.sub_assign(b1);
+    x_a.sub_assign(b2);
+    Ok(x_a)
+}
+
+/// Lifts the given shares of u16 to shares of Ring48.
+#[allow(dead_code)]
+pub async fn lift_to_ring48(
+    session: &mut Session,
+    shares: VecShare<u16>,
+) -> Result<VecShare<Ring48>> {
+    let len = shares.len();
+    let mut padded_len = len.div_ceil(64);
+    padded_len *= 64;
+
+    // Interpret the shares as Ring48
+    let mut x_a = VecShare::with_capacity(padded_len);
+    for share in shares.iter() {
+        x_a.push(Share::new(
+            RingElement(Ring48(share.a.0 as u64)),
+            RingElement(Ring48(share.b.0 as u64)),
+        ));
+    }
+
+    // Bit-slice the shares into 64-bit shares
+    let x = shares.transpose_pack_u64();
+
+    // Prepare the local input shares to be summed by the binary adder
+    let len_ = x.len();
+    let mut x1 = Vec::with_capacity(len_);
+    let mut x2 = Vec::with_capacity(len_);
+    let mut x3 = Vec::with_capacity(len_);
+
+    for x_ in x.into_iter() {
+        let len__ = x_.len();
+        let mut x1_ = VecShare::with_capacity(len__);
+        let mut x2_ = VecShare::with_capacity(len__);
+        let mut x3_ = VecShare::with_capacity(len__);
+        for x__ in x_.into_iter() {
+            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
+            x1_.push(x1__);
+            x2_.push(x2__);
+            x3_.push(x3__);
+        }
+        x1.push(x1_);
+        x2.push(x2_);
+        x3.push(x3_);
+    }
+
+    // Sum the binary shares using the binary parallel prefix adder.
+    // Since the input shares are u16 and we sum over Ring48, the two carries arise, i.e.,
+    // x1 + x2 + x3 = x + b1 * 2^16 + b2 * 2^17 mod 2^48
+    let (mut b1, b2) = binary_add_3_get_two_carries(session, x1, x2, x3, len).await?;
+
+    // Lift b1 and b2 into u32 via bit injection
+    // This slightly deviates from Algorithm 10 from ePrint/2024/705 as bit injection to integers modulo 2^31 doesn't give any advantage.
+    b1.extend(b2);
+    let mut b = bit_inject(session, b1).await?;
+    let (b1, b2) = b.split_at_mut(len);
+
+    // Lift b1 and b2 into Ring48 and multiply them by 2^16 and 2^17, respectively.
+    // This can be done by computing b1 as Ring48 << 16 and b2 as Ring48 << 17.
+    let b1 = mul_lift_2k_to_48_many::<16>(b1.to_slice());
+    let b2 = mul_lift_2k_to_48_many::<17>(b2.to_slice());
+
+    // Compute x1 + x2 + x3 - b1 * 2^16 - b2 * 2^17 = x mod 2^48
     x_a.sub_assign(b1);
     x_a.sub_assign(b2);
     Ok(x_a)
@@ -1440,5 +1526,48 @@ mod tests {
     #[tokio::test]
     async fn test_extract_msb_u32() -> Result<()> {
         test_extract_msb_generic::<u32>().await
+    }
+
+    #[tokio::test]
+    async fn test_lift_to_ring48() -> Result<()> {
+        let mut rng = AesRng::from_random_seed();
+        let len = 10;
+
+        // Generate random u16 inputs and their shares
+        let inputs: Vec<u16> = (0..len).map(|_| rng.gen::<u16>()).collect();
+        let shares = create_array_sharing(&mut rng, &inputs);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let lifted = lift_to_ring48(&mut session, shares_i).await.unwrap();
+                open_ring(&mut session, lifted.shares()).await
+            });
+        }
+        let res = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], res[1]);
+        assert_eq!(res[1], res[2]);
+
+        for (i, &expected) in inputs.iter().enumerate() {
+            assert_eq!(
+                res[0][i],
+                Ring48(expected as u64),
+                "Lift mismatch at index {}",
+                i
+            );
+        }
+
+        Ok(())
     }
 }
