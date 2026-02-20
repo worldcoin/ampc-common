@@ -5,6 +5,7 @@ use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
+use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::{
@@ -215,13 +216,15 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 /// Conditionally selects the distance shares based on control bits.
 /// If the control bit is 1, it selects the first distance share (d1),
 /// otherwise it selects the second distance share (d2).
-/// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn conditionally_select_distance(
+pub async fn conditionally_select_distance<T>(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
-    control_bits: &[Share<u32>],
-) -> Result<Vec<DistanceShare<u32>>> {
+    distances: &[(DistanceShare<T>, DistanceShare<T>)],
+    control_bits: &[Share<T>],
+) -> Result<Vec<DistanceShare<T>>>
+where
+    T: NetworkInt + RingRandFillable,
+{
     if distances.len() != control_bits.len() {
         bail!("Number of distances must match number of control bits");
     }
@@ -234,7 +237,7 @@ pub async fn conditionally_select_distance(
     // we start with the mult of c and d1-d2
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len() * 2);
 
-    let res_a: Vec<RingElement<u32>> = izip!(
+    let res_a: Vec<RingElement<T>> = izip!(
         distances.iter(),
         control_bits.iter(),
         prf_my_values.0.chunks(2),
@@ -254,17 +257,13 @@ pub async fn conditionally_select_distance(
     let network = &mut session.network_session;
 
     let message = if res_a.len() == 1 {
-        NetworkValue::RingElement32(res_a[0])
+        T::new_network_element(res_a[0])
     } else {
-        NetworkValue::VecRing32(res_a.clone())
+        T::new_network_vec(res_a.clone())
     };
     network.send_next(message).await?;
 
-    let res_b = match network.receive_prev().await {
-        Ok(NetworkValue::RingElement32(element)) => vec![element],
-        Ok(NetworkValue::VecRing32(elements)) => elements,
-        _ => bail!("Could not deserialize RingElement32"),
-    };
+    let res_b = T::into_vec(network.receive_prev().await?)?;
 
     // finally compute the result by adding the d2 shares
     Ok(izip!(res_a.into_iter(), res_b.into_iter())
