@@ -748,8 +748,8 @@ where
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 ///
-/// This works since for any k-bit value b = x + y + z mod 2^16 with k < 16, it holds
-/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^32 for any 16 <= l <= 32-k.
+/// This works since for any j-bit value b = x + y + z mod 2^16 with j <= 16, it holds
+/// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^32 for any 16 <= k <= 32-j.
 #[allow(dead_code)]
 #[inline]
 pub fn mul_lift_2k_to_32<const K: u64>(val: &Share<u16>) -> Share<u32> {
@@ -765,10 +765,10 @@ fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> 
     VecShare::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
 }
 
-/// Lifts the given shares of u16 to shares of Ring48 by multiplying them by 2^k.
+/// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
 ///
-/// This works since for any k-bit value b = x + y + z mod 2^32 with k < 32, it holds
-/// (x >> l) + (y >> l) + (z >> l) = (b >> l) mod 2^48 for any 16 <= l <= 48-k.
+/// This works since for any j-bit value b = x + y + z mod 2^32 with j <= 32, it holds
+/// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^48 for any 16 <= k <= 48-j.
 #[allow(dead_code)]
 #[inline]
 pub fn mul_lift_2k_to_48<const K: usize>(val: &Share<u32>) -> Share<Ring48> {
@@ -777,7 +777,7 @@ pub fn mul_lift_2k_to_48<const K: usize>(val: &Share<u32>) -> Share<Ring48> {
     Share::new(RingElement(a), RingElement(b))
 }
 
-/// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
+/// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
 #[allow(dead_code)]
 #[inline]
 fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShare<Ring48> {
