@@ -5,9 +5,9 @@ use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
-use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
+use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
     ring_impl::RingElement, share::Share, IntRing2k, Ring48, VecShare,
 };
