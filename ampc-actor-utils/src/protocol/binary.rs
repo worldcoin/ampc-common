@@ -3,6 +3,7 @@ use crate::{
     execution::session::{Session, SessionHandles},
     network::value::{NetworkInt, NetworkValue},
 };
+use ampc_secret_sharing::Role;
 use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
     bit::Bit,
@@ -22,6 +23,14 @@ thread_local! {
     static ROUNDS_METRICS: RefCell<FastHistogram> = RefCell::new(
         FastHistogram::new("smpc.rounds")
     );
+}
+
+// Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
+// shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
+pub struct OfflineRandomShares<T: IntRing2k> {
+    r: Share<T>,
+    r_bits: [Share<Bit>; 8], // r_7, ..., r_0
+    b_bit: Share<T>,
 }
 
 struct VecBinShare<T: IntRing2k> {
@@ -1110,6 +1119,111 @@ where
     Ok(msb)
 }
 
+// sampling an instance of pre-generated randomness used in the protocol for T = u8
+/// Returns the per-party view of precomputed randomness for extract_msb_rand.
+/// Each party gets its replicated ABY3 share (a,b) of the same global values.
+#[cfg(test)] 
+fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, Error> {
+    let elem_r0 = RingElement(57u8);
+    let elem_r1 = RingElement(200u8);
+    let elem_r2 = RingElement(181u8);
+
+    let rb_0 = RingElement(34u8);
+    let rb_1 = RingElement(79u8);
+    let rb_2 = RingElement(144u8);
+
+    // Boolean shares per bit (bit7..bit0), as additive mod-2 triplets (b0,b1,b2).
+    let bit_triplets: [(u8, u8, u8); 8] = [
+        (0, 1, 0), // bit7
+        (1, 1, 0), // bit6
+        (1, 0, 0), // bit5
+        (0, 0, 1), // bit4
+        (1, 0, 1), // bit3
+        (0, 1, 0), // bit2
+        (1, 1, 1), // bit1
+        (0, 1, 1), // bit0
+    ];
+
+    match role.index() {
+        // Party 0 holds (a0,a2) for every shared value.
+        0 => Ok(OfflineRandomShares {
+            r: Share::new(elem_r0, elem_r2),
+            r_bits: bit_triplets.map(|(b0, _, b2)| {
+                Share::new(RingElement(Bit::new(b0 == 1)), RingElement(Bit::new(b2 == 1)))
+            }),
+            b_bit: Share::new(rb_0, rb_2),
+        }),
+        // Party 1 holds (a1,a0).
+        1 => Ok(OfflineRandomShares {
+            r: Share::new(elem_r1, elem_r0),
+            r_bits: bit_triplets.map(|(_, b1, b0)| {
+                Share::new(RingElement(Bit::new(b1 == 1)), RingElement(Bit::new(b0 == 1)))
+            }),
+            b_bit: Share::new(rb_1, rb_0),
+        }),
+        // Party 2 holds (a2,a1).
+        2 => Ok(OfflineRandomShares {
+            r: Share::new(elem_r2, elem_r1),
+            r_bits: bit_triplets.map(|(b2, b1, _)| {
+                Share::new(RingElement(Bit::new(b2 == 1)), RingElement(Bit::new(b1 == 1)))
+            }),
+            b_bit: Share::new(rb_2, rb_1),
+        }),
+        _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
+    }
+}
+
+
+
+pub async fn extract_msb_rand<T:IntRing2k>(session: &mut Session, x: Share<T>, offline: &OfflineRandomShares<T>) -> Result<Share<Bit>, Error>{
+    let (r_self, r_prev) = offline.r.get_ab();
+    let (b_self, b_prev) = offline.b_bit.get_ab();
+    let (msb_self, msb_prev) = offline.r_bits[0].get_ab();
+
+    // for testing purposes, printing the role and corresponding shares of OfflineRandomShares 
+    // println!(
+    //     "extract_msb_rand role={:?} r=(a={:?}, b={:?}) b_bit=(a={:?}, b={:?}) r_bit7=(a={:?}, b={:?})",
+    //     session.own_role(), r_self, r_prev, b_self, b_prev, msb_self, msb_prev
+    // );
+
+    // step 1: [r']_k = [r]_k - [r_bit]_1 ^ 2^{k - 1}
+    let v_t: T = T::from(bool::from(msb_self.0));
+    let msb_self_t = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+
+    let v_t: T = T::from(bool::from(msb_prev.0));
+    let msb_prev_t = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+
+    let msb_T = Share::new(msb_self_t, msb_prev_t);
+    // println!(
+    //     "msb scaled: self={:?} prev={:?}",
+    //     msb_u8.get_a(), msb_u8.get_b()
+    // );
+
+    let r_prime_self: RingElement<T> = offline.r.get_a() - msb_T.get_a();
+    let r_prime_prev: RingElement<T> = offline.r.get_b() - msb_T.get_b();
+    let r_prime = Share::new(r_prime_self, r_prime_prev);
+
+    println!(
+        "computed r': self={:?} prev={:?}",
+        r_prime.get_a(), r_prime.get_b()
+    );
+    // step 2: c' = (x + r) mod 2^{k - 1}
+    // <issue is that x.get_a() is not u8 and potentially u16 or u32??>
+    let c_prime_self: RingElement<T> = (x.get_a() + offline.r.get_a()) << 1;
+    let c_prime_prev: RingElement<T> = (x.get_b() + offline.r.get_b()) << 1;
+    let c_prime = Share::new(c_prime_self, c_prime_prev);
+        println!(
+            "computed c': self={:?} prev={:?}",
+            c_prime_self, c_prime_prev
+        );
+
+    //returning a dummy value for now 
+    let one = Share::from_const(Bit::new(true), session.own_role());
+    Ok(one)
+
+}
+
+
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
 async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
 where
@@ -1118,6 +1232,12 @@ where
     Standard: Distribution<T>,
     [T]: Fill,
 {
+
+    // // call the new test MSB_rand function below
+    // if x_.len() > 0 {
+    //     let _ = extract_msb_rand(session, x_.get_at(0)).await?;
+    // }
+
     // Split the input shares into the sum of two shares
     let (x1, x2) = two_way_split(session, x_).await?;
 
@@ -1156,6 +1276,7 @@ where
     Standard: Distribution<T>,
     [T]: Fill,
 {
+    // println!("extract_msb_batch");
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
 
@@ -1435,7 +1556,71 @@ mod tests {
         Ok(())
     }
 
+    async fn test_extract_msb_rand_u8() -> Result<()>
+    {
+        let mut rng = AesRng::from_random_seed();
+        let len = 1usize;
+
+        // Random cleartext values + expected MSB bits
+        let ints: Vec<u8> = (0..len).map(|_| rng.gen::<u8>()).collect();
+        let expected: Vec<Bit> = ints
+            .iter()
+            .map(|x| {
+                let msb = *x >> (u8::K - 1);
+                if msb.is_zero() { false.into() } else { true.into() }
+            })
+            .collect();
+
+        // Secret-share inputs across 3 parties
+        let shares = create_array_sharing(&mut rng, &ints);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+
+                // pick up the pre-generated randomness 
+                let offline = offline_shares_for_role(&session.own_role())?;
+
+                // Run extract_msb_rand for each shared input
+                let mut out = Vec::with_capacity(shares_i.len());
+                for x in shares_i.shares().iter().cloned() {
+                    out.push(extract_msb_rand::<u8>(&mut session, x, &offline).await?);
+                }
+
+                // Open result bits
+                open_bin(&mut session, &out).await
+            });
+        }
+
+    let opened = jobs
+        .join_all()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+
+    assert_eq!(opened.len(), 3);
+    assert_eq!(opened[0], opened[1]);
+    assert_eq!(opened[1], opened[2]);
+    assert_eq!(opened[0], expected);
+
+    Ok(())
+}
+
+
+
+
+
     #[tokio::test]
+
+    async fn test_extract_msb_rand() -> Result<()> {
+        test_extract_msb_rand_u8().await
+    }
     async fn test_extract_msb_u16() -> Result<()> {
         test_extract_msb_generic::<u16>().await
     }
