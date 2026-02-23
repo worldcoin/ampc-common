@@ -1,7 +1,15 @@
-use ampc_secret_sharing::{shares::bit::Bit, IntRing2k, RingElement, Role, ReplicatedShare};
-use eyre::{bail, Error};
+use ampc_secret_sharing::{
+    shares::{bit::Bit, share::AdditiveShare},
+    IntRing2k, ReplicatedShare, RingElement, Role,
+};
+use eyre::{bail, eyre, Error};
+use num_traits::Zero;
+use tracing::instrument;
 
-use crate::execution::session::{Session, SessionHandles};
+use crate::{
+    execution::session::{Session, SessionHandles},
+    network::value::NetworkValue,
+};
 
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
 // shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
@@ -127,18 +135,86 @@ pub async fn extract_msb_rand<T: IntRing2k>(
     Ok(one)
 }
 
-pub async fn rep_to_add2<T: IntRing2k>(session: &mut Session, x: ReplicatedShare<T>) {}
+pub async fn rep_to_add2<T: IntRing2k>(
+    session: &mut Session,
+    rep_share: ReplicatedShare<T>,
+) -> Result<AdditiveShare<T>, Error> {
+    let (a, b) = rep_share.get_ab();
+
+    let mut share = AdditiveShare::zero();
+
+    match session.own_role().index() {
+        0 => {
+            share.value += a + b;
+        }
+        1 => {
+            share.value += a;
+        }
+        2 => {}
+        _ => {
+            bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
+        }
+    }
+
+    Ok(share)
+}
+
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn open_additive_share_u8(
+    session: &mut Session,
+    share: &AdditiveShare<u8>,
+) -> Result<RingElement<u8>, Error> {
+    let network = &mut session.network_session;
+    let message = NetworkValue::RingElement8(share.value);
+
+    network.send_next(message.clone()).await?;
+    network.send_prev(message).await?;
+
+    // Receiving share from previous party
+    let share_from_previous = {
+        let prev_share = network
+            .receive_prev()
+            .await
+            .map_err(|e| eyre!("Error in receiving in open_u8 operation: {}", e))?;
+
+        match prev_share {
+            NetworkValue::RingElement8(message) => Ok(message),
+            _ => Err(eyre!("Wrong value type is received in open_u8 operation")),
+        }
+    }?;
+
+    // Receiving share from next party
+    let share_from_next = {
+        let next_share = network
+            .receive_next()
+            .await
+            .map_err(|e| eyre!("Error in receiving in open_u8 operation: {}", e))?;
+
+        match next_share {
+            NetworkValue::RingElement8(message) => Ok(message),
+            _ => Err(eyre!("Wrong value type is received in open_u8 operation")),
+        }
+    }?;
+
+    Ok(share.value + share_from_previous + share_from_next)
+}
 
 #[cfg(test)]
 mod tests {
     use aes_prng::AesRng;
     use ampc_secret_sharing::shares::{bit::Bit, VecShare};
-    use ampc_secret_sharing::IntRing2k;
-    use eyre::Result;
+    use ampc_secret_sharing::{IntRing2k, ReplicatedShare, RingElement};
+    use eyre::{bail, Result};
     use num_traits::Zero;
-    use rand::Rng;
+    use rand::{Rng, SeedableRng};
+    use rand_distr::{Distribution, Standard};
     use tokio::task::JoinSet;
 
+    use crate::execution::player::Role;
+    use crate::protocol::msb_preprocessing::{open_additive_share_u8, rep_to_add2};
+    use crate::protocol::test_utils::{
+        create_single_sharing_additive, create_single_sharing_replicated,
+    };
     use crate::{
         execution::{local::LocalRuntime, session::SessionHandles},
         protocol::{
@@ -210,5 +286,56 @@ mod tests {
     #[tokio::test]
     async fn test_extract_msb_rand() -> Result<()> {
         test_extract_msb_rand_u8().await
+    }
+
+    async fn test_rep_to_add2_u8() -> Result<()>
+    where
+        Standard: Distribution<u8>,
+    {
+        let mut rng = AesRng::from_entropy();
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+        let value = rng.gen::<u8>();
+        let expected = RingElement(value);
+        let shares = create_single_sharing_replicated::<AesRng, u8>(&mut rng, value);
+
+        for session in sessions.into_iter() {
+            let session = session.clone();
+
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let shares_i = match session.own_role().index() {
+                    0 => shares.0,
+                    1 => shares.1,
+                    2 => shares.2,
+                    _ => {
+                        bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
+                    }
+                };
+
+                let out = rep_to_add2::<u8>(&mut session, shares_i).await?;
+
+                // Open result bits
+                open_additive_share_u8(&mut session, &out).await
+            });
+        }
+
+        let opened = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(opened.len(), 3);
+        assert_eq!(opened[0], opened[1]);
+        assert_eq!(opened[1], opened[2]);
+        assert_eq!(opened[0], expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rep_to_add2() -> Result<()> {
+        test_rep_to_add2_u8().await
     }
 }

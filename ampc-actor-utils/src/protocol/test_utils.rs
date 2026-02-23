@@ -1,8 +1,23 @@
-use ampc_secret_sharing::{IntRing2k, RingElement, ReplicatedShare};
+use ampc_secret_sharing::{shares::share::AdditiveShare, IntRing2k, ReplicatedShare, RingElement};
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Standard};
 
-fn create_single_sharing<R: RngCore, T: IntRing2k>(
+pub fn create_single_sharing_additive<R: RngCore, T: IntRing2k>(
+    rng: &mut R,
+    input: T,
+) -> (AdditiveShare<T>, AdditiveShare<T>)
+where
+    Standard: Distribution<T>,
+{
+    let a = RingElement(rng.gen::<T>());
+    let b = RingElement(input) - a;
+
+    let share1 = AdditiveShare::new(a);
+    let share2 = AdditiveShare::new(b);
+    (share1, share2)
+}
+
+pub fn create_single_sharing_replicated<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: T,
 ) -> (ReplicatedShare<T>, ReplicatedShare<T>, ReplicatedShare<T>)
@@ -47,7 +62,7 @@ where
     let mut player2 = Vec::new();
 
     for entry in input {
-        let (a, b, c) = create_single_sharing(rng, *entry);
+        let (a, b, c) = create_single_sharing_replicated(rng, *entry);
         player0.push(a);
         player1.push(b);
         player2.push(c);

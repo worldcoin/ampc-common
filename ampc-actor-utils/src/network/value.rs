@@ -61,6 +61,7 @@ const PRF_KEY_SIZE: usize = 16;
 pub enum NetworkValue {
     PrfKey([u8; PRF_KEY_SIZE]),
     RingElementBit(RingElement<Bit>),
+    RingElement8(RingElement<u8>),
     RingElement16(RingElement<u16>),
     RingElement32(RingElement<u32>),
     RingElement64(RingElement<u64>),
@@ -83,6 +84,7 @@ pub enum DescriptorByte {
     PrfKey = 0x01,
     RingElementBit1 = 0x12,
     RingElementBit0 = 0x02,
+    RingElement8 = 0x13,
     RingElement16 = 0x03,
     RingElement32 = 0x04,
     RingElement64 = 0x05,
@@ -104,6 +106,7 @@ impl DescriptorByte {
         match self {
             DescriptorByte::PrfKey => 1 + PRF_KEY_SIZE,
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => 1,
+            DescriptorByte::RingElement8 => 2,
             DescriptorByte::RingElement16 => 3,
             DescriptorByte::RingElement32 => 5,
             DescriptorByte::RingElement64 => 9,
@@ -147,6 +150,7 @@ impl NetworkValue {
                     DescriptorByte::RingElementBit0
                 }
             }
+            NetworkValue::RingElement8(_) => DescriptorByte::RingElement8,
             NetworkValue::RingElement16(_) => DescriptorByte::RingElement16,
             NetworkValue::RingElement32(_) => DescriptorByte::RingElement32,
             NetworkValue::RingElement64(_) => DescriptorByte::RingElement64,
@@ -213,6 +217,7 @@ impl NetworkValue {
                 // Do nothing, the descriptor byte already contains the bit
                 // value
             }
+            NetworkValue::RingElement8(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElement16(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElement32(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElement64(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
@@ -331,6 +336,14 @@ impl NetworkValue {
                     Bit::new(false)
                 };
                 Ok(NetworkValue::RingElementBit(RingElement(bit)))
+            }
+            DescriptorByte::RingElement8 => {
+                if serialized.len() != 2 {
+                    bail!("Invalid length for RingElement16");
+                }
+                Ok(NetworkValue::RingElement8(RingElement(u8::from_le_bytes(
+                    <[u8; 1]>::try_from(&serialized[1..2])?,
+                ))))
             }
             DescriptorByte::RingElement16 => {
                 if serialized.len() != 3 {

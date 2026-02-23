@@ -1,3 +1,5 @@
+use crate::shares::primefield::Mod19;
+
 use super::{int_ring::IntRing2k, ring_impl::RingElement};
 use itertools::{izip, Itertools};
 use num_traits::Zero;
@@ -660,6 +662,160 @@ impl<T: IntRing2k> Neg for &AdditiveShare<T> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct AdditiveSharePrime<Mod19> {
+    pub value: Mod19,
+}
+
+impl AdditiveSharePrime<Mod19> {
+    pub fn new(value: Mod19) -> Self {
+        Self { value }
+    }
+
+    pub fn from_const<R: Role>(value: Mod19, role: R) -> Self {
+        let mut res = Self::zero();
+        res.add_assign_const_role(value, role);
+        res
+    }
+
+    pub fn add_assign_const_role<R: Role>(&mut self, other: Mod19, role: R) {
+        match role.index() {
+            0 => self.value += other,
+            1 => {}
+            2 => {}
+            _ => unimplemented!(),
+        }
+    }
+
+    pub fn get_value(self) -> Mod19 {
+        self.value
+    }
+
+    pub fn iter_from_iter_value(
+        value_iter: impl Iterator<Item = Mod19>,
+    ) -> impl Iterator<Item = AdditiveSharePrime<Mod19>> {
+        value_iter.map(|value| AdditiveSharePrime::new(value))
+    }
+}
+
+impl Add<&Self> for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn add(self, rhs: &Self) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value + rhs.value,
+        }
+    }
+}
+
+impl Add<Self> for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value + rhs.value,
+        }
+    }
+}
+
+impl Sub<Self> for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value - rhs.value,
+        }
+    }
+}
+
+impl Sub<&Self> for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn sub(self, rhs: &Self) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value - rhs.value,
+        }
+    }
+}
+
+impl AddAssign<Self> for AdditiveSharePrime<Mod19> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.value += rhs.value;
+    }
+}
+
+impl AddAssign<&Self> for AdditiveSharePrime<Mod19> {
+    fn add_assign(&mut self, rhs: &Self) {
+        self.value += rhs.value;
+    }
+}
+
+impl SubAssign for AdditiveSharePrime<Mod19> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.value -= rhs.value;
+    }
+}
+
+impl SubAssign<&Self> for AdditiveSharePrime<Mod19> {
+    fn sub_assign(&mut self, rhs: &Self) {
+        self.value -= rhs.value;
+    }
+}
+
+impl Mul<Mod19> for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn mul(self, rhs: Mod19) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value * rhs,
+        }
+    }
+}
+
+impl Mul<Mod19> for &AdditiveSharePrime<Mod19> {
+    type Output = AdditiveSharePrime<Mod19>;
+
+    fn mul(self, rhs: Mod19) -> Self::Output {
+        AdditiveSharePrime {
+            value: self.value * rhs,
+        }
+    }
+}
+
+impl MulAssign<Mod19> for AdditiveSharePrime<Mod19> {
+    fn mul_assign(&mut self, rhs: Mod19) {
+        self.value *= rhs;
+    }
+}
+
+impl Zero for AdditiveSharePrime<Mod19> {
+    fn zero() -> Self {
+        Self {
+            value: Mod19::zero(),
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.value.is_zero()
+    }
+}
+
+impl Neg for AdditiveSharePrime<Mod19> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self { value: -self.value }
+    }
+}
+
+impl Neg for &AdditiveSharePrime<Mod19> {
+    type Output = AdditiveSharePrime<Mod19>;
+
+    fn neg(self) -> Self::Output {
+        AdditiveSharePrime { value: -self.value }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -667,6 +823,7 @@ mod tests {
 
     use aes_prng::AesRng;
     use itertools::izip;
+    use num_traits::One;
     use rand::{Rng, SeedableRng};
     use rand_distr::{Distribution, Standard};
 
@@ -991,9 +1148,6 @@ mod tests {
         assert_eq!(reconstruct_additive_shares(c), expected_neg);
         c = a.iter().cloned().map(|a| -a).collect::<Vec<_>>();
         assert_eq!(reconstruct_additive_shares(c), expected_neg);
-
-        let a = get_shares(a_t, true);
-        let b = get_shares(b_t, true);
     }
 
     fn identity_test_additive<T: IntRing2k>() {
@@ -1014,5 +1168,131 @@ mod tests {
 
     test_impl_additive! {
         [u8, u8_additive_test]
+    }
+
+    fn get_additive_shares_prime(value: u8) -> Vec<AdditiveSharePrime<Mod19>> {
+        let mut rng = AesRng::from_entropy();
+        let next = Mod19::new(rng.gen_range(0..19));
+        let first = Mod19::new(value) - next;
+        vec![
+            AdditiveSharePrime::new(first),
+            AdditiveSharePrime::new(next),
+        ]
+    }
+
+    fn reconstruct_additive_shares_prime(shares: Vec<AdditiveSharePrime<Mod19>>) -> Mod19 {
+        shares[0].value + shares[1].value
+    }
+
+    fn arithmetic_test_additive_prime() {
+        let mut rng = AesRng::from_entropy();
+        let a_t = rng.gen_range(0..19);
+        let b_t = rng.gen_range(0..19);
+
+        let a = get_additive_shares_prime(a_t);
+        let b = get_additive_shares_prime(b_t);
+
+        // Addition
+        let expected_add = Mod19::new(a_t.wrapping_add(b_t));
+        let mut c = izip!(a.clone(), b.clone())
+            .map(|(a, b)| a + b)
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_add);
+
+        c = izip!(a.clone(), b.iter())
+            .map(|(a, b)| a + b)
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_add);
+
+        c = a.clone();
+        c.iter_mut().zip(b.iter()).for_each(|(a, b)| *a += b);
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_add);
+
+        c = a.clone();
+        c.iter_mut()
+            .zip(b.iter().cloned())
+            .for_each(|(a, b)| *a += b);
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_add);
+
+        // Addition with a constant
+        c = a.clone();
+        c.iter_mut()
+            .enumerate()
+            .for_each(|(i, a)| a.add_assign_const_role(Mod19::one(), TestRole(i)));
+        assert_eq!(
+            reconstruct_additive_shares_prime(c),
+            Mod19::new(a_t.wrapping_add(1))
+        );
+
+        // Subtraction
+        let expected_sub = Mod19::new(a_t.wrapping_sub(b_t));
+        let mut c = izip!(a.clone(), b.clone())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_sub);
+
+        c = izip!(a.clone(), b.iter())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_sub);
+
+        c = a.clone();
+        c.iter_mut().zip(b.iter()).for_each(|(a, b)| *a -= b);
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_sub);
+
+        c = a.clone();
+        c.iter_mut()
+            .zip(b.iter().cloned())
+            .for_each(|(a, b)| *a -= b);
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_sub);
+
+        // Multiplication
+        let expected_mul = Mod19::new(a_t.wrapping_mul(b_t));
+
+        // Multiplication with a constant
+        let mut c = a.iter().map(|a| a * Mod19::new(b_t)).collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_mul);
+        c = a
+            .iter()
+            .cloned()
+            .map(|a| a * Mod19::new(b_t))
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_mul);
+        c = a
+            .iter()
+            .cloned()
+            .map(|a| a * Mod19::new(b_t))
+            .collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_mul);
+        c = a.clone();
+        c.iter_mut().for_each(|a| *a *= Mod19::new(b_t));
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_mul);
+
+        // Negation
+        let expected_neg = -Mod19::new(a_t);
+        let mut c = a.iter().map(|a| -a).collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_neg);
+        c = a.iter().cloned().map(|a| -a).collect::<Vec<_>>();
+        assert_eq!(reconstruct_additive_shares_prime(c), expected_neg);
+    }
+
+    fn identity_test_additive_prime() {
+        let a: AdditiveSharePrime<Mod19> = AdditiveSharePrime::zero();
+        assert_eq!(a.value, Mod19::zero());
+        assert!(a.is_zero());
+    }
+
+    macro_rules! test_impl_additive_prime {
+        ($([$ty:ty,$fn:ident]),*) => ($(
+            #[test]
+            fn $fn() {
+                arithmetic_test_additive_prime();
+                identity_test_additive_prime();
+            }
+        )*)
+    }
+
+    test_impl_additive_prime! {
+        [u8, u8_additive_test_prime]
     }
 }
