@@ -1,5 +1,6 @@
 pub mod bit;
 pub mod int_ring;
+pub mod primefield;
 pub mod ring48;
 pub mod ring_impl;
 pub mod share;
