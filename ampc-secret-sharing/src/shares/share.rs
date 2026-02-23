@@ -341,6 +341,17 @@ impl<T: IntRing2k> Shl<u32> for Share<T> {
     }
 }
 
+impl<T: IntRing2k> Shl<u32> for &Share<T> {
+    type Output = Share<T>;
+
+    fn shl(self, rhs: u32) -> Self::Output {
+        Share {
+            a: self.a << rhs,
+            b: self.b << rhs,
+        }
+    }
+}
+
 /// Additive share of a relative Hamming distance.
 /// The distance is represented as a pair of shares `(code_dot, mask_dot)`, where
 /// - `code_dot` is the number of matching unmasked iris bits minus the number of non-matching unmasked iris bits,

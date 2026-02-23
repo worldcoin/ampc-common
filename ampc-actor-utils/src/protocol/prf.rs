@@ -1,10 +1,10 @@
 use crate::protocol::shuffle::Permutation;
 use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
-    ring_impl::{RingElement, VecRingElement},
+    ring_impl::{RingElement, RingRandFillable, VecRingElement},
 };
 use eyre::Result;
-use rand::{distributions::Standard, prelude::Distribution, Fill, Rng, SeedableRng};
+use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -100,9 +100,9 @@ impl Prf {
     }
 
     #[inline(always)]
-    pub fn gen_rands_mine<T: IntRing2k>(&mut self, len: usize) -> VecRingElement<T>
+    pub fn gen_rands_mine<T>(&mut self, len: usize) -> VecRingElement<T>
     where
-        [T]: Fill,
+        T: RingRandFillable,
     {
         let mut mine = VecRingElement(vec![RingElement::<T>::default(); len]);
         self.get_my_prf().fill(&mut mine);
@@ -110,9 +110,9 @@ impl Prf {
     }
 
     #[inline(always)]
-    pub fn gen_rands_prev<T: IntRing2k>(&mut self, len: usize) -> VecRingElement<T>
+    pub fn gen_rands_prev<T>(&mut self, len: usize) -> VecRingElement<T>
     where
-        [T]: Fill,
+        T: RingRandFillable,
     {
         let mut prev = VecRingElement(vec![RingElement::<T>::default(); len]);
         self.get_prev_prf().fill(&mut prev);
@@ -121,12 +121,9 @@ impl Prf {
 
     // returns the ring elements corresponding to (mine, prev). can be used to create zero shares (mine - prev) or binary shares (mine ^ prev)
     #[inline(always)]
-    pub fn gen_rands_batch<T: IntRing2k>(
-        &mut self,
-        len: usize,
-    ) -> (VecRingElement<T>, VecRingElement<T>)
+    pub fn gen_rands_batch<T>(&mut self, len: usize) -> (VecRingElement<T>, VecRingElement<T>)
     where
-        [T]: Fill,
+        T: RingRandFillable,
     {
         let mine = self.gen_rands_mine(len);
         let prev = self.gen_rands_prev(len);
