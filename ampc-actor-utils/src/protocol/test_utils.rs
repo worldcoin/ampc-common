@@ -1,11 +1,11 @@
-use ampc_secret_sharing::{IntRing2k, RingElement, Share};
+use ampc_secret_sharing::{IntRing2k, RingElement, ReplicatedShare};
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Standard};
 
 fn create_single_sharing<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: T,
-) -> (Share<T>, Share<T>, Share<T>)
+) -> (ReplicatedShare<T>, ReplicatedShare<T>, ReplicatedShare<T>)
 where
     Standard: Distribution<T>,
 {
@@ -13,19 +13,19 @@ where
     let b = RingElement(rng.gen::<T>());
     let c = RingElement(input) - a - b;
 
-    let share1 = Share::new(a, c);
-    let share2 = Share::new(b, a);
-    let share3 = Share::new(c, b);
+    let share1 = ReplicatedShare::new(a, c);
+    let share2 = ReplicatedShare::new(b, a);
+    let share3 = ReplicatedShare::new(c, b);
     (share1, share2, share3)
 }
 pub struct LocalShares1D<T: IntRing2k> {
-    pub p0: Vec<Share<T>>,
-    pub p1: Vec<Share<T>>,
-    pub p2: Vec<Share<T>>,
+    pub p0: Vec<ReplicatedShare<T>>,
+    pub p1: Vec<ReplicatedShare<T>>,
+    pub p2: Vec<ReplicatedShare<T>>,
 }
 
 impl<T: IntRing2k> LocalShares1D<T> {
-    pub fn of_party(&self, party_id: usize) -> &Vec<Share<T>> {
+    pub fn of_party(&self, party_id: usize) -> &Vec<ReplicatedShare<T>> {
         match party_id {
             0 => &self.p0,
             1 => &self.p1,

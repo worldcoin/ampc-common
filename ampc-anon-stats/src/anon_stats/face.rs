@@ -2,7 +2,7 @@ use ampc_actor_utils::execution::session::Session;
 use ampc_actor_utils::protocol::binary::{bit_inject, extract_msb_batch};
 use ampc_actor_utils::protocol::ops::{open_ring, sub_pub};
 use ampc_secret_sharing::shares::VecShare;
-use ampc_secret_sharing::{RingElement, Share};
+use ampc_secret_sharing::{RingElement, ReplicatedShare};
 use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::Itertools;
@@ -11,7 +11,7 @@ use crate::types::AnonStatsResultSource;
 use crate::{AnonStatsOperation, AnonStatsServerConfig, BucketResult, BucketStatistics};
 
 /// The type representing a face distance share, just a simple u16 share encoding a i16 holding the distance of two face vectors.
-pub type FaceDistance = Share<u16>;
+pub type FaceDistance = ReplicatedShare<u16>;
 
 /// Process a job of face distances and compute bucketed statistics.
 ///
@@ -59,7 +59,7 @@ pub async fn process_face_distance_job(
         let sums = sums.inner();
         let sum = sums
             .into_iter()
-            .fold(Share::<u32>::default(), |acc, x| acc + x);
+            .fold(ReplicatedShare::<u32>::default(), |acc, x| acc + x);
         buckets.push(sum);
     }
     // open the buckets
@@ -99,7 +99,7 @@ pub async fn process_face_distance_job(
 }
 
 pub mod test_helper {
-    use ampc_secret_sharing::{RingElement, Share};
+    use ampc_secret_sharing::{RingElement, ReplicatedShare};
 
     use crate::{anon_stats::face::FaceDistance, BucketResult};
 
@@ -134,15 +134,15 @@ pub mod test_helper {
                 let share1 = RingElement(share1);
                 let share2 = RingElement(share2);
 
-                shares0.push(Share {
+                shares0.push(ReplicatedShare {
                     a: share0,
                     b: share2,
                 });
-                shares1.push(Share {
+                shares1.push(ReplicatedShare {
                     a: share1,
                     b: share0,
                 });
-                shares2.push(Share {
+                shares2.push(ReplicatedShare {
                     a: share2,
                     b: share1,
                 });

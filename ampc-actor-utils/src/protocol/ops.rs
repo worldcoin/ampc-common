@@ -9,7 +9,7 @@ use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
-    ring_impl::RingElement, share::Share, IntRing2k, Ring48, VecShare,
+    ring_impl::RingElement, share::ReplicatedShare, IntRing2k, Ring48, VecShare,
 };
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
@@ -68,7 +68,7 @@ pub async fn setup_shared_seed(session: &mut NetworkSession, my_seed: PrfSeed) -
 pub async fn galois_ring_to_rep3(
     session: &mut Session,
     items: Vec<RingElement<u16>>,
-) -> Result<Vec<Share<u16>>> {
+) -> Result<Vec<ReplicatedShare<u16>>> {
     let network = &mut session.network_session;
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
 
@@ -96,10 +96,10 @@ pub async fn galois_ring_to_rep3(
             _ => Err(eyre!("Error in receiving in galois_ring_to_rep3 operation")),
         }
     }?;
-    let res: Vec<Share<u16>> = masked_items
+    let res: Vec<ReplicatedShare<u16>> = masked_items
         .into_iter()
         .zip(shares_b)
-        .map(|(a, b)| Share::new(a, b))
+        .map(|(a, b)| ReplicatedShare::new(a, b))
         .collect();
     Ok(res)
 }
@@ -107,7 +107,7 @@ pub async fn galois_ring_to_rep3(
 /// Compares the given distances to zero and reveal the bit "less than zero".
 pub async fn lt_zero_and_open_u16(
     session: &mut Session,
-    distances: &[Share<u16>],
+    distances: &[ReplicatedShare<u16>],
 ) -> Result<Vec<bool>> {
     let bits = extract_msb_batch(session, distances).await?;
     open_bin(session, &bits)
@@ -119,7 +119,7 @@ pub async fn lt_zero_and_open_u16(
 #[inline]
 pub fn sub_pub<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    share: &mut Share<T>,
+    share: &mut ReplicatedShare<T>,
     rhs: RingElement<T>,
 ) {
     match session.own_role().index() {
@@ -133,7 +133,7 @@ pub fn sub_pub<T: IntRing2k + NetworkInt>(
 /// For each of the given distance shares returns `true` if it's a share of a non-negative value.
 pub async fn gte_zero_and_open_u16(
     session: &mut Session,
-    distances: &[Share<u16>],
+    distances: &[ReplicatedShare<u16>],
 ) -> Result<Vec<bool>> {
     let bits = extract_msb_batch(session, distances).await?;
 
@@ -151,7 +151,7 @@ pub async fn gte_zero_and_open_u16(
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
     session: &mut Session,
-    shares: &[Share<T>],
+    shares: &[ReplicatedShare<T>],
 ) -> Result<Vec<T>> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {
@@ -220,7 +220,7 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 pub async fn conditionally_select_distance<T>(
     session: &mut Session,
     distances: &[(DistanceShare<T>, DistanceShare<T>)],
-    control_bits: &[Share<T>],
+    control_bits: &[ReplicatedShare<T>],
 ) -> Result<Vec<DistanceShare<T>>>
 where
     T: NetworkInt + RingRandFillable,
@@ -268,7 +268,7 @@ where
     // finally compute the result by adding the d2 shares
     Ok(izip!(res_a.into_iter(), res_b.into_iter())
         // combine a and b part into shares
-        .map(|(a, b)| Share::new(a, b))
+        .map(|(a, b)| ReplicatedShare::new(a, b))
         // combine the code and mask parts into DistanceShare
         .tuples()
         .map(|(code, mask)| DistanceShare {
@@ -302,7 +302,7 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 pub async fn cross_mul(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
     let res_a: Vec<RingElement<u32>> = izip!(
         distances.iter(),
@@ -330,7 +330,7 @@ pub async fn cross_mul(
         _ => bail!("Could not deserialize RingElement32"),
     };
     Ok(izip!(res_a.into_iter(), res_b.into_iter())
-        .map(|(a, b)| Share::new(a, b))
+        .map(|(a, b)| ReplicatedShare::new(a, b))
         .collect())
 }
 
@@ -345,7 +345,7 @@ pub async fn cross_mul(
 pub async fn oblivious_cross_compare(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
-) -> Result<Vec<Share<Bit>>> {
+) -> Result<Vec<ReplicatedShare<Bit>>> {
     // d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     let diff = cross_mul(session, distances).await?;
     // Compute the MSB of the above
@@ -363,7 +363,7 @@ pub async fn oblivious_cross_compare(
 pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare(session, distances).await?;
     // inject bits to T shares
@@ -409,8 +409,8 @@ pub async fn batch_signed_lift(
 /// a vector (Vec) of 32-bit shares.
 pub async fn batch_signed_lift_vec(
     session: &mut Session,
-    pre_lift: Vec<Share<u16>>,
-) -> Result<Vec<Share<u32>>> {
+    pre_lift: Vec<ReplicatedShare<u16>>,
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
 }
@@ -442,8 +442,8 @@ pub async fn batch_signed_lift_ring48(
 /// shares to a vector (Vec) of Ring48 shares.
 pub async fn batch_signed_lift_vec_ring48(
     session: &mut Session,
-    pre_lift: Vec<Share<u16>>,
-) -> Result<Vec<Share<Ring48>>> {
+    pre_lift: Vec<ReplicatedShare<u16>>,
+) -> Result<Vec<ReplicatedShare<Ring48>>> {
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift_ring48(session, pre_lift).await?.inner())
 }

@@ -9,7 +9,7 @@ use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
     ring48::Ring48,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
-    share::Share,
+    share::ReplicatedShare,
     vecshare::{SliceShare, VecShare},
 };
 use ampc_secret_sharing::Role;
@@ -45,7 +45,7 @@ impl<T: IntRing2k> VecBinShare<T> {
 
     #[allow(dead_code)]
     #[inline]
-    fn get_word_at(&self, index: usize) -> Share<T> {
+    fn get_word_at(&self, index: usize) -> ReplicatedShare<T> {
         self.inner.get_at(index)
     }
 }
@@ -78,12 +78,15 @@ impl<T: IntRing2k> VecBinShare<T> {
 /// |---------------|--------|---------|---------|
 /// |a              |0       |0        |x3       |
 /// |b              |x3      |0        |0        |
-fn a2b_pre<T: IntRing2k>(session: &Session, x: Share<T>) -> Result<(Share<T>, Share<T>, Share<T>)> {
+fn a2b_pre<T: IntRing2k>(
+    session: &Session,
+    x: ReplicatedShare<T>,
+) -> Result<(ReplicatedShare<T>, ReplicatedShare<T>, ReplicatedShare<T>)> {
     let (a, b) = x.get_ab();
 
-    let mut x1 = Share::zero();
-    let mut x2 = Share::zero();
-    let mut x3 = Share::zero();
+    let mut x1 = ReplicatedShare::zero();
+    let mut x2 = ReplicatedShare::zero();
+    let mut x3 = ReplicatedShare::zero();
 
     match session.own_role().index() {
         0 => {
@@ -132,8 +135,8 @@ fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> 
 /// Computes and sends a local share of the AND of two vectors of bit-sliced shares.
 async fn and_many_iter_send<T>(
     session: &mut Session,
-    a: impl Iterator<Item = Share<T>>,
-    b: impl Iterator<Item = Share<T>>,
+    a: impl Iterator<Item = ReplicatedShare<T>>,
+    b: impl Iterator<Item = ReplicatedShare<T>>,
     size_hint: usize,
 ) -> Result<Vec<RingElement<T>>, Error>
 where
@@ -555,10 +558,10 @@ where
             z.into_iter()
         )
         .map(|(s1a, s2b, s3a, s3b, s4b)| {
-            let s1 = Share::new(s1a, RingElement::zero());
-            let s2 = Share::new(RingElement::zero(), s2b);
-            let s3 = Share::new(s3a, s3b);
-            let s4 = Share::new(RingElement::zero(), s4b);
+            let s1 = ReplicatedShare::new(s1a, RingElement::zero());
+            let s2 = ReplicatedShare::new(RingElement::zero(), s2b);
+            let s3 = ReplicatedShare::new(s3a, s3b);
+            let s4 = ReplicatedShare::new(RingElement::zero(), s4b);
             let sum12 = s1 + s2;
             let sum34 = s3 + s4;
             sum12 - sum34 - sum34
@@ -640,9 +643,9 @@ where
     Ok(VecShare::new_vec(
         izip!(x.into_iter(), r_01.into_iter(), y.into_iter(), r_12)
             .map(|(s1a, s1b, s3b, s4a)| {
-                let s1 = Share::new(s1a, s1b);
-                let s3 = Share::new(RingElement::zero(), s3b);
-                let s4 = Share::new(s4a, RingElement::zero());
+                let s1 = ReplicatedShare::new(s1a, s1b);
+                let s3 = ReplicatedShare::new(RingElement::zero(), s3b);
+                let s4 = ReplicatedShare::new(s4a, RingElement::zero());
                 let sum34 = s3 + s4;
                 s1 - sum34 - sum34
             })
@@ -735,10 +738,10 @@ where
             r_12.into_iter()
         )
         .map(|(s1b, s2a, s3a, s4a, s4b)| {
-            let s1 = Share::new(RingElement::zero(), s1b);
-            let s2 = Share::new(s2a, RingElement::zero());
-            let s3 = Share::new(s3a, RingElement::zero());
-            let s4 = Share::new(s4a, s4b);
+            let s1 = ReplicatedShare::new(RingElement::zero(), s1b);
+            let s2 = ReplicatedShare::new(s2a, RingElement::zero());
+            let s3 = ReplicatedShare::new(s3a, RingElement::zero());
+            let s4 = ReplicatedShare::new(s4a, s4b);
             let sum12 = s1 + s2;
             let sum34 = s3 + s4;
             sum12 - sum34 - sum34
@@ -753,10 +756,10 @@ where
 /// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^32 for any 16 <= k <= 32-j.
 #[allow(dead_code)]
 #[inline]
-pub fn mul_lift_2k_to_32<const K: u64>(val: &Share<u16>) -> Share<u32> {
+pub fn mul_lift_2k_to_32<const K: u64>(val: &ReplicatedShare<u16>) -> ReplicatedShare<u32> {
     let a = (u32::from(val.a.0)) << K;
     let b = (u32::from(val.b.0)) << K;
-    Share::new(RingElement(a), RingElement(b))
+    ReplicatedShare::new(RingElement(a), RingElement(b))
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
@@ -772,10 +775,10 @@ fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> 
 /// that (x << k) + (y << k) + (z << k) = (b << k) mod 2^48 for any 16 <= k <= 48-j.
 #[allow(dead_code)]
 #[inline]
-pub fn mul_lift_2k_to_48<const K: usize>(val: &Share<u32>) -> Share<Ring48> {
+pub fn mul_lift_2k_to_48<const K: usize>(val: &ReplicatedShare<u32>) -> ReplicatedShare<Ring48> {
     let a = (Ring48::from(val.a.0)) << K;
     let b = (Ring48::from(val.b.0)) << K;
-    Share::new(RingElement(a), RingElement(b))
+    ReplicatedShare::new(RingElement(a), RingElement(b))
 }
 
 /// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
@@ -795,7 +798,7 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
     // Interpret the shares as u32
     let mut x_a = VecShare::with_capacity(padded_len);
     for share in shares.iter() {
-        x_a.push(Share::new(
+        x_a.push(ReplicatedShare::new(
             RingElement(share.a.0 as u32),
             RingElement(share.b.0 as u32),
         ));
@@ -861,7 +864,7 @@ pub async fn lift_to_ring48(
     // Interpret the shares as Ring48
     let mut x_a = VecShare::with_capacity(padded_len);
     for share in shares.iter() {
-        x_a.push(Share::new(
+        x_a.push(ReplicatedShare::new(
             RingElement(Ring48(share.a.0 as u64)),
             RingElement(Ring48(share.b.0 as u64)),
         ));
@@ -1222,7 +1225,10 @@ where
 
 /// Extracts the MSB of the secret shared input value.
 #[allow(dead_code)]
-pub async fn single_extract_msb<T>(session: &mut Session, x: Share<T>) -> Result<Share<Bit>, Error>
+pub async fn single_extract_msb<T>(
+    session: &mut Session,
+    x: ReplicatedShare<T>,
+) -> Result<ReplicatedShare<Bit>, Error>
 where
     T: NetworkInt + RingRandFillable,
     VecShare<T>: Transpose64,
@@ -1233,13 +1239,19 @@ where
         .get_at(0)
         .get_ab();
 
-    Ok(Share::new(a.get_bit_as_bit(0), b.get_bit_as_bit(0)))
+    Ok(ReplicatedShare::new(
+        a.get_bit_as_bit(0),
+        b.get_bit_as_bit(0),
+    ))
 }
 
 /// Extracts the secret shared MSBs of the secret shared input values.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
-pub async fn extract_msb_batch<T>(session: &mut Session, x: &[Share<T>]) -> Result<Vec<Share<Bit>>>
+pub async fn extract_msb_batch<T>(
+    session: &mut Session,
+    x: &[ReplicatedShare<T>],
+) -> Result<Vec<ReplicatedShare<Bit>>>
 where
     T: NetworkInt + RingRandFillable,
     VecShare<T>: Transpose64,
@@ -1254,7 +1266,10 @@ where
     'outer: for bit_batch in packed_bits.into_iter() {
         let (a, b) = bit_batch.get_ab();
         for i in 0..64 {
-            res.push(Share::new(a.get_bit_as_bit(i), b.get_bit_as_bit(i)));
+            res.push(ReplicatedShare::new(
+                a.get_bit_as_bit(i),
+                b.get_bit_as_bit(i),
+            ));
             if res.len() == res_len {
                 break 'outer;
             }
@@ -1270,7 +1285,7 @@ where
 /// Thus, the current party should send its `b` share to the next party and receive the `b` share from the previous party.
 /// `a XOR b XOR previous b` yields the opened bit.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Vec<Bit>> {
+pub async fn open_bin(session: &mut Session, shares: &[ReplicatedShare<Bit>]) -> Result<Vec<Bit>> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {
         NetworkValue::RingElementBit(shares[0].b)

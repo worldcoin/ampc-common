@@ -3,7 +3,7 @@ use crate::protocol::ops::{min_of_pair_batch, B};
 use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::VecShare;
-use ampc_secret_sharing::Share;
+use ampc_secret_sharing::ReplicatedShare;
 use eyre::{eyre, Result};
 use itertools::Itertools;
 
@@ -14,7 +14,7 @@ pub async fn compare_against_thresholds_batched(
     session: &mut Session,
     threshold_a_terms: &[u32],
     distances: &[DistanceShare<u32>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let diffs = threshold_a_terms
         .iter()
         .flat_map(|a| {
@@ -42,7 +42,7 @@ pub async fn compare_threshold_buckets(
     session: &mut Session,
     threshold_a_terms: &[u32],
     distances: &[DistanceShare<u32>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let sums = compare_against_thresholds_batched(session, threshold_a_terms, distances).await?;
     tracing::info!("bit_inject done, now summing");
     // add them up, bucket-wise, with each bucket corresponding to a threshold and containing len(distances) results
@@ -110,7 +110,7 @@ pub async fn compare_min_threshold_buckets(
     session: &mut Session,
     threshold_a_terms: &[u32],
     distances: &[Vec<DistanceShare<u32>>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let reduced_distances = reduce_to_min_distance_batch(session, distances).await?;
     // Now we have a single distance for each group, we can compare it to the thresholds
     let buckets = compare_threshold_buckets(session, threshold_a_terms, &reduced_distances).await?;

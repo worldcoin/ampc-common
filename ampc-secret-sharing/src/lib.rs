@@ -15,4 +15,4 @@ pub mod shares;
 pub use face_vector::{FaceSecretSharedVector, FaceVector, FACE_VECTOR_SIZE};
 pub use galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
 pub use id::PartyID;
-pub use shares::{IntRing2k, RingElement, Role, Share};
+pub use shares::{IntRing2k, RingElement, Role, ReplicatedShare};

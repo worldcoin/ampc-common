@@ -1,4 +1,4 @@
-use ampc_secret_sharing::{shares::bit::Bit, IntRing2k, RingElement, Role, Share};
+use ampc_secret_sharing::{shares::bit::Bit, IntRing2k, RingElement, Role, ReplicatedShare};
 use eyre::{bail, Error};
 
 use crate::execution::session::{Session, SessionHandles};
@@ -6,9 +6,9 @@ use crate::execution::session::{Session, SessionHandles};
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
 // shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
 pub struct OfflineRandomShares<T: IntRing2k> {
-    r: Share<T>,
-    r_bits: [Share<Bit>; 8], // r_7, ..., r_0
-    b_bit: Share<T>,
+    r: ReplicatedShare<T>,
+    r_bits: [ReplicatedShare<Bit>; 8], // r_7, ..., r_0
+    b_bit: ReplicatedShare<T>,
 }
 
 // sampling an instance of pre-generated randomness used in the protocol for T = u8
@@ -40,36 +40,36 @@ fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, 
     match role.index() {
         // Party 0 holds (a0,a2) for every shared value.
         0 => Ok(OfflineRandomShares {
-            r: Share::new(elem_r0, elem_r2),
+            r: ReplicatedShare::new(elem_r0, elem_r2),
             r_bits: bit_triplets.map(|(b0, _, b2)| {
-                Share::new(
+                ReplicatedShare::new(
                     RingElement(Bit::new(b0 == 1)),
                     RingElement(Bit::new(b2 == 1)),
                 )
             }),
-            b_bit: Share::new(rb_0, rb_2),
+            b_bit: ReplicatedShare::new(rb_0, rb_2),
         }),
         // Party 1 holds (a1,a0).
         1 => Ok(OfflineRandomShares {
-            r: Share::new(elem_r1, elem_r0),
+            r: ReplicatedShare::new(elem_r1, elem_r0),
             r_bits: bit_triplets.map(|(_, b1, b0)| {
-                Share::new(
+                ReplicatedShare::new(
                     RingElement(Bit::new(b1 == 1)),
                     RingElement(Bit::new(b0 == 1)),
                 )
             }),
-            b_bit: Share::new(rb_1, rb_0),
+            b_bit: ReplicatedShare::new(rb_1, rb_0),
         }),
         // Party 2 holds (a2,a1).
         2 => Ok(OfflineRandomShares {
-            r: Share::new(elem_r2, elem_r1),
+            r: ReplicatedShare::new(elem_r2, elem_r1),
             r_bits: bit_triplets.map(|(b2, b1, _)| {
-                Share::new(
+                ReplicatedShare::new(
                     RingElement(Bit::new(b2 == 1)),
                     RingElement(Bit::new(b1 == 1)),
                 )
             }),
-            b_bit: Share::new(rb_2, rb_1),
+            b_bit: ReplicatedShare::new(rb_2, rb_1),
         }),
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
     }
@@ -77,9 +77,9 @@ fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, 
 
 pub async fn extract_msb_rand<T: IntRing2k>(
     session: &mut Session,
-    x: Share<T>,
+    x: ReplicatedShare<T>,
     offline: &OfflineRandomShares<T>,
-) -> Result<Share<Bit>, Error> {
+) -> Result<ReplicatedShare<Bit>, Error> {
     let (r_self, r_prev) = offline.r.get_ab();
     let (b_self, b_prev) = offline.b_bit.get_ab();
     let (msb_self, msb_prev) = offline.r_bits[0].get_ab();
@@ -97,7 +97,7 @@ pub async fn extract_msb_rand<T: IntRing2k>(
     let v_t: T = T::from(bool::from(msb_prev.0));
     let msb_prev_t = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
 
-    let msb_T = Share::new(msb_self_t, msb_prev_t);
+    let msb_T = ReplicatedShare::new(msb_self_t, msb_prev_t);
     // println!(
     //     "msb scaled: self={:?} prev={:?}",
     //     msb_u8.get_a(), msb_u8.get_b()
@@ -105,7 +105,7 @@ pub async fn extract_msb_rand<T: IntRing2k>(
 
     let r_prime_self: RingElement<T> = offline.r.get_a() - msb_T.get_a();
     let r_prime_prev: RingElement<T> = offline.r.get_b() - msb_T.get_b();
-    let r_prime = Share::new(r_prime_self, r_prime_prev);
+    let r_prime = ReplicatedShare::new(r_prime_self, r_prime_prev);
 
     println!(
         "computed r': self={:?} prev={:?}",
@@ -116,16 +116,18 @@ pub async fn extract_msb_rand<T: IntRing2k>(
     // <issue is that x.get_a() is not u8 and potentially u16 or u32??>
     let c_prime_self: RingElement<T> = (x.get_a() + offline.r.get_a()) << 1;
     let c_prime_prev: RingElement<T> = (x.get_b() + offline.r.get_b()) << 1;
-    let c_prime = Share::new(c_prime_self, c_prime_prev);
+    let c_prime = ReplicatedShare::new(c_prime_self, c_prime_prev);
     println!(
         "computed c': self={:?} prev={:?}",
         c_prime_self, c_prime_prev
     );
 
     //returning a dummy value for now
-    let one = Share::from_const(Bit::new(true), session.own_role());
+    let one = ReplicatedShare::from_const(Bit::new(true), session.own_role());
     Ok(one)
 }
+
+pub async fn rep_to_add2<T: IntRing2k>(session: &mut Session, x: ReplicatedShare<T>) {}
 
 #[cfg(test)]
 mod tests {

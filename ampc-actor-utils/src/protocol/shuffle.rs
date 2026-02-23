@@ -8,7 +8,7 @@ use crate::{
 };
 use ampc_secret_sharing::shares::share::reconstruct_id_distance_vector;
 use ampc_secret_sharing::shares::{
-    ring_impl::VecRingElement, share::DistanceShare, RingElement, Share,
+    ring_impl::VecRingElement, share::DistanceShare, RingElement, ReplicatedShare,
 };
 
 /// Secret shared permutation used in the shuffle protocol
@@ -92,8 +92,8 @@ fn shuffle_triplets(
 /// = pi(distances)
 pub async fn random_shuffle_batch(
     session: &mut Session,
-    distances: Vec<Vec<(Share<u32>, DistanceShare<u32>)>>,
-) -> Result<Vec<Vec<(Share<u32>, DistanceShare<u32>)>>> {
+    distances: Vec<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>>,
+) -> Result<Vec<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>>> {
     // check that distances is not empty
     if distances.is_empty() {
         eyre::bail!("Input distances cannot be empty");
@@ -128,9 +128,9 @@ pub async fn random_shuffle_batch(
 
 async fn shuffle_party_0(
     session: &mut Session,
-    distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
     batch_size: usize,
-) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
@@ -166,9 +166,9 @@ async fn shuffle_party_0(
 
 async fn shuffle_party_1(
     session: &mut Session,
-    distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
     batch_size: usize,
-) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
     let prf = &mut session.prf;
     // Generate shares of a random permutation
     // pi_12 and pi_01
@@ -221,9 +221,9 @@ async fn shuffle_party_1(
 
 async fn shuffle_party_2(
     session: &mut Session,
-    distances: Vec<(Share<u32>, DistanceShare<u32>)>,
+    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
     batch_size: usize,
-) -> Result<Vec<(Share<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation

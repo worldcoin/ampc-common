@@ -133,7 +133,7 @@ pub mod test_helper {
     use crate::{BucketStatistics2D, DistanceBundle2D};
     use ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO;
     use ampc_secret_sharing::shares::{share::DistanceShare, RingElement};
-    use ampc_secret_sharing::Share;
+    use ampc_secret_sharing::ReplicatedShare;
     use itertools::Itertools;
 
     pub struct TestDistances {
@@ -175,31 +175,31 @@ pub mod test_helper {
                             (x[1] as u16).wrapping_sub(mshare1).wrapping_sub(mshare2);
                         (
                             DistanceShare {
-                                code_dot: Share {
+                                code_dot: ReplicatedShare {
                                     a: RingElement(share1),
                                     b: RingElement(share3),
                                 },
-                                mask_dot: Share {
+                                mask_dot: ReplicatedShare {
                                     a: RingElement(mshare1),
                                     b: RingElement(mshare3),
                                 },
                             },
                             DistanceShare {
-                                code_dot: Share {
+                                code_dot: ReplicatedShare {
                                     a: RingElement(share2),
                                     b: RingElement(share1),
                                 },
-                                mask_dot: Share {
+                                mask_dot: ReplicatedShare {
                                     a: RingElement(mshare2),
                                     b: RingElement(mshare1),
                                 },
                             },
                             DistanceShare {
-                                code_dot: Share {
+                                code_dot: ReplicatedShare {
                                     a: RingElement(share3),
                                     b: RingElement(share2),
                                 },
-                                mask_dot: Share {
+                                mask_dot: ReplicatedShare {
                                     a: RingElement(mshare3),
                                     b: RingElement(mshare2),
                                 },
