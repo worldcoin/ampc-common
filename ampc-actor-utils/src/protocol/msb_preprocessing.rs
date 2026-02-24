@@ -8,9 +8,9 @@ use tracing::instrument;
 
 use crate::{
     execution::session::{Session, SessionHandles},
-    network::value::NetworkValue,
+    network::value::{NetworkInt, NetworkValue},
 };
-
+use crate::protocol::ops::open_ring;
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
 // shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
 pub struct OfflineRandomShares<T: IntRing2k> {
@@ -83,14 +83,15 @@ fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, 
     }
 }
 
-pub async fn extract_msb_rand<T: IntRing2k>(
+pub async fn extract_msb_rand<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x: ReplicatedShare<T>,
     offline: &OfflineRandomShares<T>,
 ) -> Result<ReplicatedShare<Bit>, Error> {
+
     let (r_self, r_prev) = offline.r.get_ab();
     let (b_self, b_prev) = offline.b_bit.get_ab();
-    let (msb_self, msb_prev) = offline.r_bits[0].get_ab();
+    let (r_msb_self, r_msb_prev) = offline.r_bits[0].get_ab();
 
     // for testing purposes, printing the role and corresponding shares of OfflineRandomShares
     // println!(
@@ -99,35 +100,40 @@ pub async fn extract_msb_rand<T: IntRing2k>(
     // );
 
     // step 1: [r']_k = [r]_k - [r_bit]_1 ^ 2^{k - 1}
-    let v_t: T = T::from(bool::from(msb_self.0));
-    let msb_self_t = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
 
-    let v_t: T = T::from(bool::from(msb_prev.0));
-    let msb_prev_t = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+    // convert RingElement<Bit> -> Bit -> Bool -> (via from) T
+    let v_t: T = T::from(r_msb_self.convert().convert());  
+    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl 
+    let scaled_msb_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32)); 
 
-    let msb_T = ReplicatedShare::new(msb_self_t, msb_prev_t);
+    let v_t: T = T::from(r_msb_prev.convert().convert());
+    let scaled_msb_prev = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+
+    // let scaled_msb = ReplicatedShare::new(scaled_msb_self, scaled_msb_prev);
     // println!(
     //     "msb scaled: self={:?} prev={:?}",
-    //     msb_u8.get_a(), msb_u8.get_b()
+    //     scaled_msb.get_a(), scaled_msb.get_b()
     // );
 
-    let r_prime_self: RingElement<T> = offline.r.get_a() - msb_T.get_a();
-    let r_prime_prev: RingElement<T> = offline.r.get_b() - msb_T.get_b();
+    let r_prime_self: RingElement<T> = offline.r.get_a() - scaled_msb_self;
+    let r_prime_prev: RingElement<T> = offline.r.get_b() - scaled_msb_prev;
     let r_prime = ReplicatedShare::new(r_prime_self, r_prime_prev);
 
-    println!(
-        "computed r': self={:?} prev={:?}",
-        r_prime.get_a(),
-        r_prime.get_b()
-    );
+    // println!(
+    //     "computed r': self={:?} prev={:?}",
+    //     r_prime.get_a(),
+    //     r_prime.get_b()
+    // );
+
     // step 2: c' = (x + r) mod 2^{k - 1}
-    // <issue is that x.get_a() is not u8 and potentially u16 or u32??>
-    let c_prime_self: RingElement<T> = (x.get_a() + offline.r.get_a()) << 1;
-    let c_prime_prev: RingElement<T> = (x.get_b() + offline.r.get_b()) << 1;
-    let c_prime = ReplicatedShare::new(c_prime_self, c_prime_prev);
+    
+    // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
+    let c_share: ReplicatedShare<T> = x + offline.r; 
+    let c: T = open_ring(session, std::slice::from_ref(&c_share)).await?[0];
+
     println!(
-        "computed c': self={:?} prev={:?}",
-        c_prime_self, c_prime_prev
+        "computed x, c: x_self={:?} x_prev={:?} c={:?}",
+        x.get_a(), x.get_b(), c
     );
 
     //returning a dummy value for now
