@@ -1,5 +1,5 @@
 use ampc_secret_sharing::shares::{
-    self, bit::Bit, primefield::Mod19, ring48::Ring48, ring_impl::RingElement, IntRing2k,
+    self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
 };
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
@@ -60,7 +60,6 @@ const PRF_KEY_SIZE: usize = 16;
 #[derive(PartialEq, Clone, Debug)]
 pub enum NetworkValue {
     PrfKey([u8; PRF_KEY_SIZE]),
-    PrimeElement(Mod19),
     RingElementBit(RingElement<Bit>),
     RingElement8(RingElement<u8>),
     RingElement16(RingElement<u16>),
@@ -83,7 +82,6 @@ pub enum NetworkValue {
 #[derive(Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum DescriptorByte {
     PrfKey = 0x01,
-    PrimeElement = 0x11,
     RingElementBit1 = 0x12,
     RingElementBit0 = 0x02,
     RingElement8 = 0x13,
@@ -107,7 +105,6 @@ impl DescriptorByte {
     pub fn base_len(&self) -> usize {
         match self {
             DescriptorByte::PrfKey => 1 + PRF_KEY_SIZE,
-            DescriptorByte::PrimeElement => 2,
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => 1,
             DescriptorByte::RingElement8 => 2,
             DescriptorByte::RingElement16 => 3,
@@ -146,7 +143,6 @@ impl NetworkValue {
     fn get_descriptor_byte(&self) -> u8 {
         let descriptor_byte = match self {
             NetworkValue::PrfKey(_) => DescriptorByte::PrfKey,
-            NetworkValue::PrimeElement(_) => DescriptorByte::PrimeElement,
             NetworkValue::RingElementBit(bit) => {
                 if bit.convert().convert() {
                     DescriptorByte::RingElementBit1
@@ -217,7 +213,6 @@ impl NetworkValue {
         match self {
             NetworkValue::PrfKey(key) => res.extend_from_slice(key),
             NetworkValue::PrfCheck(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
-            NetworkValue::PrimeElement(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
             NetworkValue::RingElementBit(_) => {
                 // Do nothing, the descriptor byte already contains the bit
                 // value
@@ -331,14 +326,6 @@ impl NetworkValue {
                     <[u8; 16]>::try_from(&serialized[1..1 + 16])?,
                 ))))
             }
-            DescriptorByte::PrimeElement => {
-                if serialized.len() != 2 {
-                    bail!("Invalid length for PrimeFieldElement");
-                }
-                Ok(NetworkValue::PrimeElement(Mod19::new(u8::from_le_bytes(
-                    <[u8; 1]>::try_from(&serialized[1..2])?,
-                ))))
-            }
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => {
                 if serialized.len() != 1 {
                     bail!("Invalid length for RingElementBit");
@@ -352,7 +339,7 @@ impl NetworkValue {
             }
             DescriptorByte::RingElement8 => {
                 if serialized.len() != 2 {
-                    bail!("Invalid length for RingElement8");
+                    bail!("Invalid length for RingElement16");
                 }
                 Ok(NetworkValue::RingElement8(RingElement(u8::from_le_bytes(
                     <[u8; 1]>::try_from(&serialized[1..2])?,
