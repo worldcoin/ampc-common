@@ -416,10 +416,10 @@ pub fn reconstruct_distance_vector(
         .collect_vec()
 }
 
-pub fn reconstruct_id_distance_vector(
-    a: super::ring_impl::VecRingElement<u32>,
-    b: super::ring_impl::VecRingElement<u32>,
-) -> Vec<(Share<u32>, DistanceShare<u32>)> {
+pub fn reconstruct_id_distance_vector<T: IntRing2k>(
+    a: super::ring_impl::VecRingElement<T>,
+    b: super::ring_impl::VecRingElement<T>,
+) -> Vec<(Share<T>, DistanceShare<T>)> {
     izip!(a.0, b.0)
         .map(|(a, b)| Share::new(a, b))
         .tuples()
