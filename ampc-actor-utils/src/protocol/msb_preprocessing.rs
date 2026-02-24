@@ -8,8 +8,8 @@ use ampc_secret_sharing::{
     IntRing2k, ReplicatedShare, RingElement, Role,
 };
 use eyre::{bail, eyre, Error};
-use num_traits::Zero;
-use rand::SeedableRng;
+use num_traits::{One, Zero};
+use rand::{Rng, SeedableRng};
 use tracing::instrument;
 
 use crate::{
@@ -292,9 +292,7 @@ pub async fn primefield_to_bin_one_hot(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             if values.len() == 1 {
                 match share_from_previous {
-                    NetworkValue::PrimeElement(message) => {
-                        Ok(vec![AdditiveSharePrime::new(message)])
-                    }
+                    NetworkValue::RingElementBit(message) => Ok(vec![AdditiveShare::new(message)]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
@@ -303,8 +301,8 @@ pub async fn primefield_to_bin_one_hot(
                         if matches!(v[0], NetworkValue::PrimeElement(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => {
-                                        AdditiveSharePrime::new(message)
+                                    NetworkValue::RingElementBit(message) => {
+                                        AdditiveShare::new(message)
                                     }
                                     _ => unreachable!(),
                                 })
@@ -324,19 +322,17 @@ pub async fn primefield_to_bin_one_hot(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             if values.len() == 1 {
                 match share_from_next {
-                    NetworkValue::PrimeElement(message) => {
-                        Ok(vec![AdditiveSharePrime::new(message)])
-                    }
+                    NetworkValue::RingElementBit(message) => Ok(vec![AdditiveShare::new(message)]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
                 match NetworkValue::vec_from_network(share_from_next) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::RingElementBit(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => {
-                                        AdditiveSharePrime::new(message)
+                                    NetworkValue::RingElementBit(message) => {
+                                        AdditiveShare::new(message)
                                     }
                                     _ => unreachable!(),
                                 })
@@ -351,37 +347,38 @@ pub async fn primefield_to_bin_one_hot(
         }
         2 => {
             let mut rng = AesRng::from_entropy();
-            let (shares_0, shares_1): (
-                Vec<AdditiveSharePrime<Mod19>>,
-                Vec<AdditiveSharePrime<Mod19>>,
-            ) = values
+            let (shares_0, shares_1): (Vec<AdditiveShare<Bit>>, Vec<AdditiveShare<Bit>>) = values
                 .iter()
                 .map(|value| {
-                    let bit_as_mod19 = Mod19::new(u8::from(value.convert()));
-                    let rand_mod19_share = Mod19::rand(&mut rng);
-                    let other_share = bit_as_mod19 - rand_mod19_share;
+                    let rand_bit_as_bool = rng.gen_range(0..=1) != 0;
+                    let rand_bit = RingElement(Bit::from(rand_bit_as_bool));
+                    let other_share = if value.is_zero() {
+                        RingElement(Bit::one()) - rand_bit
+                    } else {
+                        RingElement(Bit::zero()) - rand_bit
+                    };
                     (
-                        AdditiveSharePrime::new(other_share),
-                        AdditiveSharePrime::new(rand_mod19_share),
+                        AdditiveShare::new(other_share),
+                        AdditiveShare::new(rand_bit),
                     )
                 })
                 .unzip();
             let message_next = if shares_0.len() == 1 {
-                NetworkValue::PrimeElement(shares_0[0].value)
+                NetworkValue::RingElementBit(shares_0[0].value)
             } else {
                 let values = shares_0
                     .iter()
-                    .map(|x| NetworkValue::PrimeElement(x.value))
+                    .map(|x| NetworkValue::RingElementBit(x.value))
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
             network.send_next(message_next).await?;
             let message_prev = if shares_1.len() == 1 {
-                NetworkValue::PrimeElement(shares_1[0].value)
+                NetworkValue::RingElementBit(shares_1[0].value)
             } else {
                 let values = shares_1
                     .iter()
-                    .map(|x| NetworkValue::PrimeElement(x.value))
+                    .map(|x| NetworkValue::RingElementBit(x.value))
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
@@ -390,7 +387,7 @@ pub async fn primefield_to_bin_one_hot(
         }
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
     };
-    todo!()
+    Ok(shares)
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
