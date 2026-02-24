@@ -1,7 +1,7 @@
 use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use num_traits::{Inv, One, Zero};
-use rand::RngCore;
+use rand::{Rng, RngCore};
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct Mod19(u8);
@@ -9,6 +9,14 @@ pub struct Mod19(u8);
 impl Mod19 {
     pub fn new(value: u8) -> Self {
         Self(value % 19)
+    }
+
+    pub fn rand(rng: &mut impl Rng) -> Self {
+        Self::new(rng.gen_range(0..19))
+    }
+
+    pub fn convert(&self) -> u8 {
+        self.0
     }
 }
 
