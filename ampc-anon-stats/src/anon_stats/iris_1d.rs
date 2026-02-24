@@ -1,6 +1,6 @@
 use crate::anon_stats::{calculate_iris_threshold_a, MATCH_THRESHOLD_RATIO_REAUTH};
 use crate::server::config::AnonStatsServerConfig;
-use crate::types::AnonStatsResultSource;
+use crate::types::{AnonStatsOrientation, AnonStatsResultSource};
 use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin, BucketStatistics};
 use ampc_actor_utils::{
     constants::MATCH_THRESHOLD_RATIO,
@@ -84,6 +84,8 @@ pub async fn process_1d_anon_stats_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
+    anon_stats.is_mirror_orientation =
+        matches!(origin.orientation, AnonStatsOrientation::Mirror);
 
     anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
     Ok(anon_stats)
@@ -124,6 +126,8 @@ pub async fn process_1d_lifted_anon_stats_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
+    anon_stats.is_mirror_orientation =
+        matches!(origin.orientation, AnonStatsOrientation::Mirror);
     anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
     Ok(anon_stats)
 }
