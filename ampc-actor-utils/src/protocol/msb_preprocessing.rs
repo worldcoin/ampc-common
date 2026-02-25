@@ -2,7 +2,11 @@ use std::ops::{AddAssign, Neg};
 
 use aes_prng::AesRng;
 use ampc_secret_sharing::{
-    shares::{bit::Bit, share::AdditiveShare},
+    shares::{
+        bit::Bit,
+        primefield::Mod19,
+        share::{AdditiveShare, AdditiveSharePrime},
+    },
     IntRing2k, ReplicatedShare, RingElement, Role,
 };
 use eyre::{bail, eyre, Error, Result};
@@ -86,39 +90,6 @@ fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, 
         }),
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
     }
-}
-
-/// Setup a shared seed across first two parties in dealer model.
-/// Each party (of 1, 2) sends their seed to the other and receives from each other.
-/// The final shared seed is the XOR of both seeds.
-pub async fn setup_shared_seed_dealer_model(
-    session: &mut NetworkSession,
-    my_seed: PrfSeed,
-) -> Result<PrfSeed> {
-    let my_msg = NetworkValue::PrfKey(my_seed);
-
-    let decode = |msg| match msg {
-        Ok(NetworkValue::PrfKey(seed)) => Ok(seed),
-        _ => Err(eyre!("Could not deserialize PrfKey")),
-    };
-
-    let shared_seed = match session.own_role.index() {
-        0 => {
-            session.send_next(my_msg.clone()).await?;
-            let other_seed = decode(session.receive_next().await)?;
-            std::array::from_fn(|i| my_seed[i] ^ other_seed[i])
-        }
-        1 => {
-            session.send_prev(my_msg).await?;
-            let other_seed = decode(session.receive_prev().await)?;
-            std::array::from_fn(|i| my_seed[i] ^ other_seed[i])
-        }
-        _ => {
-            bail!("Cannot deal with roles that have index outside of the set [0, 1]")
-        }
-    };
-
-    Ok(shared_seed)
 }
 
 /// Setup a shared seed across first two parties in dealer model.
@@ -250,18 +221,16 @@ pub async fn bin_to_primefield(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             if values.len() == 1 {
                 match share_from_previous {
-                    NetworkValue::PrimeElement(message) => {
-                        Ok(vec![AdditiveSharePrime::new(message)])
-                    }
+                    NetworkValue::Mod19(message) => Ok(vec![AdditiveSharePrime::new(message)]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
                 match NetworkValue::vec_from_network(share_from_previous) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::Mod19(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => {
+                                    NetworkValue::Mod19(message) => {
                                         AdditiveSharePrime::new(message)
                                     }
                                     _ => unreachable!(),
@@ -282,18 +251,16 @@ pub async fn bin_to_primefield(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             if values.len() == 1 {
                 match share_from_next {
-                    NetworkValue::PrimeElement(message) => {
-                        Ok(vec![AdditiveSharePrime::new(message)])
-                    }
+                    NetworkValue::Mod19(message) => Ok(vec![AdditiveSharePrime::new(message)]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
                 match NetworkValue::vec_from_network(share_from_next) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::Mod19(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => {
+                                    NetworkValue::Mod19(message) => {
                                         AdditiveSharePrime::new(message)
                                     }
                                     _ => unreachable!(),
@@ -325,21 +292,21 @@ pub async fn bin_to_primefield(
                 })
                 .unzip();
             let message_next = if shares_0.len() == 1 {
-                NetworkValue::PrimeElement(shares_0[0].value)
+                NetworkValue::Mod19(shares_0[0].value)
             } else {
                 let values = shares_0
                     .iter()
-                    .map(|x| NetworkValue::PrimeElement(x.value))
+                    .map(|x| NetworkValue::Mod19(x.value))
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
             network.send_next(message_next).await?;
             let message_prev = if shares_1.len() == 1 {
-                NetworkValue::PrimeElement(shares_1[0].value)
+                NetworkValue::Mod19(shares_1[0].value)
             } else {
                 let values = shares_1
                     .iter()
-                    .map(|x| NetworkValue::PrimeElement(x.value))
+                    .map(|x| NetworkValue::Mod19(x.value))
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
@@ -370,7 +337,7 @@ pub async fn primefield_to_bin_one_hot(
             } else {
                 match NetworkValue::vec_from_network(share_from_previous) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::Mod19(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
                                     NetworkValue::RingElementBit(message) => {
@@ -602,12 +569,12 @@ pub async fn send_prime_shares_to_dealer(
 ) -> Result<Vec<Mod19>, Error> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {
-        NetworkValue::PrimeElement(shares[0].value)
+        NetworkValue::Mod19(shares[0].value)
     } else {
         // TODO: could be optimized by packing bits
         let bits = shares
             .iter()
-            .map(|x| NetworkValue::PrimeElement(x.value))
+            .map(|x| NetworkValue::Mod19(x.value))
             .collect::<Vec<_>>();
         NetworkValue::vec_to_network(bits)
     };
@@ -628,16 +595,16 @@ pub async fn send_prime_shares_to_dealer(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             let values_from_previous = if shares.len() == 1 {
                 match share_from_previous {
-                    NetworkValue::PrimeElement(message) => Ok(vec![message]),
+                    NetworkValue::Mod19(message) => Ok(vec![message]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
                 match NetworkValue::vec_from_network(share_from_previous) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::Mod19(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => message,
+                                    NetworkValue::Mod19(message) => message,
                                     _ => unreachable!(),
                                 })
                                 .collect())
@@ -654,16 +621,16 @@ pub async fn send_prime_shares_to_dealer(
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
             let values_from_next = if shares.len() == 1 {
                 match share_from_next {
-                    NetworkValue::PrimeElement(message) => Ok(vec![message]),
+                    NetworkValue::Mod19(message) => Ok(vec![message]),
                     _ => Err(eyre!("Wrong value type is received in open_bin operation")),
                 }
             } else {
                 match NetworkValue::vec_from_network(share_from_next) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::PrimeElement(_)) {
+                        if matches!(v[0], NetworkValue::Mod19(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
-                                    NetworkValue::PrimeElement(message) => message,
+                                    NetworkValue::Mod19(message) => message,
                                     _ => unreachable!(),
                                 })
                                 .collect())

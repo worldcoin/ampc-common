@@ -1,5 +1,5 @@
 use ampc_secret_sharing::shares::{
-    self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
+    self, bit::Bit, primefield::Mod19, ring48::Ring48, ring_impl::RingElement, IntRing2k,
 };
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
@@ -60,6 +60,7 @@ const PRF_KEY_SIZE: usize = 16;
 #[derive(PartialEq, Clone, Debug)]
 pub enum NetworkValue {
     PrfKey([u8; PRF_KEY_SIZE]),
+    Mod19(Mod19),
     RingElementBit(RingElement<Bit>),
     RingElement8(RingElement<u8>),
     RingElement16(RingElement<u16>),
@@ -83,6 +84,7 @@ pub enum NetworkValue {
 #[derive(Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum DescriptorByte {
     PrfKey = 0x01,
+    Mod19 = 0x11,
     RingElementBit1 = 0x12,
     RingElementBit0 = 0x02,
     RingElement8 = 0x13,
@@ -107,6 +109,7 @@ impl DescriptorByte {
     pub fn base_len(&self) -> usize {
         match self {
             DescriptorByte::PrfKey => 1 + PRF_KEY_SIZE,
+            DescriptorByte::Mod19 => 2,
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => 1,
             DescriptorByte::RingElement8 => 2,
             DescriptorByte::RingElement16 => 3,
@@ -146,6 +149,7 @@ impl NetworkValue {
     fn get_descriptor_byte(&self) -> u8 {
         let descriptor_byte = match self {
             NetworkValue::PrfKey(_) => DescriptorByte::PrfKey,
+            NetworkValue::Mod19(prime_field_elem) => DescriptorByte::Mod19,
             NetworkValue::RingElementBit(bit) => {
                 if bit.convert().convert() {
                     DescriptorByte::RingElementBit1
@@ -218,6 +222,7 @@ impl NetworkValue {
         match self {
             NetworkValue::PrfKey(key) => res.extend_from_slice(key),
             NetworkValue::PrfCheck(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
+            NetworkValue::Mod19(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
             NetworkValue::RingElementBit(_) => {
                 // Do nothing, the descriptor byte already contains the bit
                 // value
@@ -331,6 +336,14 @@ impl NetworkValue {
                 }
                 Ok(NetworkValue::PrfCheck(RingElement(u128::from_le_bytes(
                     <[u8; 16]>::try_from(&serialized[1..1 + 16])?,
+                ))))
+            }
+            DescriptorByte::Mod19 => {
+                if serialized.len() != 2 {
+                    bail!("Invalid length for RingElement16");
+                }
+                Ok(NetworkValue::Mod19(Mod19::new(u8::from_le_bytes(
+                    <[u8; 1]>::try_from(&serialized[1..2])?,
                 ))))
             }
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => {
@@ -608,7 +621,6 @@ mod tests {
     /// Test round-trip serialization for VecRing variants
     #[test]
     fn test_vec_ring_roundtrip() -> Result<()> {
-
         // Test VecRing8
         let v8: Vec<RingElement<u8>> = (0..100).map(RingElement).collect();
         let nv8 = NetworkValue::VecRing8(v8.clone());
