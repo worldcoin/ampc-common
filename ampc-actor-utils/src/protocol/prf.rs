@@ -25,10 +25,10 @@ fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
 }
 
 #[cfg(not(feature = "aes_rng_prf"))]
-type PrfRng = rand_chacha::ChaCha8Rng;
+pub type PrfRng = rand_chacha::ChaCha8Rng;
 
 #[cfg(feature = "aes_rng_prf")]
-type PrfRng = aes_prng::AesRng;
+pub type PrfRng = aes_prng::AesRng;
 
 pub type PrfSeed = [u8; 16];
 
@@ -57,7 +57,7 @@ impl Prf {
     }
 
     #[cfg(not(feature = "aes_rng_prf"))]
-    fn expand_seed(seed: PrfSeed) -> [u8; 32] {
+    pub fn expand_seed(seed: PrfSeed) -> [u8; 32] {
         use blake3::Hasher;
         let mut h = Hasher::new();
         h.update(&seed);

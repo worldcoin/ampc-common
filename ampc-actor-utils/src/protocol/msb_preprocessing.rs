@@ -1,3 +1,5 @@
+use std::ops::{AddAssign, Neg};
+
 use aes_prng::AesRng;
 use ampc_secret_sharing::{
     shares::{
@@ -7,14 +9,15 @@ use ampc_secret_sharing::{
     },
     IntRing2k, ReplicatedShare, RingElement, Role,
 };
-use eyre::{bail, eyre, Error};
+use eyre::{bail, eyre, Error, Result};
 use num_traits::{One, Zero};
 use rand::{Rng, SeedableRng};
 use tracing::instrument;
 
 use crate::{
-    execution::session::{Session, SessionHandles},
+    execution::session::{NetworkSession, Session, SessionHandles},
     network::value::NetworkValue,
+    protocol::{prf::PrfRng, Prf, PrfSeed},
 };
 
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
@@ -87,6 +90,39 @@ fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, 
         }),
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
     }
+}
+
+/// Setup a shared seed across first two parties in dealer model.
+/// Each party (of 1, 2) sends their seed to the other and receives from each other.
+/// The final shared seed is the XOR of both seeds.
+pub async fn setup_shared_seed_dealer_model(
+    session: &mut NetworkSession,
+    my_seed: PrfSeed,
+) -> Result<PrfSeed> {
+    let my_msg = NetworkValue::PrfKey(my_seed);
+
+    let decode = |msg| match msg {
+        Ok(NetworkValue::PrfKey(seed)) => Ok(seed),
+        _ => Err(eyre!("Could not deserialize PrfKey")),
+    };
+
+    let shared_seed = match session.own_role.index() {
+        0 => {
+            session.send_next(my_msg.clone()).await?;
+            let other_seed = decode(session.receive_next().await)?;
+            std::array::from_fn(|i| my_seed[i] ^ other_seed[i])
+        }
+        1 => {
+            session.send_prev(my_msg).await?;
+            let other_seed = decode(session.receive_prev().await)?;
+            std::array::from_fn(|i| my_seed[i] ^ other_seed[i])
+        }
+        _ => {
+            bail!("Cannot deal with roles that have index outside of the set [0, 1]")
+        }
+    };
+
+    Ok(shared_seed)
 }
 
 pub async fn extract_msb_rand<T: IntRing2k>(
@@ -614,6 +650,41 @@ pub async fn send_prime_shares_to_dealer(
         }
     };
     Ok(values_received)
+}
+
+pub async fn bitlt(
+    session: &mut Session,
+    shares: &mut Vec<AdditiveShare<Bit>>,
+    public_value: u8,
+    prf_seed: PrfSeed,
+) -> Result<AdditiveShare<Bit>> {
+    let mut rng_rand_bits = if session.own_role().index() == 0 || session.own_role().index() == 1 {
+        let shared_seed =
+            setup_shared_seed_dealer_model(&mut session.network_session, prf_seed).await?;
+        let mut rng = PrfRng::from_seed(Prf::expand_seed(shared_seed));
+        let rand_bits: Vec<Bit> = shares
+            .iter_mut()
+            .map(|share| {
+                let rand_bit = rng.gen::<Bit>();
+                share.add_assign_const_role(rand_bit, session.own_role());
+                rand_bit
+            })
+            .collect();
+        Some((rng, rand_bits))
+    } else {
+        None
+    };
+    let dealer_shares = send_binary_shares_to_dealer(session, shares).await?;
+    let prime_shares_received = bin_to_primefield(session, dealer_shares).await?;
+
+    prime_shares_received.into_iter().for_each(|mut share| {
+        if let Some((rng, _)) = &mut rng_rand_bits {
+            let scalar = Mod19::rand(rng);
+            share *= scalar;
+        };
+    });
+
+    todo!()
 }
 
 #[cfg(test)]
