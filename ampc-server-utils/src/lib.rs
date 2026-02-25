@@ -6,6 +6,7 @@ pub mod batch_sync;
 pub mod config;
 pub mod decryption;
 pub mod profiling;
+pub mod runtime_config;
 pub mod server_coordination;
 pub mod shutdown_handler;
 pub mod sqs;
@@ -28,4 +29,5 @@ pub use sqs::{
     SQSMessage,
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
+pub use runtime_config::{runtime_config_routes, FIXED_BATCH_SIZE};
 pub use task_monitor::TaskMonitor;

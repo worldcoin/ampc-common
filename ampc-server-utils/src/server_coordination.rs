@@ -1,6 +1,7 @@
 use crate::batch_sync::batch_sync_routes;
 use crate::config::ServerCoordinationConfig;
 use crate::profiling::pprof_routes;
+use crate::runtime_config::runtime_config_routes;
 use crate::shutdown_handler::ShutdownHandler;
 use crate::task_monitor::TaskMonitor;
 use crate::BatchSyncSharedState;
@@ -135,6 +136,9 @@ where
 
             // Merge profiling routes
             app = app.merge(pprof_routes());
+
+            // Merge runtime config routes
+            app = app.merge(runtime_config_routes());
 
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
                 .await
