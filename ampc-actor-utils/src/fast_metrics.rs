@@ -1,6 +1,229 @@
-use std::{fmt, time::Instant};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        OnceLock, RwLock,
+    },
+    time::Instant,
+};
 
 const FLUSH_AFTER_COUNT: u64 = 1000;
+
+/// Per-metric aggregated statistics, stored with atomic counters for thread-safety.
+#[derive(Debug)]
+struct GlobalMetricEntry {
+    count: AtomicU64,
+    /// Sum stored as bits of f64 for atomic operations.
+    sum_bits: AtomicU64,
+    /// Min stored as bits; uses compare-exchange on the bit representation.
+    min_bits: AtomicU64,
+    /// Max stored as bits; uses compare-exchange on the bit representation.
+    max_bits: AtomicU64,
+}
+
+impl Default for GlobalMetricEntry {
+    fn default() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            sum_bits: AtomicU64::new(0f64.to_bits()),
+            min_bits: AtomicU64::new(f64::INFINITY.to_bits()),
+            max_bits: AtomicU64::new(f64::NEG_INFINITY.to_bits()),
+        }
+    }
+}
+
+impl GlobalMetricEntry {
+    fn accumulate(&self, count: u64, sum: f64, min: f64, max: f64) {
+        self.count.fetch_add(count, Ordering::Relaxed);
+
+        // Atomically add to sum using CAS loop
+        loop {
+            let current = self.sum_bits.load(Ordering::Relaxed);
+            let current_f64 = f64::from_bits(current);
+            let new_f64 = current_f64 + sum;
+            match self.sum_bits.compare_exchange_weak(
+                current,
+                new_f64.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+
+        // Atomically update min using CAS loop
+        loop {
+            let current = self.min_bits.load(Ordering::Relaxed);
+            let current_f64 = f64::from_bits(current);
+            if min >= current_f64 {
+                break;
+            }
+            match self.min_bits.compare_exchange_weak(
+                current,
+                min.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+
+        // Atomically update max using CAS loop
+        loop {
+            let current = self.max_bits.load(Ordering::Relaxed);
+            let current_f64 = f64::from_bits(current);
+            if max <= current_f64 {
+                break;
+            }
+            match self.max_bits.compare_exchange_weak(
+                current,
+                max.to_bits(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    fn reset(&self) {
+        self.count.store(0, Ordering::Relaxed);
+        self.sum_bits.store(0f64.to_bits(), Ordering::Relaxed);
+        self.min_bits
+            .store(f64::INFINITY.to_bits(), Ordering::Relaxed);
+        self.max_bits
+            .store(f64::NEG_INFINITY.to_bits(), Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> MetricSnapshot {
+        MetricSnapshot {
+            count: self.count.load(Ordering::Relaxed),
+            sum: f64::from_bits(self.sum_bits.load(Ordering::Relaxed)),
+            min: f64::from_bits(self.min_bits.load(Ordering::Relaxed)),
+            max: f64::from_bits(self.max_bits.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// A snapshot of metric values.
+#[derive(Debug, Clone)]
+pub struct MetricSnapshot {
+    pub count: u64,
+    pub sum: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl MetricSnapshot {
+    /// Returns the average value, or 0.0 if count is 0.
+    pub fn avg(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.sum / self.count as f64
+        }
+    }
+}
+
+impl fmt::Display for MetricSnapshot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.count == 0 {
+            write!(f, "count=0")
+        } else {
+            write!(
+                f,
+                "count={}, sum={:.4}, min={:.4}, max={:.4}, avg={:.4}",
+                self.count,
+                self.sum,
+                self.min,
+                self.max,
+                self.avg()
+            )
+        }
+    }
+}
+
+/// Global metrics collector that aggregates metrics from all FastHistogram instances.
+/// Thread-safe and accessible as a static singleton.
+pub struct GlobalMetricsCollector {
+    metrics: RwLock<HashMap<String, GlobalMetricEntry>>,
+}
+
+impl GlobalMetricsCollector {
+    fn new() -> Self {
+        Self {
+            metrics: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Returns the global singleton instance.
+    pub fn instance() -> &'static GlobalMetricsCollector {
+        static INSTANCE: OnceLock<GlobalMetricsCollector> = OnceLock::new();
+        INSTANCE.get_or_init(GlobalMetricsCollector::new)
+    }
+
+    /// Accumulate metrics from a FastHistogram flush.
+    pub fn accumulate(&self, name: &str, count: u64, sum: f64, min: f64, max: f64) {
+        // Try read lock first for the common case where the entry already exists
+        let metrics = self.metrics.read().unwrap();
+        if let Some(entry) = metrics.get(name) {
+            entry.accumulate(count, sum, min, max);
+        } else {
+            drop(metrics);
+            // Need to insert a new entry with write lock
+            let mut metrics = self.metrics.write().unwrap();
+            // Double-check after re-acquiring lock
+            let entry = metrics.entry(name.to_string()).or_default();
+            entry.accumulate(count, sum, min, max);
+        }
+    }
+
+    /// Reset all metrics. Call this at the start of a new job.
+    pub fn reset(&self) {
+        let metrics = self.metrics.read().unwrap();
+        for entry in metrics.values() {
+            entry.reset();
+        }
+    }
+
+    /// Get a snapshot of all metrics.
+    pub fn snapshot(&self) -> HashMap<String, MetricSnapshot> {
+        let metrics = self.metrics.read().unwrap();
+        metrics
+            .iter()
+            .map(|(name, entry)| (name.clone(), entry.snapshot()))
+            .collect()
+    }
+
+    /// Format all metrics as a log-friendly string.
+    pub fn format_summary(&self) -> String {
+        let snapshot = self.snapshot();
+        if snapshot.is_empty() {
+            return "No metrics collected".to_string();
+        }
+
+        let mut names: Vec<_> = snapshot.keys().collect();
+        names.sort();
+
+        let mut lines = Vec::new();
+        for name in names {
+            let m = &snapshot[name];
+            if m.count > 0 {
+                lines.push(format!("  {}: {}", name, m));
+            }
+        }
+
+        if lines.is_empty() {
+            "No metrics recorded".to_string()
+        } else {
+            format!("Job metrics summary:\n{}", lines.join("\n"))
+        }
+    }
+}
 
 pub struct FastHistogram {
     name: String,
@@ -74,6 +297,10 @@ impl FastHistogram {
         self.metrics_min.record(self.min);
         self.metrics_max.record(self.max);
         self.metrics_avg.record(self.sum / self.count as f64);
+
+        // Accumulate into the global collector
+        GlobalMetricsCollector::instance()
+            .accumulate(&self.name, self.count, self.sum, self.min, self.max);
 
         self.count = 0;
         self.sum = 0.0;
@@ -273,5 +500,69 @@ mod tests {
                 .send((self.is_histogram, self.name.clone(), value))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_global_metrics_collector_accumulate_and_snapshot() {
+        let collector = GlobalMetricsCollector::new();
+
+        // Accumulate some metrics
+        collector.accumulate("metric_a", 10, 100.0, 5.0, 15.0);
+        collector.accumulate("metric_a", 5, 50.0, 3.0, 20.0);
+        collector.accumulate("metric_b", 3, 30.0, 10.0, 10.0);
+
+        let snapshot = collector.snapshot();
+
+        // Check metric_a (should be aggregated)
+        let a = snapshot.get("metric_a").unwrap();
+        assert_eq!(a.count, 15);
+        assert_eq!(a.sum, 150.0);
+        assert_eq!(a.min, 3.0); // min of 5.0 and 3.0
+        assert_eq!(a.max, 20.0); // max of 15.0 and 20.0
+        assert!((a.avg() - 10.0).abs() < 1e-9);
+
+        // Check metric_b
+        let b = snapshot.get("metric_b").unwrap();
+        assert_eq!(b.count, 3);
+        assert_eq!(b.sum, 30.0);
+        assert_eq!(b.min, 10.0);
+        assert_eq!(b.max, 10.0);
+    }
+
+    #[test]
+    fn test_global_metrics_collector_reset() {
+        let collector = GlobalMetricsCollector::new();
+
+        collector.accumulate("metric_x", 10, 100.0, 1.0, 10.0);
+
+        // Reset
+        collector.reset();
+
+        let snapshot = collector.snapshot();
+        let x = snapshot.get("metric_x").unwrap();
+        assert_eq!(x.count, 0);
+        assert_eq!(x.sum, 0.0);
+        assert_eq!(x.min, f64::INFINITY);
+        assert_eq!(x.max, f64::NEG_INFINITY);
+    }
+
+    #[test]
+    fn test_global_metrics_collector_format_summary() {
+        let collector = GlobalMetricsCollector::new();
+
+        // Empty collector
+        assert_eq!(collector.format_summary(), "No metrics collected");
+
+        // Add metrics but then reset (count=0)
+        collector.accumulate("empty_metric", 1, 1.0, 1.0, 1.0);
+        collector.reset();
+        assert_eq!(collector.format_summary(), "No metrics recorded");
+
+        // Add actual metrics
+        collector.accumulate("test_metric", 5, 25.0, 2.0, 8.0);
+        let summary = collector.format_summary();
+        assert!(summary.contains("Job metrics summary:"));
+        assert!(summary.contains("test_metric"));
+        assert!(summary.contains("count=5"));
     }
 }
