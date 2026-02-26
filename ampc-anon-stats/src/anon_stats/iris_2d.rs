@@ -18,7 +18,8 @@ use crate::{
         MATCH_THRESHOLD_RATIO_REAUTH,
     },
     types::AnonStatsResultSource,
-    AnonStatsMapping, AnonStatsOperation, AnonStatsServerConfig, BucketStatistics2D,
+    AnonStatsMapping, AnonStatsOperation, AnonStatsOrientation, AnonStatsOrigin,
+    AnonStatsServerConfig, BucketStatistics2D,
 };
 
 pub type DistanceBundle2D = (DistanceBundle1D, DistanceBundle1D);
@@ -42,6 +43,7 @@ pub async fn lift_bundles_2d(
 pub async fn process_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<DistanceBundle2D>,
+    origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
@@ -124,6 +126,7 @@ pub async fn process_2d_anon_stats_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
+    anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
     anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
     Ok(anon_stats)
 }
@@ -419,6 +422,11 @@ mod tests {
                 party_id,
                 ..config.clone()
             };
+            let origin = crate::AnonStatsOrigin {
+                side: None,
+                orientation: crate::AnonStatsOrientation::Normal,
+                context: crate::AnonStatsContext::GPU,
+            };
 
             tasks.push(tokio::task::spawn(async move {
                 let mut session = net.lock().await;
@@ -432,6 +440,7 @@ mod tests {
                 let stats = crate::anon_stats::iris_2d::process_2d_anon_stats_job(
                     &mut session,
                     job,
+                    &origin,
                     &config,
                     Some(crate::AnonStatsOperation::Uniqueness),
                     None,
@@ -457,6 +466,7 @@ mod tests {
                     i, ground_truth_buckets.buckets[i], bucket
                 );
             }
+            assert!(!stats.is_mirror_orientation);
         }
     }
 
@@ -514,6 +524,11 @@ mod tests {
                 party_id,
                 ..config.clone()
             };
+            let origin = crate::AnonStatsOrigin {
+                side: None,
+                orientation: crate::AnonStatsOrientation::Mirror,
+                context: crate::AnonStatsContext::GPU,
+            };
 
             tasks.push(tokio::task::spawn(async move {
                 let mut session = net.lock().await;
@@ -527,6 +542,7 @@ mod tests {
                 let stats = crate::anon_stats::iris_2d::process_2d_anon_stats_job(
                     &mut session,
                     job,
+                    &origin,
                     &config,
                     Some(crate::AnonStatsOperation::Reauth),
                     None,
@@ -552,6 +568,7 @@ mod tests {
                     i, ground_truth_buckets.buckets[i], bucket
                 );
             }
+            assert!(stats.is_mirror_orientation);
         }
     }
 }
