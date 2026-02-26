@@ -10,6 +10,7 @@ use ampc_secret_sharing::{
     IntRing2k, ReplicatedShare, RingElement, Role,
 };
 use eyre::{bail, eyre, Error, Result};
+use futures::SinkExt;
 use num_traits::{One, Zero};
 use rand::{Rng, SeedableRng};
 use tracing::instrument;
@@ -661,10 +662,26 @@ pub async fn bitlt(
     public_value: u8,
     prf_seed: PrfSeed,
 ) -> Result<AdditiveShare<Bit>> {
+    let scaled_public_value_bits: Vec<bool> = (0..8)
+        .rev()
+        .map(|i| (public_value >> i) == 1)
+        .chain(std::iter::once(true))
+        .collect();
+
     let mut rng_rand_bits = if session.own_role().index() == 0 || session.own_role().index() == 1 {
+        shares.push(AdditiveShare::new(RingElement(Bit::zero())));
         let shared_seed =
             setup_shared_seed_dealer_model(&mut session.network_session, prf_seed).await?;
         let mut rng = PrfRng::from_seed(Prf::expand_seed(shared_seed));
+        // Compute 2 * public_value + 1
+        assert_eq!(scaled_public_value_bits.len(), shares.len());
+        shares
+            .iter_mut()
+            .zip(scaled_public_value_bits.iter())
+            .for_each(|(share, public_val)| {
+                let public_val_bit = Bit::from(*public_val);
+                share.add_assign_const_role(public_val_bit, session.own_role());
+            });
         let rand_bits: Vec<Bit> = shares
             .iter_mut()
             .map(|share| {
@@ -677,17 +694,81 @@ pub async fn bitlt(
     } else {
         None
     };
+
     let dealer_shares = send_binary_shares_to_dealer(session, shares).await?;
-    let prime_shares_received = bin_to_primefield(session, dealer_shares).await?;
+    let mut prime_shares_received = bin_to_primefield(session, dealer_shares).await?;
 
-    prime_shares_received.into_iter().for_each(|mut share| {
-        if let Some((rng, _)) = &mut rng_rand_bits {
+    let (rand_shift, shifted_shares) = if let Some((rng, rand_bits)) = &mut rng_rand_bits {
+        // Unmask prime shares
+        rand_bits.iter().for_each(|bit| {
+            if bit.convert() {
+                prime_shares_received.iter_mut().for_each(|share| {
+                    *share = share.neg();
+                    share.add_assign_const_role(Mod19::one(), session.own_role());
+                });
+            }
+        });
+        // Prefix sum
+        let mut prefix_sum = Vec::with_capacity(prime_shares_received.len());
+        let mut running_sum = AdditiveSharePrime::zero();
+        prime_shares_received.iter().for_each(|share| {
+            running_sum += share;
+            prefix_sum.push(running_sum);
+        });
+
+        // Pairwise sum
+        let mut pairwise_sum = Vec::with_capacity(prime_shares_received.len());
+        pairwise_sum.push(prefix_sum[0]);
+        (1..prefix_sum.len()).for_each(|i| {
+            pairwise_sum.push(prefix_sum[i - 1] + prefix_sum[i]);
+        });
+
+        // Subtract 1
+        pairwise_sum.iter_mut().for_each(|share| {
+            share.add_assign_const_role(Mod19::one().neg(), session.own_role());
+        });
+
+        // Scale prime shares
+        pairwise_sum.iter_mut().for_each(|share| {
             let scalar = Mod19::rand(rng);
-            share *= scalar;
-        };
-    });
+            *share *= scalar;
+        });
 
-    todo!()
+        // Shift shares
+        let rand_shift = rng.gen_range(0..shares.len());
+        let mut shifted_shares = Vec::with_capacity(shares.len());
+        (0..pairwise_sum.len()).for_each(|i| {
+            shifted_shares.push(pairwise_sum[(i + rand_shift) % pairwise_sum.len()]);
+        });
+        (Some(rand_shift), shifted_shares)
+    } else {
+        (None, vec![])
+    };
+
+    let dealer_values = send_prime_shares_to_dealer(session, &shifted_shares).await?;
+    let one_hot_shifted_shares = primefield_to_bin_one_hot(session, dealer_values).await?;
+
+    if let Some(rand_shift) = rand_shift {
+        let mut one_hot_shares = Vec::with_capacity(one_hot_shifted_shares.len());
+        (0..one_hot_shifted_shares.len()).for_each(|i| {
+            if rand_shift <= i {
+                one_hot_shares.push(one_hot_shifted_shares[i - rand_shift]);
+            } else {
+                one_hot_shares
+                    .push(one_hot_shifted_shares[i + (one_hot_shifted_shares.len() - rand_shift)]);
+            }
+        });
+        let mut dot_product_share = AdditiveShare::<Bit>::zero();
+        one_hot_shares
+            .iter()
+            .zip(scaled_public_value_bits.iter())
+            .for_each(|(share, bit)| {
+                dot_product_share += share * Bit::from(*bit);
+            });
+        Ok(dot_product_share)
+    } else {
+        Ok(AdditiveShare::<Bit>::zero())
+    }
 }
 
 #[cfg(test)]
