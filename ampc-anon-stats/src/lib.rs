@@ -21,8 +21,7 @@ pub use crate::anon_stats::iris_1d::{
     LiftedDistanceBundle1D,
 };
 pub use crate::anon_stats::iris_2d::{
-    lift_bundles_2d, process_2d_anon_stats_job, process_2d_lifted_anon_stats_job, DistanceBundle2D,
-    LiftedDistanceBundle2D,
+    lift_bundles_2d, process_2d_anon_stats_job, DistanceBundle2D,
 };
 pub use crate::server::config::{AnonStatsServerConfig, Opt};
 pub use crate::server::coordination::{start_coordination_server, CoordinationHandles};
