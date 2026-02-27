@@ -133,6 +133,92 @@ pub async fn process_2d_anon_stats_job(
     Ok(anon_stats)
 }
 
+pub async fn process_2d_lifted_anon_stats_job(
+    session: &mut Session,
+    job: AnonStatsMapping<LiftedDistanceBundle2D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics2D> {
+    let job_size = job.len();
+    let job_data = job.into_bundles();
+    let (num_buckets, upper_threshold) = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            (config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
+            (config.n_buckets_2d, MATCH_THRESHOLD_RATIO)
+        }
+    };
+    let translated_thresholds = calculate_iris_threshold_a(num_buckets, upper_threshold);
+
+    let lifted_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
+    let lifted_right = job_data
+        .iter()
+        .map(|(_, right)| right.clone())
+        .collect_vec();
+    drop(job_data);
+
+    // Reduce both sides to min distances (data is already lifted)
+    let lifted_min_left = reduce_to_min_distance_batch(session, &lifted_left).await?;
+    drop(lifted_left);
+    let lifted_min_right = reduce_to_min_distance_batch(session, &lifted_right).await?;
+    drop(lifted_right);
+
+    // execute anon stats MPC protocol
+    let comparisons_left = compare_against_thresholds_batched(
+        session,
+        translated_thresholds.as_slice(),
+        &lifted_min_left,
+    )
+    .await?;
+    drop(lifted_min_left);
+    let comparisons_right = compare_against_thresholds_batched(
+        session,
+        translated_thresholds.as_slice(),
+        &lifted_min_right,
+    )
+    .await?;
+    drop(lifted_min_right);
+
+    // combine left and right comparisons by doing an outer product
+    // at the same time also do the summing
+
+    let mut bucket_shares = vec![RingElement::<u32>::default(); num_buckets * num_buckets];
+
+    // prepare the correlated randomness for the bucket sums
+    // we want additive shares of 0
+    for bucket in &mut bucket_shares {
+        *bucket += session.prf.gen_zero_share();
+    }
+
+    let mut bucket_ids = 0;
+    for left_chunk in comparisons_left.chunks(job_size) {
+        for right_chunk in comparisons_right.chunks(job_size) {
+            assert!(left_chunk.len() == right_chunk.len());
+
+            let product_sum = izip!(left_chunk, right_chunk)
+                .map(|(left_share, right_share)| left_share * right_share)
+                .fold(RingElement(0u32), |acc, x| acc + x);
+            bucket_shares[bucket_ids] += product_sum;
+            bucket_ids += 1;
+        }
+    }
+
+    let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
+    let mut anon_stats = BucketStatistics2D::new(
+        job_size,
+        num_buckets,
+        config.party_id,
+        AnonStatsResultSource::Aggregator,
+        operation,
+    );
+    anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
+    anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
+    Ok(anon_stats)
+}
+
 pub mod test_helper {
     use crate::types::AnonStatsResultSource;
     use crate::{BucketStatistics2D, DistanceBundle2D};
