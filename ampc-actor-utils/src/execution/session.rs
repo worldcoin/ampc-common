@@ -69,7 +69,8 @@ impl NetworkSession {
 
     pub async fn receive_prev(&mut self) -> Result<NetworkValue> {
         let prev_identity = self.prev_identity()?;
-        self.receive(&prev_identity).await
+        let val = self.receive(&prev_identity).await;
+        val
     }
 }
 

@@ -4,10 +4,10 @@ use num_traits::{Inv, One, Zero};
 use rand::{Rng, RngCore};
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct Mod19(u8);
+pub struct Mod19(u16);
 
 impl Mod19 {
-    pub fn new(value: u8) -> Self {
+    pub fn new(value: u16) -> Self {
         Self(value % 19)
     }
 
@@ -15,7 +15,11 @@ impl Mod19 {
         Self::new(rng.gen_range(0..19))
     }
 
-    pub fn convert(&self) -> u8 {
+    pub fn rand_multiplicative(rng: &mut impl Rng) -> Self {
+        Self::new(rng.gen_range(1..19))
+    }
+
+    pub fn convert(&self) -> u16 {
         self.0
     }
 }

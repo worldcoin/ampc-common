@@ -662,7 +662,7 @@ impl<T: IntRing2k> Neg for &AdditiveShare<T> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct AdditiveSharePrime<Mod19> {
     pub value: Mod19,
 }
@@ -1170,7 +1170,7 @@ mod tests {
         [u8, u8_additive_test]
     }
 
-    fn get_additive_shares_prime(value: u8) -> Vec<AdditiveSharePrime<Mod19>> {
+    fn get_additive_shares_prime(value: u16) -> Vec<AdditiveSharePrime<Mod19>> {
         let mut rng = AesRng::from_entropy();
         let next = Mod19::new(rng.gen_range(0..19));
         let first = Mod19::new(value) - next;

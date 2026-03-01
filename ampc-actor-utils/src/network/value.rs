@@ -109,7 +109,7 @@ impl DescriptorByte {
     pub fn base_len(&self) -> usize {
         match self {
             DescriptorByte::PrfKey => 1 + PRF_KEY_SIZE,
-            DescriptorByte::Mod19 => 2,
+            DescriptorByte::Mod19 => 3,
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => 1,
             DescriptorByte::RingElement8 => 2,
             DescriptorByte::RingElement16 => 3,
@@ -149,7 +149,7 @@ impl NetworkValue {
     fn get_descriptor_byte(&self) -> u8 {
         let descriptor_byte = match self {
             NetworkValue::PrfKey(_) => DescriptorByte::PrfKey,
-            NetworkValue::Mod19(prime_field_elem) => DescriptorByte::Mod19,
+            NetworkValue::Mod19(_) => DescriptorByte::Mod19,
             NetworkValue::RingElementBit(bit) => {
                 if bit.convert().convert() {
                     DescriptorByte::RingElementBit1
@@ -287,7 +287,8 @@ impl NetworkValue {
             let descriptor_byte: DescriptorByte = serialized[idx].try_into()?;
             let value_len = match descriptor_byte {
                 DescriptorByte::RingElementBit0 | DescriptorByte::RingElementBit1 => 1,
-                DescriptorByte::RingElement16 => 3,
+                DescriptorByte::RingElement8 => 2,
+                DescriptorByte::Mod19 | DescriptorByte::RingElement16 => 3,
                 DescriptorByte::RingElement32 => 5,
                 DescriptorByte::RingElement64 => 9,
                 DescriptorByte::RingElement48 => 1 + Ring48::BYTES,
@@ -339,11 +340,11 @@ impl NetworkValue {
                 ))))
             }
             DescriptorByte::Mod19 => {
-                if serialized.len() != 2 {
+                if serialized.len() != 3 {
                     bail!("Invalid length for RingElement16");
                 }
-                Ok(NetworkValue::Mod19(Mod19::new(u8::from_le_bytes(
-                    <[u8; 1]>::try_from(&serialized[1..2])?,
+                Ok(NetworkValue::Mod19(Mod19::new(u16::from_le_bytes(
+                    <[u8; 2]>::try_from(&serialized[1..3])?,
                 ))))
             }
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => {

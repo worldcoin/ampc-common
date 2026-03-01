@@ -283,7 +283,7 @@ pub async fn bin_to_primefield(
             ) = values
                 .iter()
                 .map(|value| {
-                    let bit_as_mod19 = Mod19::new(u8::from(value.convert()));
+                    let bit_as_mod19 = Mod19::new(u8::from(value.convert()) as u16);
                     let rand_mod19_share = Mod19::rand(&mut rng);
                     let other_share = bit_as_mod19 - rand_mod19_share;
                     (
@@ -338,7 +338,7 @@ pub async fn primefield_to_bin_one_hot(
             } else {
                 match NetworkValue::vec_from_network(share_from_previous) {
                     Ok(v) => {
-                        if matches!(v[0], NetworkValue::Mod19(_)) {
+                        if matches!(v[0], NetworkValue::RingElementBit(_)) {
                             Ok(v.into_iter()
                                 .map(|x| match x {
                                     NetworkValue::RingElementBit(message) => {
@@ -471,6 +471,46 @@ pub async fn open_additive_share_u8(
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn open_additive_share_bit(
+    session: &mut Session,
+    share: &AdditiveShare<Bit>,
+) -> Result<RingElement<Bit>, Error> {
+    let network = &mut session.network_session;
+    let message = NetworkValue::RingElementBit(share.value);
+
+    network.send_next(message.clone()).await?;
+    network.send_prev(message).await?;
+
+    // Receiving share from previous party
+    let share_from_previous = {
+        let prev_share = network
+            .receive_prev()
+            .await
+            .map_err(|e| eyre!("Error in receiving in open_Bit operation: {}", e))?;
+
+        match prev_share {
+            NetworkValue::RingElementBit(message) => Ok(message),
+            _ => Err(eyre!("Wrong value type is received in open_Bit operation")),
+        }
+    }?;
+
+    // Receiving share from next party
+    let share_from_next = {
+        let next_share = network
+            .receive_next()
+            .await
+            .map_err(|e| eyre!("Error in receiving in open_Bit operation: {}", e))?;
+
+        match next_share {
+            NetworkValue::RingElementBit(message) => Ok(message),
+            _ => Err(eyre!("Wrong value type is received in open_Bit operation")),
+        }
+    }?;
+
+    Ok(share.value + share_from_previous + share_from_next)
+}
+
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn send_binary_shares_to_dealer(
     session: &mut Session,
     shares: &Vec<AdditiveShare<Bit>>,
@@ -489,7 +529,7 @@ pub async fn send_binary_shares_to_dealer(
 
     let values_received = match network.own_role.index() {
         0 => {
-            network.send_next(message.clone()).await?;
+            network.send_prev(message.clone()).await?;
             vec![]
         }
         1 => {
@@ -579,10 +619,9 @@ pub async fn send_prime_shares_to_dealer(
             .collect::<Vec<_>>();
         NetworkValue::vec_to_network(bits)
     };
-
     let values_received = match network.own_role.index() {
         0 => {
-            network.send_next(message.clone()).await?;
+            network.send_prev(message.clone()).await?;
             vec![]
         }
         1 => {
@@ -642,7 +681,6 @@ pub async fn send_prime_shares_to_dealer(
                     Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
                 }
             }?;
-
             values_from_previous
                 .iter()
                 .zip(values_from_next.iter())
@@ -658,31 +696,40 @@ pub async fn send_prime_shares_to_dealer(
 
 pub async fn bitlt(
     session: &mut Session,
-    shares: &mut Vec<AdditiveShare<Bit>>,
+    shares: Vec<AdditiveShare<Bit>>,
     public_value: u8,
     prf_seed: PrfSeed,
 ) -> Result<AdditiveShare<Bit>> {
+    // Scale the public value to avoid leakage to dealer if the private and public values are equal.
+    // I.e., scaled = 2 * public_value + 1
     let scaled_public_value_bits: Vec<bool> = (0..8)
         .rev()
-        .map(|i| (public_value >> i) == 1)
+        .map(|i| ((public_value >> i) & 1) == 1)
         .chain(std::iter::once(true))
         .collect();
 
+    let mut scaled_shares = shares.clone();
     let mut rng_rand_bits = if session.own_role().index() == 0 || session.own_role().index() == 1 {
-        shares.push(AdditiveShare::new(RingElement(Bit::zero())));
+        // Set up shared PRF between parties 1 and 2
         let shared_seed =
             setup_shared_seed_dealer_model(&mut session.network_session, prf_seed).await?;
         let mut rng = PrfRng::from_seed(Prf::expand_seed(shared_seed));
-        // Compute 2 * public_value + 1
-        assert_eq!(scaled_public_value_bits.len(), shares.len());
-        shares
+        // Scale private value to avoid leakage to dealer if the private and public values are equal
+        // I.e., scaled = 2 * shares
+        scaled_shares.push(AdditiveShare::new(RingElement(Bit::zero())));
+        assert_eq!(scaled_public_value_bits.len(), scaled_shares.len());
+
+        // XOR shares by the scaled public value for comparison
+        scaled_shares
             .iter_mut()
             .zip(scaled_public_value_bits.iter())
             .for_each(|(share, public_val)| {
                 let public_val_bit = Bit::from(*public_val);
                 share.add_assign_const_role(public_val_bit, session.own_role());
             });
-        let rand_bits: Vec<Bit> = shares
+
+        // Mask the share by adding random value generated by PRF
+        let rand_bits: Vec<Bit> = scaled_shares
             .iter_mut()
             .map(|share| {
                 let rand_bit = rng.gen::<Bit>();
@@ -690,24 +737,28 @@ pub async fn bitlt(
                 rand_bit
             })
             .collect();
+
         Some((rng, rand_bits))
     } else {
         None
     };
 
-    let dealer_shares = send_binary_shares_to_dealer(session, shares).await?;
+    // Communication round 1: Send shares to dealer to convert to prime field
+    let dealer_shares = send_binary_shares_to_dealer(session, &scaled_shares).await?;
+    // Communication round 2: Receive prime field shares from dealer
     let mut prime_shares_received = bin_to_primefield(session, dealer_shares).await?;
 
     let (rand_shift, shifted_shares) = if let Some((rng, rand_bits)) = &mut rng_rand_bits {
         // Unmask prime shares
-        rand_bits.iter().for_each(|bit| {
-            if bit.convert() {
-                prime_shares_received.iter_mut().for_each(|share| {
+        rand_bits
+            .iter()
+            .zip(prime_shares_received.iter_mut())
+            .for_each(|(bit, share)| {
+                if bit.convert() {
                     *share = share.neg();
                     share.add_assign_const_role(Mod19::one(), session.own_role());
-                });
-            }
-        });
+                }
+            });
         // Prefix sum
         let mut prefix_sum = Vec::with_capacity(prime_shares_received.len());
         let mut running_sum = AdditiveSharePrime::zero();
@@ -730,7 +781,7 @@ pub async fn bitlt(
 
         // Scale prime shares
         pairwise_sum.iter_mut().for_each(|share| {
-            let scalar = Mod19::rand(rng);
+            let scalar = Mod19::rand_multiplicative(rng);
             *share *= scalar;
         });
 
@@ -745,11 +796,14 @@ pub async fn bitlt(
         (None, vec![])
     };
 
+    // Communication round 3: Send prime shares to dealer to convert to binary
     let dealer_values = send_prime_shares_to_dealer(session, &shifted_shares).await?;
+    // Communication round 4: Receive binary shares of one hot vector from dealer
     let one_hot_shifted_shares = primefield_to_bin_one_hot(session, dealer_values).await?;
 
     if let Some(rand_shift) = rand_shift {
         let mut one_hot_shares = Vec::with_capacity(one_hot_shifted_shares.len());
+        // Un-shift the one-hot vector shares
         (0..one_hot_shifted_shares.len()).for_each(|i| {
             if rand_shift <= i {
                 one_hot_shares.push(one_hot_shifted_shares[i - rand_shift]);
@@ -758,6 +812,7 @@ pub async fn bitlt(
                     .push(one_hot_shifted_shares[i + (one_hot_shifted_shares.len() - rand_shift)]);
             }
         });
+        // Get the dot product against the public value
         let mut dot_product_share = AdditiveShare::<Bit>::zero();
         one_hot_shares
             .iter()
@@ -766,7 +821,9 @@ pub async fn bitlt(
                 dot_product_share += share * Bit::from(*bit);
             });
         Ok(dot_product_share)
-    } else {
+    }
+    // Return dummy zero share if dealer
+    else {
         Ok(AdditiveShare::<Bit>::zero())
     }
 }
@@ -774,6 +831,7 @@ pub async fn bitlt(
 #[cfg(test)]
 mod tests {
     use aes_prng::AesRng;
+    use ampc_secret_sharing::shares::share::AdditiveShare;
     use ampc_secret_sharing::shares::{bit::Bit, VecShare};
     use ampc_secret_sharing::{IntRing2k, ReplicatedShare, RingElement};
     use eyre::{bail, Result};
@@ -783,10 +841,13 @@ mod tests {
     use tokio::task::JoinSet;
 
     use crate::execution::player::Role;
-    use crate::protocol::msb_preprocessing::{open_additive_share_u8, rep_to_add2};
+    use crate::protocol::msb_preprocessing::{
+        bitlt, open_additive_share_bit, open_additive_share_u8, rep_to_add2,
+    };
     use crate::protocol::test_utils::{
         create_single_sharing_additive, create_single_sharing_replicated,
     };
+    use crate::protocol::PrfSeed;
     use crate::{
         execution::{local::LocalRuntime, session::SessionHandles},
         protocol::{
@@ -909,5 +970,70 @@ mod tests {
     #[tokio::test]
     async fn test_rep_to_add2() -> Result<()> {
         test_rep_to_add2_u8().await
+    }
+
+    async fn test_bitlt_u8() -> Result<()>
+    where
+        Standard: Distribution<u8>,
+    {
+        let mut rng = AesRng::from_entropy();
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+        let private_values: Vec<Bit> = (0..8).map(|_| rng.gen::<Bit>()).collect();
+        let private_value = private_values
+            .iter()
+            .rev()
+            .enumerate()
+            .fold(0_u8, |acc, (index, elem)| {
+                acc + (elem.convert() as u8) * (2_u8.pow(index as u32))
+            });
+        let shares: (Vec<AdditiveShare<Bit>>, Vec<AdditiveShare<Bit>>) = private_values
+            .iter()
+            .map(|value| create_single_sharing_additive::<AesRng, Bit>(&mut rng, *value))
+            .unzip();
+
+        let public_value = rng.gen::<u8>();
+        let expected = private_value < public_value;
+
+        for session in sessions.into_iter() {
+            let session = session.clone();
+            let shares = shares.clone();
+            jobs.spawn(async move {
+                let mut rng = AesRng::from_entropy();
+                let mut session = session.lock().await;
+                let shares_i = match session.own_role().index() {
+                    0 => shares.0,
+                    1 => shares.1,
+                    2 => vec![AdditiveShare::<Bit>::zero(); 8],
+                    _ => {
+                        bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
+                    }
+                };
+                let prf_seed = PrfSeed::from([rng.gen::<u8>(); 16]);
+
+                let out = bitlt(&mut session, shares_i.clone(), public_value, prf_seed).await?;
+
+                // Open result bits
+                open_additive_share_bit(&mut session, &out).await
+            });
+        }
+
+        let opened = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(opened.len(), 3);
+        assert_eq!(opened[0], opened[1]);
+        assert_eq!(opened[1], opened[2]);
+        assert_eq!(opened[0].convert().convert(), expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_bitlt() -> Result<()> {
+        test_bitlt_u8().await
     }
 }
