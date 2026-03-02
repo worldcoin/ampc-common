@@ -15,8 +15,57 @@ use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
 use tracing::instrument;
 
+pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
+pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
+
 pub(crate) const B_BITS: u64 = 16;
 pub(crate) const B: u64 = 1 << B_BITS;
+
+// ---------------------------------------------------------------------------
+// Batched replicated multiplication
+// ---------------------------------------------------------------------------
+
+/// Executes one round of the ABY3 replicated multiplication protocol.
+///
+/// The caller provides a closure that computes the local product expression
+/// for each of `n` output shares. The function handles PRF zero-share
+/// generation, network communication (send_next/receive_prev), and share
+/// reconstruction.
+///
+/// The closure receives the batch index `0..n` and returns a `RingElement<T>`
+/// representing the product terms for that slot. Multiple products can be
+/// additively combined by simply returning their sum/difference.
+pub async fn reshare_products<T, F>(
+    session: &mut Session,
+    n: usize,
+    mut expr: F,
+) -> Result<Vec<Share<T>>>
+where
+    T: NetworkInt + RingRandFillable,
+    F: FnMut(usize) -> RingElement<T>,
+{
+    let (prf_my, prf_prev) = session.prf.gen_rands_batch::<T>(n);
+
+    let round_a: Vec<RingElement<T>> = prf_my
+        .0
+        .into_iter()
+        .zip(prf_prev.0)
+        .enumerate()
+        .map(|(i, (my_r, prev_r))| (my_r - prev_r) + expr(i))
+        .collect();
+
+    let network = &mut session.network_session;
+    network
+        .send_next(T::new_network_vec(round_a.clone()))
+        .await?;
+    let round_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
+
+    Ok(round_a
+        .into_iter()
+        .zip(round_b)
+        .map(|(a, b)| Share::new(a, b))
+        .collect())
+}
 
 /// Setup the PRF seeds in the replicated protocol.
 /// Each party sends to the next party a random seed.
@@ -219,7 +268,7 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_select_distance<T>(
     session: &mut Session,
-    distances: &[(DistanceShare<T>, DistanceShare<T>)],
+    distances: &[DistancePair<T>],
     control_bits: &[Share<T>],
 ) -> Result<Vec<DistanceShare<T>>>
 where
@@ -301,7 +350,7 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn cross_mul(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
     let res_a: Vec<RingElement<u32>> = izip!(
@@ -344,7 +393,7 @@ pub async fn cross_mul(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn oblivious_cross_compare(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<Bit>>> {
     // d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     let diff = cross_mul(session, distances).await?;
@@ -362,7 +411,7 @@ pub async fn oblivious_cross_compare(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare(session, distances).await?;
@@ -377,7 +426,7 @@ pub async fn oblivious_cross_compare_lifted(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn min_of_pair_batch(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<DistanceShare<u32>>> {
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare_lifted(session, distances).await?;
