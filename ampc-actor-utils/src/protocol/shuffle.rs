@@ -7,12 +7,11 @@ use crate::{
     constants::N_PARTIES,
     execution::session::{Session, SessionHandles},
     network::value::NetworkInt,
+    protocol::ops::IdDistance,
 };
 use ampc_secret_sharing::shares::int_ring::IntRing2k;
 use ampc_secret_sharing::shares::share::reconstruct_id_distance_vector;
-use ampc_secret_sharing::shares::{
-    ring_impl::VecRingElement, share::DistanceShare, RingElement, Share,
-};
+use ampc_secret_sharing::shares::{ring_impl::VecRingElement, RingElement};
 
 /// Secret shared permutation used in the shuffle protocol
 /// Each party holds two out of three shares of the permutation pi(x) = pi_12(pi_20(pi_01(x))),
@@ -95,8 +94,8 @@ fn shuffle_triplets<T: IntRing2k>(
 /// = pi(distances)
 pub async fn random_shuffle_batch<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<Vec<(Share<T>, DistanceShare<T>)>>,
-) -> Result<Vec<Vec<(Share<T>, DistanceShare<T>)>>>
+    distances: Vec<Vec<IdDistance<T>>>,
+) -> Result<Vec<Vec<IdDistance<T>>>>
 where
     Standard: Distribution<RingElement<T>>,
 {
@@ -134,9 +133,9 @@ where
 
 async fn shuffle_party_0<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(Share<T>, DistanceShare<T>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(Share<T>, DistanceShare<T>)>>
+) -> Result<Vec<IdDistance<T>>>
 where
     Standard: Distribution<RingElement<T>>,
 {
@@ -175,9 +174,9 @@ where
 
 async fn shuffle_party_1<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(Share<T>, DistanceShare<T>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(Share<T>, DistanceShare<T>)>>
+) -> Result<Vec<IdDistance<T>>>
 where
     Standard: Distribution<RingElement<T>>,
 {
@@ -233,9 +232,9 @@ where
 
 async fn shuffle_party_2<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(Share<T>, DistanceShare<T>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(Share<T>, DistanceShare<T>)>>
+) -> Result<Vec<IdDistance<T>>>
 where
     Standard: Distribution<RingElement<T>>,
 {
