@@ -12,6 +12,7 @@ pub async fn sync_on_job_hash(
     session: &mut Session,
     hash: &[u8; JOB_HASH_LEN],
 ) -> eyre::Result<bool> {
+    tracing::info!("Synchronizing on job hash: {}", hex::encode(hash));
     let local = NetworkValue::Bytes(hash.to_vec());
 
     session.network_session.send_next(local.clone()).await?;
@@ -40,11 +41,11 @@ pub async fn sync_on_job_hash(
     if all_bytes[0] == all_bytes[1] && all_bytes[1] == all_bytes[2] {
         Ok(true)
     } else {
-        tracing::warn!(
-            "Mismatched job hashes: party0={:x?}, party1={:x?}, party2={:x?}",
-            all_bytes[0],
-            all_bytes[1],
-            all_bytes[2],
+        tracing::error!(
+            "Mismatched job hashes: party0={}, party1={}, party2={}",
+            hex::encode(all_bytes[0]),
+            hex::encode(all_bytes[1]),
+            hex::encode(all_bytes[2]),
         );
         Ok(false)
     }
