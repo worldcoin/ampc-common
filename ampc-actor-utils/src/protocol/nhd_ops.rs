@@ -12,7 +12,6 @@ use eyre::Result;
 use tracing::instrument;
 
 use crate::{
-    constants::MATCH_THRESHOLD_RATIO,
     execution::session::Session,
     protocol::{
         binary::{bit_inject, extract_msb_batch, open_bin},
@@ -130,10 +129,6 @@ pub async fn nhd_lift_distances(
         .collect())
 }
 
-/// Constant A used in the NHD threshold comparison.
-/// Guaranteed to be positive if MATCH_THRESHOLD_RATIO <= 0.4725.
-const A: u64 = 774_144_u64 - (25.0 * B as f64 * MATCH_THRESHOLD_RATIO) as u64;
-
 /// Compares the distance between two iris pairs to a threshold.
 ///
 /// - Takes as input a pair of code and mask dot products between two irises,
@@ -144,7 +139,11 @@ const A: u64 = 774_144_u64 - (25.0 * B as f64 * MATCH_THRESHOLD_RATIO) as u64;
 pub async fn nhd_greater_than_threshold(
     session: &mut Session,
     distances: &[DistanceShare<Ring48>],
+    threshold_ratio: f64,
 ) -> Result<Vec<Share<Bit>>> {
+    // Constant A used in the NHD threshold comparison.
+    // Guaranteed to be positive if threshold_ratio <= 0.4725.
+    let a = Ring48(774_144_u64 - (25.0 * B as f64 * threshold_ratio) as u64);
     let n = distances.len();
 
     // We check: [md * (50*cd - 5*md)] - A*md + 368640*cd < 0
@@ -160,7 +159,7 @@ pub async fn nhd_greater_than_threshold(
         .into_iter()
         .enumerate()
         .map(|(i, product)| {
-            product - distances[i].mask_dot * Ring48(A) + distances[i].code_dot * Ring48(368640)
+            product - distances[i].mask_dot * a + distances[i].code_dot * Ring48(368640)
         })
         .collect();
 
@@ -174,23 +173,24 @@ pub async fn nhd_greater_than_threshold(
 pub async fn nhd_lte_threshold_and_open(
     session: &mut Session,
     distances: &[DistanceShare<Ring48>],
+    threshold_ratio: f64,
 ) -> Result<Vec<bool>> {
-    let bits = nhd_greater_than_threshold(session, distances).await?;
+    let bits = nhd_greater_than_threshold(session, distances, threshold_ratio).await?;
     open_bin(session, &bits)
         .await
         .map(|v| v.into_iter().map(|x| x.convert().not()).collect())
 }
 
-const A_PLAIN: i64 = 405_504_i64 - (25.0 * B as f64 * MATCH_THRESHOLD_RATIO) as i64;
 /// Plaintext NHD threshold check: returns `true` if the distance represents a match
 /// (at or below threshold).
 ///
 /// Given the masked Hamming distance `hd` and mask dot product `md`, we compute the bit
 ///
 /// `md * (100 * hd - 45 * md) + A_plain * md + 737_280 * hd < 0`
-pub fn nhd_plaintext_is_match(hd: u16, md: u16) -> bool {
+pub fn nhd_plaintext_is_match(hd: u16, md: u16, threshold_ratio: f64) -> bool {
+    let a_plain = 405_504_i64 - (25.0 * B as f64 * threshold_ratio) as i64;
     let (hd, md) = (hd as i64, md as i64);
-    md * (100 * hd - 45 * md) + A_PLAIN * md + 737_280 * hd < 0
+    md * (100 * hd - 45 * md) + a_plain * md + 737_280 * hd < 0
 }
 
 /// Normalized Hamming Distance operations using 48-bit arithmetic.
@@ -207,7 +207,10 @@ pub fn nhd_comparison_nmr(hd: u16, ml: u16) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{execution::local::LocalRuntime, protocol::test_utils::create_array_sharing};
+    use crate::{
+        constants::MATCH_THRESHOLD_RATIO, execution::local::LocalRuntime,
+        protocol::test_utils::create_array_sharing,
+    };
     use aes_prng::AesRng;
     use rand::SeedableRng;
     use tokio::task::JoinSet;
@@ -261,7 +264,7 @@ mod tests {
         ];
 
         for (hd, md, expected) in &test_cases {
-            let result = nhd_plaintext_is_match(*hd, *md);
+            let result = nhd_plaintext_is_match(*hd, *md, MATCH_THRESHOLD_RATIO);
             assert_eq!(
                 result, *expected,
                 "nhd_plaintext_is_match({}, {}): got {}, expected {}",
@@ -273,7 +276,7 @@ mod tests {
         for (hd, md, _) in test_cases.into_iter() {
             let ref_cd = md as i64 - 2 * hd as i64; // Derive a code dot that would yield the Hamming distance
             let greater = reference_nhd_greater_than_threshold(ref_cd, md as i64);
-            let plaintext_match = nhd_plaintext_is_match(hd, md);
+            let plaintext_match = nhd_plaintext_is_match(hd, md, MATCH_THRESHOLD_RATIO);
             assert_eq!(
                 plaintext_match, !greater,
                 "Inconsistency for (hd={}, md={}): plaintext_is_match={}, !greater_than_threshold={}",
@@ -329,9 +332,10 @@ mod tests {
                 let distances: Vec<DistanceShare<Ring48>> = (0..n)
                     .map(|j| DistanceShare::new(lifted[2 * j], lifted[2 * j + 1]))
                     .collect();
-                let bits = nhd_greater_than_threshold(&mut session, &distances)
-                    .await
-                    .unwrap();
+                let bits =
+                    nhd_greater_than_threshold(&mut session, &distances, MATCH_THRESHOLD_RATIO)
+                        .await
+                        .unwrap();
                 let opened = open_bin(&mut session, &bits).await.unwrap();
                 opened
                     .into_iter()
