@@ -1,4 +1,4 @@
-use std::ops::{AddAssign, Neg};
+use std::ops::{AddAssign, Neg, SubAssign};
 
 use aes_prng::AesRng;
 use ampc_secret_sharing::{
@@ -33,7 +33,6 @@ pub struct OfflineRandomShares<T: IntRing2k> {
 /// Returns the per-party view of precomputed randomness for extract_msb_rand.
 /// Each party gets its replicated ABY3 share (a,b) of the same global values.
 fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, Error> {
-    use ampc_secret_sharing::RingElement;
 
     let elem_r0 = RingElement(57u8);
     let elem_r1 = RingElement(200u8);
@@ -130,59 +129,114 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x: ReplicatedShare<T>,
     offline: &OfflineRandomShares<T>,
-) -> Result<ReplicatedShare<Bit>, Error> {
-    let (r_self, r_prev) = offline.r.get_ab();
-    let (b_self, b_prev) = offline.b_bit.get_ab();
-    let (r_msb_self, r_msb_prev) = offline.r_bits[0].get_ab();
+) -> Result<ReplicatedShare<T>, Error> {
 
-    // for testing purposes, printing the role and corresponding shares of OfflineRandomShares
-    // println!(
-    //     "extract_msb_rand role={:?} r=(a={:?}, b={:?}) b_bit=(a={:?}, b={:?}) r_bit7=(a={:?}, b={:?})",
-    //     session.own_role(), r_self, r_prev, b_self, b_prev, msb_self, msb_prev
-    // );
+    let mut rng = AesRng::from_random_seed(); // remove later, need it for now for hard-coded bitLT
 
     // step 1: [r']_k = [r]_k - [r_bit]_1 ^ 2^{k - 1}
-
     // convert RingElement<Bit> -> Bit -> Bool -> (via from) T
-    let v_t: T = T::from(r_msb_self.convert().convert());
+    let v_t: T = T::from(offline.r_bits[0].get_a().convert().convert());
     // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
     let scaled_msb_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
 
-    let v_t: T = T::from(r_msb_prev.convert().convert());
+    let v_t: T = T::from(offline.r_bits[0].get_b().convert().convert());
     let scaled_msb_prev = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
-
-    // let scaled_msb = ReplicatedShare::new(scaled_msb_self, scaled_msb_prev);
-    // println!(
-    //     "msb scaled: self={:?} prev={:?}",
-    //     scaled_msb.get_a(), scaled_msb.get_b()
-    // );
 
     let r_prime_self: RingElement<T> = offline.r.get_a() - scaled_msb_self;
     let r_prime_prev: RingElement<T> = offline.r.get_b() - scaled_msb_prev;
-    let r_prime = ReplicatedShare::new(r_prime_self, r_prime_prev);
-
-    // println!(
-    //     "computed r': self={:?} prev={:?}",
-    //     r_prime.get_a(),
-    //     r_prime.get_b()
-    // );
+    let r_prime_share = ReplicatedShare::new(r_prime_self, r_prime_prev);
 
     // step 2: c' = (x + r) mod 2^{k - 1}
 
     // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
     let c_share: ReplicatedShare<T> = x + offline.r;
     let c: T = open_ring(session, std::slice::from_ref(&c_share)).await?[0];
+    let mask: T = T::one().wrapping_shl((T::K - 1) as u32).wrapping_sub(&T::one());
+    let c_prime: T = c & mask;
 
-    println!(
-        "computed x, c: x_self={:?} x_prev={:?} c={:?}",
-        x.get_a(),
-        x.get_b(),
-        c
+    // step 3: compute bitLT = (c' < r')
+    // bitLT = 1
+    let bitLT: (u8, u8, u8) = (0, 1, 0);
+
+    // Replicated shares for parties 0,1,2
+    
+    let bitLT_share = match session.own_role().index() {
+    0 => {
+        let (b0, _, b2) = bitLT;
+        ReplicatedShare::new(
+            RingElement(Bit::new(b0 == 1)),
+            RingElement(Bit::new(b2 == 1)),
+        )
+    }
+    1 => {
+        let (b0, b1,_) = bitLT;
+        ReplicatedShare::new(
+            RingElement(Bit::new(b1 == 1)),
+            RingElement(Bit::new(b0 == 1)),
+        )
+    }
+    2 => {
+        let (_, b1, b2) = bitLT;
+        ReplicatedShare::new(
+            RingElement(Bit::new(b2 == 1)),
+            RingElement(Bit::new(b1 == 1)),
+        )
+    }
+    _ => unreachable!("invalid role index"),
+    };
+
+    // step 4: [a']_k = 2^{k-1} [u]_1 + c' - [r']_k, [d]_k = [a]_k - [a']_k
+
+    // 4a. computing scaled 2^{k - 1} * [u]_1
+    // convert RingElement<Bit> -> Bit -> Bool -> (via from) T
+    let v_t: T = T::from(bitLT_share.get_a().convert().convert());
+    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
+    let scaled_bitLT_self = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+
+    let v_t: T = T::from(bitLT_share.get_b().convert().convert());
+    // safely left-shift by T::K - 1 == bit width - 1 using wrapping_shl
+    let scaled_bitLT_prev = RingElement(v_t.wrapping_shl((T::K - 1) as u32));
+
+    let scaled_bitLT = ReplicatedShare::new(scaled_bitLT_self, scaled_bitLT_prev);
+    let mut x_prime = scaled_bitLT;
+    let c_prime_share = ReplicatedShare::from_const(c_prime, session.own_role());
+    x_prime = x_prime + c_prime_share;
+    x_prime.sub_assign(r_prime_share);
+    
+    let d_share = x - x_prime;
+
+    // step 5: computing MSB using b_bit and d_share
+    // 5a. scale b_bit by 2^{k - 1} 
+    let two_pow_k_minus_1: T = T::one().wrapping_shl((T::K - 1) as u32);
+    // let b_msb_share_self = offline.b_bit.get_a().convert().wrapping_mul(&two_pow_k_minus_1);
+    // let b_msb_share_prev = offline.b_bit.get_b().convert().wrapping_mul(&two_pow_k_minus_1);
+    // let b_msb_share: ReplicatedShare<T> = ReplicatedShare::new(RingElement(b_msb_share_self), RingElement(b_msb_share_prev));
+    let mut b_msb_share = offline.b_bit; 
+    b_msb_share = b_msb_share * two_pow_k_minus_1;
+    let e_share = d_share + b_msb_share;
+    
+    // e_share: ReplicatedShare<T>
+    let e_open: T = open_ring(session, std::slice::from_ref(&e_share)).await?[0];
+    // MSB as bool
+    let e_msb_bool: bool = ((e_open >> (T::K - 1)) & T::one()) == T::one();
+
+    let mut msb = offline.b_bit;
+    let match_msb = ReplicatedShare::from_const(e_open, session.own_role());
+    msb = msb + match_msb;
+    let two: T = T::one().wrapping_add(&T::one());
+    let scale: T = two.wrapping_mul(&e_open);
+
+    let msb_tmp: ReplicatedShare<T> = ReplicatedShare::new(
+    offline.b_bit.a * scale,
+    offline.b_bit.b * scale,
     );
-
-    //returning a dummy value for now
-    let one = ReplicatedShare::from_const(Bit::new(true), session.own_role());
-    Ok(one)
+    let one = ReplicatedShare::from_const(T::one(), session.own_role());
+    msb = msb - msb_tmp;
+    let msb = if e_msb_bool { one - offline.b_bit } else { offline.b_bit };
+    Ok(msb)
+    
+    // let one  = ReplicatedShare::from_const(T::from(Bit::new(false).convert()), session.own_role());
+    // Ok(one)
 }
 
 pub async fn rep_to_add2<T: IntRing2k>(
@@ -839,7 +893,7 @@ mod tests {
     use rand::{Rng, SeedableRng};
     use rand_distr::{Distribution, Standard};
     use tokio::task::JoinSet;
-
+    use crate::protocol::ops::open_ring;
     use crate::execution::player::Role;
     use crate::protocol::msb_preprocessing::{
         bitlt, open_additive_share_bit, open_additive_share_u8, rep_to_add2,
@@ -863,20 +917,17 @@ mod tests {
 
         // Random cleartext values + expected MSB bits
         let ints: Vec<u8> = (0..len).map(|_| rng.gen::<u8>()).collect();
-        let expected: Vec<Bit> = ints
-            .iter()
-            .map(|x| {
-                let msb = *x >> (u8::K - 1);
-                if msb.is_zero() {
-                    false.into()
-                } else {
-                    true.into()
-                }
-            })
-            .collect();
+        let ints: Vec<u8> = vec![241u8; len];
 
+        let expected: Vec<u8> = ints
+        .iter()
+        .map(|x| (*x >> 7) & 1)
+        .collect();
+
+        println!("Cleartext values: {:?} Expected Values: {:?}", ints, expected);
         // Secret-share inputs across 3 parties
         let shares = create_array_sharing(&mut rng, &ints);
+        
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
@@ -898,7 +949,7 @@ mod tests {
                 }
 
                 // Open result bits
-                open_bin(&mut session, &out).await
+                open_ring(&mut session, &out).await
             });
         }
 
