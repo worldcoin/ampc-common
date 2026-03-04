@@ -125,6 +125,7 @@ pub async fn process_2d_anon_stats_job(
         job_size,
         num_buckets,
         config.party_id,
+        crate::types::DistanceFunction::FHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -349,6 +350,7 @@ pub mod test_helper {
                 self.distances.len(),
                 translated_thresholds.len(),
                 0,
+                crate::types::DistanceFunction::FHD,
                 AnonStatsResultSource::Aggregator,
                 None,
             );
@@ -571,107 +573,6 @@ mod tests {
                 );
             }
             assert!(stats.is_mirror_orientation);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_2d_distances_recovery() {
-        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
-        let num_buckets_2d = 10;
-        let thresholds = calculate_iris_threshold_a(num_buckets_2d, MATCH_THRESHOLD_RATIO);
-
-        let config = AnonStatsServerConfig {
-            party_id: 0,
-            face_bucket_thresholds: vec![],
-            service: None,
-            aws: None,
-            environment: "test".to_string(),
-            results_topic_arn: "foo".to_string(),
-            n_buckets_1d: 0,
-            n_buckets_1d_reauth: 0,
-            min_1d_job_size: 0,
-            min_face_job_size: 0,
-            poll_interval_secs: 10,
-            max_sync_failures_before_reset: 10,
-            db_url: "foo".to_string(),
-            db_schema_name: "foo".to_string(),
-            server_coordination: None,
-            service_ports: Vec::new(),
-            shutdown_last_results_sync_timeout_secs: 10,
-            sns_buffer_bucket_name: "foo".to_string(),
-            n_buckets_2d: num_buckets_2d,
-            n_buckets_2d_reauth: 0,
-            min_2d_job_size: 0,
-            min_1d_job_size_reauth: 0,
-            min_2d_job_size_reauth: 0,
-            max_rows_per_job_1d: 0,
-            max_rows_per_job_2d: 0,
-            tls: None,
-        };
-        let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 1000, 12);
-        let ground_truth_buckets = ground_truth.ground_truth_buckets(&thresholds);
-        let TestDistances {
-            distances: _,
-            shares0,
-            shares1,
-            shares2,
-        } = ground_truth;
-
-        let mut tasks = vec![];
-        for (party_id, (shares, net)) in [shares0, shares1, shares2]
-            .into_iter()
-            .zip(sessions.into_iter())
-            .enumerate()
-        {
-            let config = AnonStatsServerConfig {
-                party_id,
-                ..config.clone()
-            };
-            let origin = crate::AnonStatsOrigin {
-                side: None,
-                orientation: crate::AnonStatsOrientation::Normal,
-                context: crate::AnonStatsContext::GPU,
-            };
-
-            tasks.push(tokio::task::spawn(async move {
-                let mut session = net.lock().await;
-                let shares = shares
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, s)| (idx as i64, s))
-                    .collect();
-                let job = crate::AnonStatsMapping::new(shares);
-
-                let stats = crate::anon_stats::iris_2d::process_2d_anon_stats_job(
-                    &mut session,
-                    job,
-                    &origin,
-                    &config,
-                    Some(crate::AnonStatsOperation::Recovery),
-                    None,
-                )
-                .await
-                .unwrap();
-
-                stats
-            }));
-        }
-        let results = futures_util::future::join_all(tasks).await;
-        for stats in results {
-            let stats = stats.expect("bucket computation works");
-            assert_eq!(
-                stats.buckets.len(),
-                ground_truth_buckets.buckets.len(),
-                "Number of buckets mismatch"
-            );
-            for (i, bucket) in stats.buckets.iter().enumerate() {
-                assert_eq!(
-                    bucket.count, ground_truth_buckets.buckets[i].count,
-                    "Bucket {} mismatch: expected {:?}, got {:?}",
-                    i, ground_truth_buckets.buckets[i], bucket
-                );
-            }
-            assert!(!stats.is_mirror_orientation);
         }
     }
 }

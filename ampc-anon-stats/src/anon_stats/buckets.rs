@@ -1,4 +1,4 @@
-use crate::types::{AnonStatsResultSource, Eye};
+use crate::types::{AnonStatsResultSource, DistanceFunction, Eye};
 use crate::AnonStatsOperation;
 use chrono::{
     serde::{ts_seconds, ts_seconds_option},
@@ -33,6 +33,8 @@ pub struct BucketStatistics {
     pub party_id: usize,
     pub operation: AnonStatsOperation,
     pub eye: Option<Eye>,
+    #[serde(default)]
+    pub distance_function: DistanceFunction,
     #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
@@ -83,6 +85,7 @@ impl BucketStatistics {
         n_buckets: usize,
         party_id: usize,
         eye: Option<Eye>,
+        distance_function: DistanceFunction,
         source: AnonStatsResultSource,
         operation: Option<AnonStatsOperation>,
     ) -> Self {
@@ -92,6 +95,7 @@ impl BucketStatistics {
             eye,
             match_distances_buffer_size,
             party_id,
+            distance_function,
             source,
             operation: operation.unwrap_or_default(),
             start_time_utc_timestamp: Utc::now(),
@@ -193,6 +197,8 @@ pub struct BucketStatistics2D {
     pub party_id: usize,
     pub operation: AnonStatsOperation,
     #[serde(default)]
+    pub distance_function: DistanceFunction,
+    #[serde(default)]
     pub source: AnonStatsResultSource,
     #[serde(with = "ts_seconds")]
     pub start_time_utc_timestamp: DateTime<Utc>,
@@ -242,6 +248,7 @@ impl BucketStatistics2D {
         match_distances_buffer_size: usize,
         n_buckets_per_side: usize,
         party_id: usize,
+        distance_function: DistanceFunction,
         source: AnonStatsResultSource,
         operation: Option<AnonStatsOperation>,
     ) -> Self {
@@ -250,6 +257,7 @@ impl BucketStatistics2D {
             n_buckets_per_side,
             match_distances_buffer_size,
             party_id,
+            distance_function,
             source,
             operation: operation.unwrap_or_default(),
             start_time_utc_timestamp: Utc::now(),

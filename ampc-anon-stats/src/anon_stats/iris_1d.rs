@@ -3,7 +3,7 @@ use crate::anon_stats::{
     MATCH_THRESHOLD_RATIO_REAUTH,
 };
 use crate::server::config::AnonStatsServerConfig;
-use crate::types::{AnonStatsOrientation, AnonStatsResultSource};
+use crate::types::{AnonStatsOrientation, AnonStatsResultSource, DistanceFunction};
 use crate::{AnonStatsMapping, AnonStatsOperation, AnonStatsOrigin, BucketStatistics};
 use ampc_actor_utils::protocol::anon_stats::compare_min_threshold_buckets_score_normalization;
 use ampc_actor_utils::protocol::nhd_ops::nhd_lift_distances;
@@ -89,6 +89,7 @@ pub async fn process_1d_anon_stats_job(
         num_buckets,
         config.party_id,
         origin.side,
+        DistanceFunction::FHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -132,6 +133,7 @@ pub async fn process_1d_lifted_anon_stats_job(
         num_buckets,
         config.party_id,
         origin.side,
+        DistanceFunction::FHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -205,6 +207,7 @@ pub async fn process_1d_anon_stats_score_normalization_job(
         num_buckets,
         config.party_id,
         origin.side,
+        DistanceFunction::NHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -247,6 +250,7 @@ pub async fn process_1d_lifted_anon_stats_score_normalization_job(
         num_buckets,
         config.party_id,
         origin.side,
+        DistanceFunction::NHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -437,6 +441,7 @@ pub mod test_helper {
                 translated_thresholds.len(),
                 0,
                 None,
+                crate::types::DistanceFunction::FHD,
                 crate::types::AnonStatsResultSource::Aggregator,
                 None,
             );
@@ -500,6 +505,7 @@ pub mod test_helper {
                 thresholds.len(),
                 0,
                 None,
+                crate::types::DistanceFunction::NHD,
                 crate::types::AnonStatsResultSource::Aggregator,
                 None,
             );
