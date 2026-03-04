@@ -211,6 +211,7 @@ pub async fn process_1d_anon_stats_score_normalization_job(
         AnonStatsResultSource::Aggregator,
         operation,
     );
+    anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
     anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
     Ok(anon_stats)
 }
