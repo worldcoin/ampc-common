@@ -1,5 +1,5 @@
 use crate::protocol::binary::bit_inject;
-use crate::protocol::ops::{min_of_pair_batch, B};
+use crate::protocol::ops::{min_of_pair_batch, DistancePair, B};
 use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::VecShare;
@@ -81,7 +81,7 @@ pub async fn reduce_to_min_distance_batch(
     while !sizes.iter().all(|&size| size == 0) {
         // we grab a vector of potential rotations to reduce
         // If this current group is already reduced to 0, we grab the first element as a dummy copy.
-        let distances_to_reduce: Vec<(DistanceShare<u32>, DistanceShare<u32>)> = distances
+        let distances_to_reduce: Vec<DistancePair<u32>> = distances
             .iter()
             .zip(sizes.iter_mut())
             .map(|(group, size)| {
