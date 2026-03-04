@@ -184,7 +184,9 @@ pub async fn process_1d_anon_stats_score_normalization_job(
         Some(AnonStatsOperation::Reauth) => {
             (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
-        None | Some(AnonStatsOperation::Uniqueness) => (config.n_buckets_1d, MATCH_THRESHOLD_RATIO),
+        None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
+            (config.n_buckets_1d, MATCH_THRESHOLD_RATIO)
+        }
     };
     let translated_thresholds =
         calculate_iris_threshold_score_normalization(num_buckets, match_threshold_ratio);
@@ -224,7 +226,9 @@ pub async fn process_1d_lifted_anon_stats_score_normalization_job(
         Some(AnonStatsOperation::Reauth) => {
             (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
-        None | Some(AnonStatsOperation::Uniqueness) => (config.n_buckets_1d, MATCH_THRESHOLD_RATIO),
+        None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
+            (config.n_buckets_1d, MATCH_THRESHOLD_RATIO)
+        }
     };
     let translated_thresholds =
         calculate_iris_threshold_score_normalization(num_buckets, match_threshold_ratio);
