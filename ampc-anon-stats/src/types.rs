@@ -11,6 +11,7 @@ pub enum AnonStatsOperation {
     #[default]
     Uniqueness = 0,
     Reauth = 1,
+    Recovery = 2,
 }
 
 impl From<AnonStatsOperation> for i16 {
@@ -26,6 +27,7 @@ impl TryFrom<i16> for AnonStatsOperation {
         match value {
             0 => Ok(AnonStatsOperation::Uniqueness),
             1 => Ok(AnonStatsOperation::Reauth),
+            2 => Ok(AnonStatsOperation::Recovery),
             other => Err(eyre!("Unknown anon stats operation value {}", other)),
         }
     }
