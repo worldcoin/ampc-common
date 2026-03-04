@@ -54,7 +54,7 @@ pub async fn nhd_cross_mul(
             &distances[i].1
         };
         let linear = d.mask_dot - d.code_dot * Ring48(NHD_LINEAR_COEFF);
-        &d.mask_dot * &linear
+        d.mask_dot * linear
     })
     .await?;
 
@@ -151,7 +151,7 @@ pub async fn nhd_greater_than_threshold(
     let products = reshare_products(session, n, |i| {
         let d = &distances[i];
         let linear = d.code_dot * Ring48(50) - d.mask_dot * Ring48(5);
-        &d.mask_dot * &linear
+        d.mask_dot * linear
     })
     .await?;
 
