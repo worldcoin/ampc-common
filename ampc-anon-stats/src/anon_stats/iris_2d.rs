@@ -103,15 +103,17 @@ async fn process_2d_inner(
 
     let mut bucket_ids = 0;
     // TODO: This could be parallelized if needed
-    for left_chunk in comparisons_left.chunks(job_size) {
-        for right_chunk in comparisons_right.chunks(job_size) {
-            assert!(left_chunk.len() == right_chunk.len());
+    if job_size != 0 {
+        for left_chunk in comparisons_left.chunks(job_size) {
+            for right_chunk in comparisons_right.chunks(job_size) {
+                assert!(left_chunk.len() == right_chunk.len());
 
-            let product_sum = izip!(left_chunk, right_chunk)
-                .map(|(left_share, right_share)| left_share * right_share)
-                .fold(RingElement(0u32), |acc, x| acc + x);
-            bucket_shares[bucket_ids] += product_sum;
-            bucket_ids += 1;
+                let product_sum = izip!(left_chunk, right_chunk)
+                    .map(|(left_share, right_share)| left_share * right_share)
+                    .fold(RingElement(0u32), |acc, x| acc + x);
+                bucket_shares[bucket_ids] += product_sum;
+                bucket_ids += 1;
+            }
         }
     }
 
@@ -254,15 +256,17 @@ async fn process_2d_anon_stats_score_normalization_inner(
 
     let mut bucket_ids = 0;
     // TODO: This could be parallelized if needed
-    for left_chunk in comparisons_left.chunks(job_size) {
-        for right_chunk in comparisons_right.chunks(job_size) {
-            assert!(left_chunk.len() == right_chunk.len());
+    if job_size != 0 {
+        for left_chunk in comparisons_left.chunks(job_size) {
+            for right_chunk in comparisons_right.chunks(job_size) {
+                assert!(left_chunk.len() == right_chunk.len());
 
-            let product_sum = izip!(left_chunk, right_chunk)
-                .map(|(left_share, right_share)| left_share * right_share)
-                .fold(RingElement(0u32), |acc, x| acc + x);
-            bucket_shares[bucket_ids] += product_sum;
-            bucket_ids += 1;
+                let product_sum = izip!(left_chunk, right_chunk)
+                    .map(|(left_share, right_share)| left_share * right_share)
+                    .fold(RingElement(0u32), |acc, x| acc + x);
+                bucket_shares[bucket_ids] += product_sum;
+                bucket_ids += 1;
+            }
         }
     }
 
