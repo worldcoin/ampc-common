@@ -210,6 +210,41 @@ fn default_shutdown_last_results_sync_timeout_secs() -> u64 {
 }
 
 impl AnonStatsServerConfig {
+    #[cfg(test)]
+    pub fn test_default() -> Self {
+        Self {
+            service: None,
+            aws: None,
+            party_id: 0,
+            environment: "test".to_string(),
+            results_topic_arn: "test".to_string(),
+            sns_buffer_bucket_name: "test".to_string(),
+            n_buckets_1d: default_n_buckets_1d(),
+            n_buckets_1d_reauth: default_n_buckets_1d_reauth(),
+            n_buckets_2d: default_n_buckets_2d(),
+            n_buckets_2d_reauth: default_n_buckets_2d_reauth(),
+            min_1d_job_size: 0,
+            min_1d_job_size_reauth: 0,
+            min_1d_job_size_recovery: 0,
+            min_2d_job_size: 0,
+            min_2d_job_size_reauth: 0,
+            min_2d_job_size_recovery: 0,
+            min_face_job_size: 0,
+            max_rows_per_job_1d: 0,
+            max_rows_per_job_2d: 0,
+            poll_interval_secs: default_poll_interval_secs(),
+            face_bucket_thresholds: vec![],
+            max_sync_failures_before_reset: default_max_sync_failures_before_reset(),
+            db_url: String::new(),
+            db_schema_name: default_schema_name(),
+            server_coordination: None,
+            service_ports: Vec::new(),
+            shutdown_last_results_sync_timeout_secs:
+                default_shutdown_last_results_sync_timeout_secs(),
+            tls: None,
+        }
+    }
+
     pub fn load_config(prefix: &str) -> eyre::Result<AnonStatsServerConfig> {
         let settings = config::Config::builder();
         let settings = settings
