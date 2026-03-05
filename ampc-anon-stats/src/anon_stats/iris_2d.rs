@@ -3,7 +3,7 @@ use ampc_actor_utils::{
     execution::session::Session,
     protocol::{
         anon_stats::{
-            compare_against_thresholds_batched, nhd_compare_threshold_buckets,
+            compare_against_thresholds_batched, nhd_compare_against_thresholds_batched,
             nhd_reduce_to_min_distance_batch, reduce_to_min_distance_batch,
         },
         ops::open_ring_element_broadcast,
@@ -226,13 +226,19 @@ async fn process_2d_anon_stats_score_normalization_inner(
     drop(lifted_right);
 
     // execute anon stats MPC protocol
-    let comparisons_left =
-        nhd_compare_threshold_buckets(session, translated_thresholds.as_slice(), &lifted_min_left)
-            .await?;
+    let comparisons_left = nhd_compare_against_thresholds_batched(
+        session,
+        translated_thresholds.as_slice(),
+        &lifted_min_left,
+    )
+    .await?;
     drop(lifted_min_left);
-    let comparisons_right =
-        nhd_compare_threshold_buckets(session, translated_thresholds.as_slice(), &lifted_min_right)
-            .await?;
+    let comparisons_right = nhd_compare_against_thresholds_batched(
+        session,
+        translated_thresholds.as_slice(),
+        &lifted_min_right,
+    )
+    .await?;
     drop(lifted_min_right);
 
     // combine left and right comparisons by doing an outer product
@@ -492,6 +498,9 @@ pub mod test_helper {
         }
 
         pub fn ground_truth_buckets(&self, translated_thresholds: &[u32]) -> BucketStatistics2D {
+            fn fhd(code_dist: i16, mask_dist: i16) -> f64 {
+                (mask_dist as f64 - code_dist as f64) / (mask_dist as f64 * 2f64)
+            }
             let num_buckets = translated_thresholds.len();
             let expected = self
                 .distances
@@ -501,10 +510,7 @@ pub mod test_helper {
                     let red_left = group_left
                         .iter()
                         .reduce(|a, b| {
-                            // plain distance formula is (0.5 - code/2*mask), the below is that multiplied by 2
-                            if (1f64 - a[0] as f64 / a[1] as f64)
-                                < (1f64 - b[0] as f64 / b[1] as f64)
-                            {
+                            if fhd(a[0], a[1]) < fhd(b[0], b[1]) {
                                 a
                             } else {
                                 b
@@ -514,10 +520,7 @@ pub mod test_helper {
                     let red_right = group_right
                         .iter()
                         .reduce(|a, b| {
-                            // plain distance formula is (0.5 - code/2*mask), the below is that multiplied by 2
-                            if (1f64 - a[0] as f64 / a[1] as f64)
-                                < (1f64 - b[0] as f64 / b[1] as f64)
-                            {
+                            if fhd(a[0], a[1]) < fhd(b[0], b[1]) {
                                 a
                             } else {
                                 b
@@ -531,10 +534,8 @@ pub mod test_helper {
                     let mask_dist_left = x[1];
                     let code_dist_right = y[0];
                     let mask_dist_right = y[1];
-                    let dist_left =
-                        0.5f64 - (code_dist_left as f64) / (2f64 * mask_dist_left as f64);
-                    let dist_right =
-                        0.5f64 - (code_dist_right as f64) / (2f64 * mask_dist_right as f64);
+                    let dist_left = fhd(code_dist_left, mask_dist_left);
+                    let dist_right = fhd(code_dist_right, mask_dist_right);
                     for (i, &threshold_left) in translated_thresholds.iter().enumerate() {
                         for (j, &threshold_right) in translated_thresholds.iter().enumerate() {
                             acc[i * num_buckets + j] += if (dist_left
@@ -561,6 +562,76 @@ pub mod test_helper {
             anon_stats.fill_buckets(&expected, MATCH_THRESHOLD_RATIO, None);
             anon_stats
         }
+
+        pub fn nhd_ground_truth_buckets(&self, thresholds: &[f64]) -> BucketStatistics2D {
+            fn fhd(code_dist: i16, mask_dist: i16) -> f64 {
+                (mask_dist as f64 - code_dist as f64) / (mask_dist as f64 * 2f64)
+            }
+            // plain distance formula is (9/20 - (9/20 * fhd) *(md * 2^-14 +9/20)) with fhd = (md - cd)/2*md
+            fn nhd(code_dist: i16, mask_dist: i16) -> f64 {
+                0.45f64
+                    - (0.45f64 - fhd(code_dist, mask_dist))
+                        * ((mask_dist as f64) * 2f64.powi(-14) + 0.45f64)
+            }
+            let num_buckets = thresholds.len();
+            let expected = self
+                .distances
+                .iter()
+                .map(|(group_left, group_right)| {
+                    // reduce distances in each group
+                    let red_left = group_left
+                        .iter()
+                        .reduce(|a, b| {
+                            if nhd(a[0], a[1]) < nhd(b[0], b[1]) {
+                                a
+                            } else {
+                                b
+                            }
+                        })
+                        .expect("Expected at least one distance in the group");
+                    let red_right = group_right
+                        .iter()
+                        .reduce(|a, b| {
+                            if nhd(a[0], a[1]) < nhd(b[0], b[1]) {
+                                a
+                            } else {
+                                b
+                            }
+                        })
+                        .expect("Expected at least one distance in the group");
+                    (red_left, red_right)
+                })
+                .fold(vec![0; num_buckets * num_buckets], |mut acc, (x, y)| {
+                    let code_dist_left = x[0];
+                    let mask_dist_left = x[1];
+                    let code_dist_right = y[0];
+                    let mask_dist_right = y[1];
+                    let dist_left = nhd(code_dist_left, mask_dist_left);
+                    let dist_right = nhd(code_dist_right, mask_dist_right);
+                    for (i, &threshold_left) in thresholds.iter().enumerate() {
+                        for (j, &threshold_right) in thresholds.iter().enumerate() {
+                            acc[i * num_buckets + j] += if (dist_left <= threshold_left)
+                                && (dist_right < threshold_right)
+                            {
+                                1
+                            } else {
+                                0
+                            };
+                        }
+                    }
+                    acc
+                });
+            let mut anon_stats = BucketStatistics2D::new(
+                self.distances.len(),
+                thresholds.len(),
+                0,
+                crate::types::DistanceFunction::NHD,
+                AnonStatsResultSource::Aggregator,
+                None,
+            );
+            anon_stats.fill_buckets(&expected, MATCH_THRESHOLD_RATIO, None);
+            anon_stats
+        }
     }
 }
 
@@ -571,9 +642,10 @@ mod tests {
 
     use crate::{
         anon_stats::{
-            calculate_iris_threshold_a, iris_2d::test_helper::TestDistances,
-            MATCH_THRESHOLD_RATIO_REAUTH,
+            calculate_iris_threshold_a, calculate_iris_threshold_score_normalization,
+            iris_2d::test_helper::TestDistances, MATCH_THRESHOLD_RATIO_REAUTH,
         },
+        types::DistanceFunction,
         AnonStatsOperation, AnonStatsOrientation, AnonStatsServerConfig,
     };
 
@@ -656,6 +728,90 @@ mod tests {
                 );
             }
             assert_eq!(stats.is_mirror_orientation, expected_mirror);
+            assert_eq!(stats.distance_function, DistanceFunction::FHD);
+        }
+    }
+
+    async fn run_2d_test_nhd(
+        num_buckets: usize,
+        threshold_ratio: f64,
+        operation: Option<AnonStatsOperation>,
+        orientation: AnonStatsOrientation,
+        max_rotations: usize,
+    ) {
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let thresholds = calculate_iris_threshold_score_normalization(num_buckets, threshold_ratio);
+
+        let config = AnonStatsServerConfig {
+            n_buckets_2d: num_buckets,
+            n_buckets_2d_reauth: num_buckets,
+            ..AnonStatsServerConfig::test_default()
+        };
+        let ground_truth =
+            TestDistances::generate_ground_truth_input(&mut thread_rng(), 1000, max_rotations);
+        let ground_truth_buckets = ground_truth.nhd_ground_truth_buckets(&thresholds);
+        let expected_mirror = matches!(orientation, AnonStatsOrientation::Mirror);
+        let TestDistances {
+            distances: _,
+            shares0,
+            shares1,
+            shares2,
+        } = ground_truth;
+
+        let mut tasks = vec![];
+        for (party_id, (shares, net)) in [shares0, shares1, shares2]
+            .into_iter()
+            .zip(sessions.into_iter())
+            .enumerate()
+        {
+            let config = AnonStatsServerConfig {
+                party_id,
+                ..config.clone()
+            };
+            let origin = crate::AnonStatsOrigin {
+                side: None,
+                orientation,
+                context: crate::AnonStatsContext::GPU,
+            };
+
+            tasks.push(tokio::task::spawn(async move {
+                let mut session = net.lock().await;
+                let shares = shares
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, s)| (idx as i64, s))
+                    .collect();
+                let job = crate::AnonStatsMapping::new(shares);
+
+                crate::anon_stats::iris_2d::process_2d_anon_stats_score_normalization_job(
+                    &mut session,
+                    job,
+                    &origin,
+                    &config,
+                    operation,
+                    None,
+                )
+                .await
+                .unwrap()
+            }));
+        }
+        let results = futures_util::future::join_all(tasks).await;
+        for stats in results {
+            let stats = stats.expect("bucket computation works");
+            assert_eq!(
+                stats.buckets.len(),
+                ground_truth_buckets.buckets.len(),
+                "Number of buckets mismatch"
+            );
+            for (i, bucket) in stats.buckets.iter().enumerate() {
+                assert_eq!(
+                    bucket.count, ground_truth_buckets.buckets[i].count,
+                    "Bucket {} mismatch: expected {:?}, got {:?}",
+                    i, ground_truth_buckets.buckets[i], bucket
+                );
+            }
+            assert_eq!(stats.is_mirror_orientation, expected_mirror);
+            assert_eq!(stats.distance_function, DistanceFunction::NHD);
         }
     }
 
@@ -686,6 +842,42 @@ mod tests {
     #[tokio::test]
     async fn test_2d_distances_recovery() {
         run_2d_test(
+            10,
+            MATCH_THRESHOLD_RATIO,
+            Some(AnonStatsOperation::Recovery),
+            AnonStatsOrientation::Normal,
+            12,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_nhd_2d_distances() {
+        run_2d_test_nhd(
+            10,
+            MATCH_THRESHOLD_RATIO,
+            Some(AnonStatsOperation::Uniqueness),
+            AnonStatsOrientation::Normal,
+            12,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_nhd_2d_distances_reauth() {
+        run_2d_test_nhd(
+            15,
+            MATCH_THRESHOLD_RATIO_REAUTH,
+            Some(AnonStatsOperation::Reauth),
+            AnonStatsOrientation::Mirror,
+            31,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_nhd_2d_distances_recovery() {
+        run_2d_test_nhd(
             10,
             MATCH_THRESHOLD_RATIO,
             Some(AnonStatsOperation::Recovery),

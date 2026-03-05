@@ -643,13 +643,11 @@ mod tests {
         let ground_truth = TestDistances::generate_ground_truth_input(&mut rng, 10, 12);
         let ground_truth_buckets = ground_truth.nhd_ground_truth_buckets(&thresholds);
         let TestDistances {
-            distances,
+            distances: _,
             shares0,
             shares1,
             shares2,
         } = ground_truth;
-
-        dbg!(distances);
 
         let mut tasks = vec![];
         for (party_id, (shares, net)) in [shares0, shares1, shares2]
