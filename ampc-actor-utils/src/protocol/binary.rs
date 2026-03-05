@@ -759,7 +759,6 @@ pub fn mul_lift_2k_to_32<const K: u64>(val: &Share<u16>) -> Share<u32> {
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
-#[allow(dead_code)]
 #[inline]
 fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
     VecShare::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())

@@ -125,6 +125,7 @@ pub async fn process_2d_anon_stats_job(
         job_size,
         num_buckets,
         config.party_id,
+        crate::types::DistanceFunction::FHD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -435,6 +436,7 @@ pub mod test_helper {
                 self.distances.len(),
                 translated_thresholds.len(),
                 0,
+                crate::types::DistanceFunction::FHD,
                 AnonStatsResultSource::Aggregator,
                 None,
             );

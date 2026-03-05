@@ -71,6 +71,7 @@ pub async fn process_face_distance_job(
         n_buckets,
         config.party_id,
         None,
+        crate::types::DistanceFunction::HD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
