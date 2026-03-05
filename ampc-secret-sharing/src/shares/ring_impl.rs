@@ -70,16 +70,44 @@ impl<T: IntRing2k + std::fmt::Display> Extend<RingElement<T>> for VecRingElement
     }
 }
 
-impl<T: IntRing2k> Fill for VecRingElement<T>
-where
-    [T]: Fill,
-{
+/// Trait for types that support fast random bulk-filling of `VecRingElement`.
+///
+/// This replaces the `[T]: Fill` bound which cannot be satisfied for custom
+/// ring types like `Ring48` due to the orphan rule.
+pub trait RingRandFillable: IntRing2k {
+    fn fill_vec_ring<R: Rng + ?Sized>(
+        slice: &mut [RingElement<Self>],
+        rng: &mut R,
+    ) -> Result<(), rand::Error>;
+}
+
+macro_rules! impl_ring_rand_fillable_primitive {
+    ($($t:ty),*) => {
+        $(
+            impl RingRandFillable for $t {
+                #[inline]
+                fn fill_vec_ring<R: Rng + ?Sized>(
+                    slice: &mut [RingElement<Self>],
+                    rng: &mut R,
+                ) -> Result<(), rand::Error> {
+                    // Fast path: bulk fill via [T]: Fill.
+                    // SAFETY: RingElement<T> is repr(transparent) over T.
+                    let len = slice.len();
+                    let raw = unsafe {
+                        std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut $t, len)
+                    };
+                    rng.try_fill(raw)
+                }
+            }
+        )*
+    };
+}
+
+impl_ring_rand_fillable_primitive!(u8, u16, u32, u64, u128);
+
+impl<T: RingRandFillable> Fill for VecRingElement<T> {
     fn try_fill<R: Rng + ?Sized>(&mut self, rng: &mut R) -> Result<(), rand::Error> {
-        let len = self.0.len();
-        // Safety: RingElement<T> is #[repr(transparent)] so we can safely cast the
-        // slice to T
-        let slice = unsafe { std::slice::from_raw_parts_mut(self.0.as_mut_ptr() as *mut T, len) };
-        rng.try_fill(slice)
+        T::fill_vec_ring(&mut self.0, rng)
     }
 }
 

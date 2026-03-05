@@ -138,6 +138,7 @@ impl<T: IntRing2k> IntoIterator for TransposedPack<T> {
         self.data.into_iter()
     }
 }
+use super::{ring48::Ring48, ring_impl::RingElement, share::Share, vecshare::VecShare};
 
 pub trait Transpose64 {
     fn transpose_pack_u64(self) -> TransposedPack<u64>;
@@ -553,6 +554,29 @@ impl Transpose128 for VecShare<u64> {
     }
 }
 
+impl Transpose64 for VecShare<Ring48> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+        let len = self.shares.len().div_ceil(64);
+        self.shares.resize(len * 64, Share::default());
+
+        let mut res = (0..48) // not 64
+            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
+            .collect::<Vec<_>>();
+
+        for (j, chunk) in self.shares.chunks_exact(64).enumerate() {
+            // stack-allocated, no heap alloc
+            let mut u64_chunk: [Share<u64>; 64] = core::array::from_fn(|i| {
+                Share::new(RingElement(chunk[i].a.0 .0), RingElement(chunk[i].b.0 .0))
+            });
+            VecShare::<u64>::share_transpose64x64(&mut u64_chunk);
+            for (src, des) in u64_chunk.into_iter().take(48).zip(res.iter_mut()) {
+                des.shares[j] = src;
+            }
+        }
+        res
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +717,16 @@ mod tests {
         assert_eq!(last.len(), chunk_count);
         assert_eq!(last.shares.as_slice(), transposed.lane(15));
         assert_eq!(transposed2.num_bits(), 15);
+    }
+
+    #[test]
+    fn test_ring48_transpose_pack_u64() {
+        let mut rng = rand::thread_rng();
+        let shares: Vec<Share<Ring48>> =
+            (0..130).map(|_| Share::new(rng.gen(), rng.gen())).collect();
+        let vec_share = VecShare { shares };
+        let transposed = vec_share.clone().transpose_pack_u64();
+
+        check_transposed(transposed, vec_share);
     }
 }
