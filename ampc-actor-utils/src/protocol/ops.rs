@@ -360,7 +360,7 @@ pub async fn cross_mul(
     )
     .map(|(&(d1, d2), a, b)| {
         let zero_share = a - b; // equivalent to gen_zero_share()
-        zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
+        zero_share + d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     })
     .collect();
 

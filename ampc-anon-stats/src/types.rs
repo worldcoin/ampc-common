@@ -58,6 +58,25 @@ impl Display for Eye {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DistanceFunction {
+    #[default]
+    FHD,
+    NHD,
+    HD,
+}
+
+impl Display for DistanceFunction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FHD => write!(f, "fhd"),
+            Self::NHD => write!(f, "nhd"),
+            Self::HD => write!(f, "hd"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AnonStatsResultSource {

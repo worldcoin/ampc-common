@@ -1,8 +1,9 @@
 use crate::protocol::binary::bit_inject;
+use crate::protocol::nhd_ops::{nhd_greater_than_threshold, nhd_min_of_pair_batch};
 use crate::protocol::ops::{min_of_pair_batch, DistancePair, B};
 use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::VecShare;
+use ampc_secret_sharing::shares::{Ring48, VecShare};
 use ampc_secret_sharing::Share;
 use eyre::{eyre, Result};
 use itertools::Itertools;
@@ -37,6 +38,28 @@ pub async fn compare_against_thresholds_batched(
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
 /// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// The result of the comparisons is a flat vector of Share<u32>, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
+pub async fn nhd_compare_against_thresholds_batched(
+    session: &mut Session,
+    threshold_a_terms: &[f64],
+    distances: &[DistanceShare<Ring48>],
+) -> Result<Vec<Share<u32>>> {
+    let mut msbs = Vec::with_capacity(threshold_a_terms.len() * distances.len());
+    for &t in threshold_a_terms {
+        let results = nhd_greater_than_threshold(session, distances, t).await?;
+        msbs.extend(results.into_iter().map(|x| !(&x)));
+    }
+
+    tracing::info!("compare_threshold_buckets diffs length: {}", msbs.len());
+    let msbs = VecShare::new_vec(msbs);
+    tracing::info!("msbs extracted, now bit_injecting");
+    // bit_inject all MSBs into u32 to be able to add them up
+    let sums = bit_inject(session, msbs).await?;
+    Ok(sums.inner())
+}
+
+/// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
+/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
 pub async fn compare_threshold_buckets(
     session: &mut Session,
@@ -44,6 +67,28 @@ pub async fn compare_threshold_buckets(
     distances: &[DistanceShare<u32>],
 ) -> Result<Vec<Share<u32>>> {
     let sums = compare_against_thresholds_batched(session, threshold_a_terms, distances).await?;
+    tracing::info!("bit_inject done, now summing");
+    // add them up, bucket-wise, with each bucket corresponding to a threshold and containing len(distances) results
+    let buckets = sums
+        .into_iter()
+        .chunks(distances.len())
+        .into_iter()
+        .map(|chunk| chunk.reduce(|a, b| a + b).unwrap_or_default())
+        .collect_vec();
+
+    Ok(buckets)
+}
+
+/// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
+/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
+pub async fn nhd_compare_threshold_buckets(
+    session: &mut Session,
+    threshold_a_terms: &[f64],
+    distances: &[DistanceShare<Ring48>],
+) -> Result<Vec<Share<u32>>> {
+    let sums =
+        nhd_compare_against_thresholds_batched(session, threshold_a_terms, distances).await?;
     tracing::info!("bit_inject done, now summing");
     // add them up, bucket-wise, with each bucket corresponding to a threshold and containing len(distances) results
     let buckets = sums
@@ -100,6 +145,49 @@ pub async fn reduce_to_min_distance_batch(
     Ok(reduced_distances)
 }
 
+pub async fn nhd_reduce_to_min_distance_batch(
+    session: &mut Session,
+    distances: &[Vec<DistanceShare<Ring48>>],
+) -> Result<Vec<DistanceShare<Ring48>>> {
+    // grab the first one of the distance in each group
+    let mut reduced_distances = distances
+        .iter()
+        .map(|group| {
+            group
+                .first()
+                .cloned()
+                .ok_or_else(|| eyre!("Expected at least one distance in the group"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut sizes = distances
+        .iter()
+        .map(|group| group.len() - 1)
+        .collect::<Vec<_>>();
+
+    // This loop is executed at most MAX_ROTATIONS-1 times, which is 30 currently
+    // however, in practice it will probably be executed much less often.
+    while !sizes.iter().all(|&size| size == 0) {
+        // we grab a vector of potential rotations to reduce
+        // If this current group is already reduced to 0, we grab the first element as a dummy copy.
+        let distances_to_reduce: Vec<DistancePair<Ring48>> = distances
+            .iter()
+            .zip(sizes.iter_mut())
+            .map(|(group, size)| {
+                let element_to_reduce = group[*size];
+                if *size > 0 {
+                    *size -= 1;
+                }
+                element_to_reduce
+            })
+            .zip(reduced_distances.iter())
+            .map(|(new, reduced)| (new, *reduced))
+            .collect();
+
+        reduced_distances = nhd_min_of_pair_batch(session, &distances_to_reduce).await?;
+    }
+    Ok(reduced_distances)
+}
+
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
 /// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
@@ -114,6 +202,23 @@ pub async fn compare_min_threshold_buckets(
     let reduced_distances = reduce_to_min_distance_batch(session, distances).await?;
     // Now we have a single distance for each group, we can compare it to the thresholds
     let buckets = compare_threshold_buckets(session, threshold_a_terms, &reduced_distances).await?;
+
+    Ok(buckets)
+}
+
+pub async fn compare_min_threshold_buckets_score_normalization(
+    session: &mut Session,
+    threshold_score_normalization_terms: &[f64],
+    distances: &[Vec<DistanceShare<Ring48>>],
+) -> Result<Vec<Share<u32>>> {
+    let reduced_distances = nhd_reduce_to_min_distance_batch(session, distances).await?;
+    // Now we have a single distance for each group, we can compare it to the thresholds
+    let buckets = nhd_compare_threshold_buckets(
+        session,
+        threshold_score_normalization_terms,
+        &reduced_distances,
+    )
+    .await?;
 
     Ok(buckets)
 }
