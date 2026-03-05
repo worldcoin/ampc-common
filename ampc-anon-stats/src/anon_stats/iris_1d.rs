@@ -74,12 +74,9 @@ async fn process_1d_inner(
     let translated_thresholds = calculate_iris_threshold_a(num_buckets, match_threshold_ratio);
 
     // execute anon stats MPC protocol
-    let bucket_result_shares = compare_min_threshold_buckets(
-        session,
-        translated_thresholds.as_slice(),
-        lifted_data,
-    )
-    .await?;
+    let bucket_result_shares =
+        compare_min_threshold_buckets(session, translated_thresholds.as_slice(), lifted_data)
+            .await?;
 
     let buckets = open_ring(session, &bucket_result_shares).await?;
     let mut anon_stats = BucketStatistics::new(
@@ -107,8 +104,16 @@ pub async fn process_1d_anon_stats_job(
     let job_size = job.len();
     let job_data = job.into_bundles();
     let lifted_data = lift_bundles_1d(session, &job_data).await?;
-    process_1d_inner(session, job_size, &lifted_data, origin, config, operation, start_timestamp)
-        .await
+    process_1d_inner(
+        session,
+        job_size,
+        &lifted_data,
+        origin,
+        config,
+        operation,
+        start_timestamp,
+    )
+    .await
 }
 
 pub async fn process_1d_lifted_anon_stats_job(
@@ -121,8 +126,16 @@ pub async fn process_1d_lifted_anon_stats_job(
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    process_1d_inner(session, job_size, &job_data, origin, config, operation, start_timestamp)
-        .await
+    process_1d_inner(
+        session,
+        job_size,
+        &job_data,
+        origin,
+        config,
+        operation,
+        start_timestamp,
+    )
+    .await
 }
 
 pub async fn lift_bundles_u48_1d(
@@ -565,7 +578,6 @@ mod tests {
                 orientation: crate::AnonStatsOrientation::Normal,
                 context: crate::AnonStatsContext::GPU,
             };
-            let operation = operation.clone();
 
             tasks.push(tokio::task::spawn(async move {
                 let mut session = net.lock().await;
@@ -608,7 +620,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_1d_distances() {
-        run_1d_test(10, MATCH_THRESHOLD_RATIO, Some(AnonStatsOperation::Uniqueness), 12).await;
+        run_1d_test(
+            10,
+            MATCH_THRESHOLD_RATIO,
+            Some(AnonStatsOperation::Uniqueness),
+            12,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -691,11 +709,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_1d_distances_reauth() {
-        run_1d_test(20, MATCH_THRESHOLD_RATIO_REAUTH, Some(AnonStatsOperation::Reauth), 31).await;
+        run_1d_test(
+            20,
+            MATCH_THRESHOLD_RATIO_REAUTH,
+            Some(AnonStatsOperation::Reauth),
+            31,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_1d_distances_recovery() {
-        run_1d_test(10, MATCH_THRESHOLD_RATIO, Some(AnonStatsOperation::Recovery), 12).await;
+        run_1d_test(
+            10,
+            MATCH_THRESHOLD_RATIO,
+            Some(AnonStatsOperation::Recovery),
+            12,
+        )
+        .await;
     }
 }

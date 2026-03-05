@@ -40,6 +40,7 @@ pub async fn lift_bundles_2d(
     Ok(lifted_bundles)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_2d_inner(
     session: &mut Session,
     job_size: usize,
@@ -466,10 +467,9 @@ mod tests {
             };
             let origin = crate::AnonStatsOrigin {
                 side: None,
-                orientation: orientation.clone(),
+                orientation,
                 context: crate::AnonStatsContext::GPU,
             };
-            let operation = operation.clone();
 
             tasks.push(tokio::task::spawn(async move {
                 let mut session = net.lock().await;
@@ -514,27 +514,36 @@ mod tests {
     #[tokio::test]
     async fn test_2d_distances() {
         run_2d_test(
-            10, MATCH_THRESHOLD_RATIO,
+            10,
+            MATCH_THRESHOLD_RATIO,
             Some(AnonStatsOperation::Uniqueness),
-            AnonStatsOrientation::Normal, 12,
-        ).await;
+            AnonStatsOrientation::Normal,
+            12,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_2d_distances_reauth() {
         run_2d_test(
-            15, MATCH_THRESHOLD_RATIO_REAUTH,
+            15,
+            MATCH_THRESHOLD_RATIO_REAUTH,
             Some(AnonStatsOperation::Reauth),
-            AnonStatsOrientation::Mirror, 31,
-        ).await;
+            AnonStatsOrientation::Mirror,
+            31,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_2d_distances_recovery() {
         run_2d_test(
-            10, MATCH_THRESHOLD_RATIO,
+            10,
+            MATCH_THRESHOLD_RATIO,
             Some(AnonStatsOperation::Recovery),
-            AnonStatsOrientation::Normal, 12,
-        ).await;
+            AnonStatsOrientation::Normal,
+            12,
+        )
+        .await;
     }
 }
