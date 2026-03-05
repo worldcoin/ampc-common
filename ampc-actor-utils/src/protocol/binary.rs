@@ -299,14 +299,13 @@ where
 /// Computes binary AND of two flat TransposedPacks.
 /// Data is already contiguous — no flatten/unflatten overhead.
 #[instrument(level = "trace", target = "searcher::network", skip(session, x1, x2))]
-async fn transposed_pack_and_flat<T: IntRing2k + NetworkInt>(
+async fn transposed_pack_and_flat<T: IntRing2k + NetworkInt + RingRandFillable>(
     session: &mut Session,
     x1: TransposedPack<T>,
     x2: TransposedPack<T>,
 ) -> Result<TransposedPack<T>, Error>
 where
     Standard: Distribution<T>,
-    [T]: Fill,
 {
     if x1.num_bits() != x2.num_bits() {
         bail!(
@@ -896,30 +895,27 @@ pub async fn lift_to_ring48(
         ));
     }
 
-    // Bit-slice the shares into 64-bit shares
+    // Bit-slice the shares into 64-bit shares (flat TransposedPack)
     let x = shares.transpose_pack_u64();
+    let num_bits = x.num_bits();
+    let chunk_count = x.chunk_count();
+    let total_len = num_bits * chunk_count;
 
-    // Prepare the local input shares to be summed by the binary adder
-    let len_ = x.len();
-    let mut x1 = Vec::with_capacity(len_);
-    let mut x2 = Vec::with_capacity(len_);
-    let mut x3 = Vec::with_capacity(len_);
+    // Split each share via a2b_pre, producing 3 flat TransposedPacks
+    let mut x1_data = Vec::with_capacity(total_len);
+    let mut x2_data = Vec::with_capacity(total_len);
+    let mut x3_data = Vec::with_capacity(total_len);
 
-    for x_ in x.into_iter() {
-        let len__ = x_.len();
-        let mut x1_ = VecShare::with_capacity(len__);
-        let mut x2_ = VecShare::with_capacity(len__);
-        let mut x3_ = VecShare::with_capacity(len__);
-        for x__ in x_.into_iter() {
-            let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
-            x1_.push(x1__);
-            x2_.push(x2__);
-            x3_.push(x3__);
-        }
-        x1.push(x1_);
-        x2.push(x2_);
-        x3.push(x3_);
+    for share in x.iter() {
+        let (s1, s2, s3) = a2b_pre(session, *share)?;
+        x1_data.push(s1);
+        x2_data.push(s2);
+        x3_data.push(s3);
     }
+
+    let x1 = TransposedPack::from_flat(x1_data, num_bits, chunk_count);
+    let x2 = TransposedPack::from_flat(x2_data, num_bits, chunk_count);
+    let x3 = TransposedPack::from_flat(x3_data, num_bits, chunk_count);
 
     // Sum the binary shares using the binary parallel prefix adder.
     // Since the input shares are u16 and we sum over Ring48, the two carries arise, i.e.,

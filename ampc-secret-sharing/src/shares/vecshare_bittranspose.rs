@@ -138,7 +138,7 @@ impl<T: IntRing2k> IntoIterator for TransposedPack<T> {
         self.data.into_iter()
     }
 }
-use super::{ring48::Ring48, ring_impl::RingElement, share::Share, vecshare::VecShare};
+use super::ring48::Ring48;
 
 pub trait Transpose64 {
     fn transpose_pack_u64(self) -> TransposedPack<u64>;
@@ -555,13 +555,11 @@ impl Transpose128 for VecShare<u64> {
 }
 
 impl Transpose64 for VecShare<Ring48> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
-        let len = self.shares.len().div_ceil(64);
-        self.shares.resize(len * 64, Share::default());
+    fn transpose_pack_u64(mut self) -> TransposedPack<u64> {
+        let chunk_count = self.shares.len().div_ceil(64);
+        self.shares.resize(chunk_count * 64, Share::default());
 
-        let mut res = (0..48) // not 64
-            .map(|_| VecShare::new_vec(vec![Share::default(); len]))
-            .collect::<Vec<_>>();
+        let mut result = TransposedPack::new(48, chunk_count);
 
         for (j, chunk) in self.shares.chunks_exact(64).enumerate() {
             // stack-allocated, no heap alloc
@@ -569,11 +567,11 @@ impl Transpose64 for VecShare<Ring48> {
                 Share::new(RingElement(chunk[i].a.0 .0), RingElement(chunk[i].b.0 .0))
             });
             VecShare::<u64>::share_transpose64x64(&mut u64_chunk);
-            for (src, des) in u64_chunk.into_iter().take(48).zip(res.iter_mut()) {
-                des.shares[j] = src;
+            for (bit, src) in u64_chunk.into_iter().take(48).enumerate() {
+                result.lane_mut(bit)[j] = src;
             }
         }
-        res
+        result
     }
 }
 
