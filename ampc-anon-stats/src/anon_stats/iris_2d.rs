@@ -611,7 +611,7 @@ pub mod test_helper {
                     for (i, &threshold_left) in thresholds.iter().enumerate() {
                         for (j, &threshold_right) in thresholds.iter().enumerate() {
                             acc[i * num_buckets + j] += if (dist_left <= threshold_left)
-                                && (dist_right < threshold_right)
+                                && (dist_right <= threshold_right)
                             {
                                 1
                             } else {
