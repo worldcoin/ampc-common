@@ -2,7 +2,10 @@ use ampc_actor_utils::{
     constants::MATCH_THRESHOLD_RATIO,
     execution::session::Session,
     protocol::{
-        anon_stats::{compare_against_thresholds_batched, reduce_to_min_distance_batch},
+        anon_stats::{
+            compare_against_thresholds_batched, nhd_compare_threshold_buckets,
+            nhd_reduce_to_min_distance_batch, reduce_to_min_distance_batch,
+        },
         ops::open_ring_element_broadcast,
     },
 };
@@ -13,8 +16,11 @@ use itertools::{izip, Itertools};
 
 use crate::{
     anon_stats::{
-        calculate_iris_threshold_a,
-        iris_1d::{lift_bundles_1d, DistanceBundle1D, LiftedDistanceBundle1D},
+        calculate_iris_threshold_a, calculate_iris_threshold_score_normalization,
+        iris_1d::{
+            lift_bundles_1d, lift_bundles_u48_1d, DistanceBundle1D, LiftedDistanceBundle1D,
+            LiftedU48DistanceBundle1D,
+        },
         MATCH_THRESHOLD_RATIO_REAUTH,
     },
     types::AnonStatsResultSource,
@@ -24,6 +30,7 @@ use crate::{
 
 pub type DistanceBundle2D = (DistanceBundle1D, DistanceBundle1D);
 pub type LiftedDistanceBundle2D = (LiftedDistanceBundle1D, LiftedDistanceBundle1D);
+pub type LiftedU48DistanceBundle2D = (LiftedU48DistanceBundle1D, LiftedU48DistanceBundle1D);
 
 pub async fn lift_bundles_2d(
     session: &mut Session,
@@ -178,6 +185,147 @@ pub async fn process_2d_lifted_anon_stats_job(
     drop(job_data);
 
     process_2d_inner(
+        session,
+        job_size,
+        lifted_left,
+        lifted_right,
+        origin,
+        config,
+        operation,
+        start_timestamp,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_2d_anon_stats_score_normalization_inner(
+    session: &mut Session,
+    job_size: usize,
+    lifted_left: Vec<LiftedU48DistanceBundle1D>,
+    lifted_right: Vec<LiftedU48DistanceBundle1D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics2D> {
+    let (num_buckets, upper_threshold) = match operation {
+        Some(AnonStatsOperation::Reauth) => {
+            (config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
+        }
+        None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
+            (config.n_buckets_2d, MATCH_THRESHOLD_RATIO)
+        }
+    };
+    let translated_thresholds =
+        calculate_iris_threshold_score_normalization(num_buckets, upper_threshold);
+
+    // Reduce both sides to min distances
+    let lifted_min_left = nhd_reduce_to_min_distance_batch(session, &lifted_left).await?;
+    drop(lifted_left);
+    let lifted_min_right = nhd_reduce_to_min_distance_batch(session, &lifted_right).await?;
+    drop(lifted_right);
+
+    // execute anon stats MPC protocol
+    let comparisons_left =
+        nhd_compare_threshold_buckets(session, translated_thresholds.as_slice(), &lifted_min_left)
+            .await?;
+    drop(lifted_min_left);
+    let comparisons_right =
+        nhd_compare_threshold_buckets(session, translated_thresholds.as_slice(), &lifted_min_right)
+            .await?;
+    drop(lifted_min_right);
+
+    // combine left and right comparisons by doing an outer product
+    // at the same time also do the summing
+
+    let mut bucket_shares = vec![RingElement::<u32>::default(); num_buckets * num_buckets];
+
+    // prepare the correlated randomness for the bucket sums
+    // we want additive shares of 0
+    for bucket in &mut bucket_shares {
+        *bucket += session.prf.gen_zero_share();
+    }
+
+    let mut bucket_ids = 0;
+    // TODO: This could be parallelized if needed
+    for left_chunk in comparisons_left.chunks(job_size) {
+        for right_chunk in comparisons_right.chunks(job_size) {
+            assert!(left_chunk.len() == right_chunk.len());
+
+            let product_sum = izip!(left_chunk, right_chunk)
+                .map(|(left_share, right_share)| left_share * right_share)
+                .fold(RingElement(0u32), |acc, x| acc + x);
+            bucket_shares[bucket_ids] += product_sum;
+            bucket_ids += 1;
+        }
+    }
+
+    let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
+    let mut anon_stats = BucketStatistics2D::new(
+        job_size,
+        num_buckets,
+        config.party_id,
+        crate::types::DistanceFunction::NHD,
+        AnonStatsResultSource::Aggregator,
+        operation,
+    );
+    anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
+    anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
+    Ok(anon_stats)
+}
+
+pub async fn process_2d_anon_stats_score_normalization_job(
+    session: &mut Session,
+    job: AnonStatsMapping<DistanceBundle2D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics2D> {
+    let job_size = job.len();
+    let job_data = job.into_bundles();
+    let bundle_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
+    let bundle_right = job_data
+        .iter()
+        .map(|(_, right)| right.clone())
+        .collect_vec();
+    drop(job_data);
+
+    // Lift both sides of the 2D bundles
+    let lifted_left = lift_bundles_u48_1d(session, &bundle_left).await?;
+    drop(bundle_left);
+    let lifted_right = lift_bundles_u48_1d(session, &bundle_right).await?;
+    drop(bundle_right);
+    process_2d_anon_stats_score_normalization_inner(
+        session,
+        job_size,
+        lifted_left,
+        lifted_right,
+        origin,
+        config,
+        operation,
+        start_timestamp,
+    )
+    .await
+}
+
+pub async fn process_2d_lifted_anon_stats_score_normalization_job(
+    session: &mut Session,
+    job: AnonStatsMapping<LiftedU48DistanceBundle2D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics2D> {
+    let job_size = job.len();
+    let job_data = job.into_bundles();
+    let lifted_left = job_data.iter().map(|(left, _)| left.clone()).collect_vec();
+    let lifted_right = job_data
+        .iter()
+        .map(|(_, right)| right.clone())
+        .collect_vec();
+    drop(job_data);
+    process_2d_anon_stats_score_normalization_inner(
         session,
         job_size,
         lifted_left,
