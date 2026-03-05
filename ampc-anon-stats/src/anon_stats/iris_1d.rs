@@ -166,18 +166,15 @@ pub async fn lift_bundles_u48_1d(
     Ok(lifted)
 }
 
-pub async fn process_1d_anon_stats_score_normalization_job(
+async fn process_1d_anon_stats_score_normalization_inner(
     session: &mut Session,
-    job: AnonStatsMapping<DistanceBundle1D>,
+    job_size: usize,
+    lifted_data: &[LiftedU48DistanceBundle1D],
     origin: &AnonStatsOrigin,
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics> {
-    let job_size = job.len();
-    let job_data = job.into_bundles();
-    let lifted_data = lift_bundles_u48_1d(session, &job_data).await?;
-
     let (num_buckets, match_threshold_ratio) = match operation {
         Some(AnonStatsOperation::Reauth) => {
             (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
@@ -193,7 +190,7 @@ pub async fn process_1d_anon_stats_score_normalization_job(
     let bucket_result_shares = compare_min_threshold_buckets_score_normalization(
         session,
         translated_thresholds.as_slice(),
-        lifted_data.as_slice(),
+        lifted_data,
     )
     .await?;
 
@@ -212,6 +209,29 @@ pub async fn process_1d_anon_stats_score_normalization_job(
     Ok(anon_stats)
 }
 
+pub async fn process_1d_anon_stats_score_normalization_job(
+    session: &mut Session,
+    job: AnonStatsMapping<DistanceBundle1D>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics> {
+    let job_size = job.len();
+    let job_data = job.into_bundles();
+    let lifted_data = lift_bundles_u48_1d(session, &job_data).await?;
+    process_1d_anon_stats_score_normalization_inner(
+        session,
+        job_size,
+        &lifted_data,
+        origin,
+        config,
+        operation,
+        start_timestamp,
+    )
+    .await
+}
+
 pub async fn process_1d_lifted_anon_stats_score_normalization_job(
     session: &mut Session,
     job: AnonStatsMapping<LiftedU48DistanceBundle1D>,
@@ -222,37 +242,16 @@ pub async fn process_1d_lifted_anon_stats_score_normalization_job(
 ) -> Result<BucketStatistics> {
     let job_size = job.len();
     let job_data = job.into_bundles();
-    let (num_buckets, match_threshold_ratio) = match operation {
-        Some(AnonStatsOperation::Reauth) => {
-            (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
-        }
-        None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
-            (config.n_buckets_1d, MATCH_THRESHOLD_RATIO)
-        }
-    };
-    let translated_thresholds =
-        calculate_iris_threshold_score_normalization(num_buckets, match_threshold_ratio);
-
-    // execute anon stats MPC protocol
-    let bucket_result_shares = compare_min_threshold_buckets_score_normalization(
+    process_1d_anon_stats_score_normalization_inner(
         session,
-        translated_thresholds.as_slice(),
-        job_data.as_slice(),
-    )
-    .await?;
-
-    let buckets = open_ring(session, &bucket_result_shares).await?;
-    let mut anon_stats = BucketStatistics::new(
         job_size,
-        num_buckets,
-        config.party_id,
-        origin.side,
-        DistanceFunction::NHD,
-        AnonStatsResultSource::Aggregator,
+        &job_data,
+        origin,
+        config,
         operation,
-    );
-    anon_stats.fill_buckets(&buckets, match_threshold_ratio, start_timestamp);
-    Ok(anon_stats)
+        start_timestamp,
+    )
+    .await
 }
 
 pub mod test_helper {
@@ -644,13 +643,11 @@ mod tests {
         let ground_truth = TestDistances::generate_ground_truth_input(&mut rng, 10, 12);
         let ground_truth_buckets = ground_truth.nhd_ground_truth_buckets(&thresholds);
         let TestDistances {
-            distances,
+            distances: _,
             shares0,
             shares1,
             shares2,
         } = ground_truth;
-
-        dbg!(distances);
 
         let mut tasks = vec![];
         for (party_id, (shares, net)) in [shares0, shares1, shares2]

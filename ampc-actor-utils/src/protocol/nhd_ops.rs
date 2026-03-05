@@ -142,8 +142,7 @@ pub async fn nhd_greater_than_threshold(
     threshold_ratio: f64,
 ) -> Result<Vec<Share<Bit>>> {
     // Constant A used in the NHD threshold comparison.
-    // Guaranteed to be positive if threshold_ratio <= 0.4725.
-    let a = Ring48(774_144_u64 - (25.0 * B as f64 * threshold_ratio) as u64);
+    let a = Ring48(774_144_u64) - Ring48((25.0 * B as f64 * threshold_ratio) as u64);
     let n = distances.len();
 
     // We check: [md * (50*cd - 5*md)] - A*md + 368640*cd < 0
