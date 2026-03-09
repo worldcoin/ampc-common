@@ -189,6 +189,14 @@ impl<T: IntRing2k> Mul<Self> for &Share<T> {
     }
 }
 
+impl<T: IntRing2k> Mul<Self> for Share<T> {
+    type Output = RingElement<T>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.a * rhs.a + self.b * rhs.a + self.a * rhs.b
+    }
+}
+
 impl<T: IntRing2k> BitXor<Self> for &Share<T> {
     type Output = Share<T>;
 
@@ -341,6 +349,17 @@ impl<T: IntRing2k> Shl<u32> for Share<T> {
     }
 }
 
+impl<T: IntRing2k> Shl<u32> for &Share<T> {
+    type Output = Share<T>;
+
+    fn shl(self, rhs: u32) -> Self::Output {
+        Share {
+            a: self.a << rhs,
+            b: self.b << rhs,
+        }
+    }
+}
+
 /// Additive share of a relative Hamming distance.
 /// The distance is represented as a pair of shares `(code_dot, mask_dot)`, where
 /// - `code_dot` is the number of matching unmasked iris bits minus the number of non-matching unmasked iris bits,
@@ -405,10 +424,10 @@ pub fn reconstruct_distance_vector(
         .collect_vec()
 }
 
-pub fn reconstruct_id_distance_vector(
-    a: super::ring_impl::VecRingElement<u32>,
-    b: super::ring_impl::VecRingElement<u32>,
-) -> Vec<(Share<u32>, DistanceShare<u32>)> {
+pub fn reconstruct_id_distance_vector<T: IntRing2k>(
+    a: super::ring_impl::VecRingElement<T>,
+    b: super::ring_impl::VecRingElement<T>,
+) -> Vec<(Share<T>, DistanceShare<T>)> {
     izip!(a.0, b.0)
         .map(|(a, b)| Share::new(a, b))
         .tuples()

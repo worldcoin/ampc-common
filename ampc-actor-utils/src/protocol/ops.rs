@@ -3,17 +3,69 @@
 
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
-use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, open_bin};
+use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::{ring_impl::RingElement, share::Share, IntRing2k, VecShare};
+use ampc_secret_sharing::shares::RingRandFillable;
+use ampc_secret_sharing::shares::{
+    ring_impl::RingElement, share::Share, IntRing2k, Ring48, VecShare,
+};
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
 use tracing::instrument;
 
+pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
+pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
+
 pub(crate) const B_BITS: u64 = 16;
 pub(crate) const B: u64 = 1 << B_BITS;
+
+// ---------------------------------------------------------------------------
+// Batched replicated multiplication
+// ---------------------------------------------------------------------------
+
+/// Executes one round of the ABY3 replicated multiplication protocol.
+///
+/// The caller provides a closure that computes the local product expression
+/// for each of `n` output shares. The function handles PRF zero-share
+/// generation, network communication (send_next/receive_prev), and share
+/// reconstruction.
+///
+/// The closure receives the batch index `0..n` and returns a `RingElement<T>`
+/// representing the product terms for that slot. Multiple products can be
+/// additively combined by simply returning their sum/difference.
+pub async fn reshare_products<T, F>(
+    session: &mut Session,
+    n: usize,
+    mut expr: F,
+) -> Result<Vec<Share<T>>>
+where
+    T: NetworkInt + RingRandFillable,
+    F: FnMut(usize) -> RingElement<T>,
+{
+    let (prf_my, prf_prev) = session.prf.gen_rands_batch::<T>(n);
+
+    let round_a: Vec<RingElement<T>> = prf_my
+        .0
+        .into_iter()
+        .zip(prf_prev.0)
+        .enumerate()
+        .map(|(i, (my_r, prev_r))| (my_r - prev_r) + expr(i))
+        .collect();
+
+    let network = &mut session.network_session;
+    network
+        .send_next(T::new_network_vec(round_a.clone()))
+        .await?;
+    let round_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
+
+    Ok(round_a
+        .into_iter()
+        .zip(round_b)
+        .map(|(a, b)| Share::new(a, b))
+        .collect())
+}
 
 /// Setup the PRF seeds in the replicated protocol.
 /// Each party sends to the next party a random seed.
@@ -213,13 +265,15 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
 /// Conditionally selects the distance shares based on control bits.
 /// If the control bit is 1, it selects the first distance share (d1),
 /// otherwise it selects the second distance share (d2).
-/// Assumes that the input shares are originally 16-bit and lifted to u32.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn conditionally_select_distance(
+pub async fn conditionally_select_distance<T>(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
-    control_bits: &[Share<u32>],
-) -> Result<Vec<DistanceShare<u32>>> {
+    distances: &[DistancePair<T>],
+    control_bits: &[Share<T>],
+) -> Result<Vec<DistanceShare<T>>>
+where
+    T: NetworkInt + RingRandFillable,
+{
     if distances.len() != control_bits.len() {
         bail!("Number of distances must match number of control bits");
     }
@@ -232,7 +286,7 @@ pub async fn conditionally_select_distance(
     // we start with the mult of c and d1-d2
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len() * 2);
 
-    let res_a: Vec<RingElement<u32>> = izip!(
+    let res_a: Vec<RingElement<T>> = izip!(
         distances.iter(),
         control_bits.iter(),
         prf_my_values.0.chunks(2),
@@ -252,17 +306,13 @@ pub async fn conditionally_select_distance(
     let network = &mut session.network_session;
 
     let message = if res_a.len() == 1 {
-        NetworkValue::RingElement32(res_a[0])
+        T::new_network_element(res_a[0])
     } else {
-        NetworkValue::VecRing32(res_a.clone())
+        T::new_network_vec(res_a.clone())
     };
     network.send_next(message).await?;
 
-    let res_b = match network.receive_prev().await {
-        Ok(NetworkValue::RingElement32(element)) => vec![element],
-        Ok(NetworkValue::VecRing32(elements)) => elements,
-        _ => bail!("Could not deserialize RingElement32"),
-    };
+    let res_b = T::into_vec(network.receive_prev().await?)?;
 
     // finally compute the result by adding the d2 shares
     Ok(izip!(res_a.into_iter(), res_b.into_iter())
@@ -300,7 +350,7 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn cross_mul(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
     let res_a: Vec<RingElement<u32>> = izip!(
@@ -310,7 +360,7 @@ pub async fn cross_mul(
     )
     .map(|(&(d1, d2), a, b)| {
         let zero_share = a - b; // equivalent to gen_zero_share()
-        zero_share + &d2.code_dot * &d1.mask_dot - &d1.code_dot * &d2.mask_dot
+        zero_share + d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     })
     .collect();
 
@@ -343,7 +393,7 @@ pub async fn cross_mul(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn oblivious_cross_compare(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<Bit>>> {
     // d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     let diff = cross_mul(session, distances).await?;
@@ -361,7 +411,7 @@ pub async fn oblivious_cross_compare(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare(session, distances).await?;
@@ -376,7 +426,7 @@ pub async fn oblivious_cross_compare_lifted(
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn min_of_pair_batch(
     session: &mut Session,
-    distances: &[(DistanceShare<u32>, DistanceShare<u32>)],
+    distances: &[DistancePair<u32>],
 ) -> Result<Vec<DistanceShare<u32>>> {
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare_lifted(session, distances).await?;
@@ -412,6 +462,39 @@ pub async fn batch_signed_lift_vec(
 ) -> Result<Vec<Share<u32>>> {
     let pre_lift = VecShare::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
+}
+
+/// Signed lift from u16 to Ring48. Same logic as batch_signed_lift but
+/// targets 48-bit ring arithmetic.
+pub async fn batch_signed_lift_ring48(
+    session: &mut Session,
+    mut pre_lift: VecShare<u16>,
+) -> Result<VecShare<Ring48>> {
+    // Compute (v + 2^{15}) % 2^{16}, to make values positive.
+    for v in pre_lift.iter_mut() {
+        v.add_assign_const_role(1_u16 << 15, session.own_role());
+    }
+    let mut lifted_values = lift_to_ring48(session, pre_lift).await?;
+    // Now we got shares of d1' over 2^48 such that d1' = (d1'_1 + d1'_2 + d1'_3) %
+    // 2^{16} = d1. Next we subtract the 2^15 term we've added previously to
+    // get signed shares over 2^{48}.
+    for v in lifted_values.iter_mut() {
+        v.add_assign_const_role(
+            Ring48::masked((1_u64 << 48) - (1_u64 << 15)),
+            session.own_role(),
+        );
+    }
+    Ok(lifted_values)
+}
+
+/// Wrapper over batch_signed_lift_ring48 that lifts a vector (Vec) of 16-bit
+/// shares to a vector (Vec) of Ring48 shares.
+pub async fn batch_signed_lift_vec_ring48(
+    session: &mut Session,
+    pre_lift: Vec<Share<u16>>,
+) -> Result<Vec<Share<Ring48>>> {
+    let pre_lift = VecShare::new_vec(pre_lift);
+    Ok(batch_signed_lift_ring48(session, pre_lift).await?.inner())
 }
 
 #[cfg(test)]

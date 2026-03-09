@@ -1,3 +1,7 @@
+#![deny(
+    clippy::iter_over_hash_type,
+    reason = "In MPC protocols, this can be dangerous as the iteration order is not guaranteed to be in sync between the parties due to HashMap randomization."
+)]
 pub mod anon_stats;
 mod server;
 pub mod store;
@@ -17,7 +21,8 @@ pub use crate::anon_stats::iris_1d::{
     LiftedDistanceBundle1D,
 };
 pub use crate::anon_stats::iris_2d::{
-    lift_bundles_2d, process_2d_anon_stats_job, DistanceBundle2D,
+    lift_bundles_2d, process_2d_anon_stats_job, process_2d_lifted_anon_stats_job, DistanceBundle2D,
+    LiftedDistanceBundle2D,
 };
 pub use crate::server::config::{AnonStatsServerConfig, Opt};
 pub use crate::server::coordination::{start_coordination_server, CoordinationHandles};
