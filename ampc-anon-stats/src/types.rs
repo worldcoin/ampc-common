@@ -122,6 +122,7 @@ pub enum AnonStatsContext {
     FACE = 2,
 }
 
+#[derive(Clone)]
 pub struct AnonStatsMapping<T> {
     stats: Vec<(i64, T)>,
 }
