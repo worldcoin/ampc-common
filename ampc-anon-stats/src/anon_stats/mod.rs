@@ -20,3 +20,12 @@ pub fn calculate_iris_threshold_a(n_buckets: usize, upper_match_threshold_ratio:
         })
         .collect_vec()
 }
+
+pub fn calculate_iris_threshold_score_normalization(
+    n_buckets: usize,
+    upper_match_threshold_ratio: f64,
+) -> Vec<f64> {
+    (1..=n_buckets)
+        .map(|x: usize| upper_match_threshold_ratio / (n_buckets as f64) * (x as f64))
+        .collect_vec()
+}

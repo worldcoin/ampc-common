@@ -60,6 +60,31 @@ pub async fn start_coordination_server<T>(
 where
     T: Serialize + DeserializeOwned + Clone + Send + 'static,
 {
+    start_coordination_server_with_extra_routes(
+        config,
+        task_monitor,
+        shutdown_handler,
+        my_state,
+        batch_sync_shared_state,
+        None,
+    )
+    .await
+}
+
+/// Like [`start_coordination_server`] but accepts optional extra axum routes
+/// that are merged into the coordination HTTP server. Use this to add
+/// endpoints that need live DB access (e.g., `/rerand-watermark`).
+pub async fn start_coordination_server_with_extra_routes<T>(
+    config: &ServerCoordinationConfig,
+    task_monitor: &mut TaskMonitor,
+    shutdown_handler: &Arc<ShutdownHandler>,
+    my_state: &T,
+    batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
+    extra_routes: Option<Router>,
+) -> (Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>, String)
+where
+    T: Serialize + DeserializeOwned + Clone + Send + 'static,
+{
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
@@ -139,6 +164,11 @@ where
 
             // Merge runtime config routes
             app = app.merge(runtime_config_routes());
+
+            // Merge caller-provided extra routes (e.g., /rerand-watermark)
+            if let Some(extra) = extra_routes {
+                app = app.merge(extra);
+            }
 
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
                 .await

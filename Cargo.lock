@@ -99,6 +99,7 @@ dependencies = [
  "dashmap",
  "eyre",
  "futures",
+ "hex",
  "itertools 0.13.0",
  "metrics",
  "num-traits",

@@ -189,6 +189,14 @@ impl<T: IntRing2k> Mul<Self> for &Share<T> {
     }
 }
 
+impl<T: IntRing2k> Mul<Self> for Share<T> {
+    type Output = RingElement<T>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.a * rhs.a + self.b * rhs.a + self.a * rhs.b
+    }
+}
+
 impl<T: IntRing2k> BitXor<Self> for &Share<T> {
     type Output = Share<T>;
 
