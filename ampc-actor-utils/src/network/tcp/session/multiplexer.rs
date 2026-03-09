@@ -177,6 +177,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             DescriptorByte::VecRing16
                 | DescriptorByte::VecRing32
                 | DescriptorByte::VecRing64
+                | DescriptorByte::VecRing48
                 | DescriptorByte::NetworkVec
                 | DescriptorByte::Bytes
         ) {
@@ -184,6 +185,11 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             buf_offset += 4;
             let payload_len = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
             base_len + payload_len
+        } else if nd == DescriptorByte::VecRingBit {
+            reader.read_exact(&mut buf[1..5]).await?;
+            buf_offset += 4;
+            let bit_count = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            base_len + bit_count.div_ceil(8)
         } else {
             base_len
         };
