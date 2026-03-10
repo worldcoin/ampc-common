@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 profiling = ["dep:pprof"]
+runtime_config = []
 
 [dependencies]
 axum = { workspace = true }

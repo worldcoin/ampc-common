@@ -13,8 +13,7 @@ use std::sync::{LazyLock, Mutex};
 
 /// When set to `Some(n)`, overrides the dynamic batch size calculation.
 /// All parties must have the same value for correct MPC operation.
-pub static FIXED_BATCH_SIZE: LazyLock<Mutex<Option<usize>>> =
-    LazyLock::new(|| Mutex::new(None));
+pub static FIXED_BATCH_SIZE: LazyLock<Mutex<Option<usize>>> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigUpdate {
@@ -34,10 +33,7 @@ pub struct ConfigResponse {
 /// - `GET /config` — returns the current runtime config
 /// - `POST /config` — updates the runtime config
 pub fn runtime_config_routes() -> Router {
-    Router::new().route(
-        "/config",
-        get(get_config).post(post_config),
-    )
+    Router::new().route("/config", get(get_config).post(post_config))
 }
 
 async fn get_config() -> impl IntoResponse {
@@ -60,7 +56,10 @@ async fn post_config(Json(update): Json<ConfigUpdate>) -> impl IntoResponse {
         }
     }
 
-    (StatusCode::OK, Json(ConfigResponse {
-        fixed_batch_size: update.fixed_batch_size,
-    }))
+    (
+        StatusCode::OK,
+        Json(ConfigResponse {
+            fixed_batch_size: update.fixed_batch_size,
+        }),
+    )
 }
