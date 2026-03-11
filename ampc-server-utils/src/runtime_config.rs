@@ -21,12 +21,12 @@ static FIXED_BATCH_SIZE: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::n
 pub struct ConfigUpdate {
     /// If `Some(n)`, sets a fixed batch size of `n`. If `None`, clears the
     /// override and reverts to dynamic batch sizing.
-    pub fixed_batch_size: Option<usize>,
+    pub fixed_batch_size: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
-    pub fixed_batch_size: Option<usize>,
+    pub fixed_batch_size: Option<u32>,
 }
 
 /// Returns a router with runtime configuration endpoints.
@@ -47,13 +47,13 @@ pub fn get_fixed_batch_size() -> Option<usize> {
 
 async fn get_config() -> impl IntoResponse {
     Json(ConfigResponse {
-        fixed_batch_size: get_fixed_batch_size(),
+        fixed_batch_size: get_fixed_batch_size().map(|x| x as u32),
     })
 }
 
 async fn post_config(Json(update): Json<ConfigUpdate>) -> impl IntoResponse {
     FIXED_BATCH_SIZE.store(
-        update.fixed_batch_size.unwrap_or_default(),
+        update.fixed_batch_size.unwrap_or_default() as usize,
         Ordering::Relaxed,
     );
     match update.fixed_batch_size {
