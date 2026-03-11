@@ -494,7 +494,7 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances_plain_ids<T>(
     session: &mut Session,
-    swap_bits: Vec<Share<Bit>>,
+    swap_when_zero_bits: Vec<Share<Bit>>,
     list: &[(u32, DistanceShare<T>)],
     indices: &[(usize, usize)],
 ) -> Result<Vec<IdDistance<T>>>
@@ -502,9 +502,22 @@ where
     T: IntRing2k + NetworkInt + RingRandFillable + From<u32>,
     Standard: Distribution<T>,
 {
-    if swap_bits.len() != indices.len() {
+    if swap_when_zero_bits.len() != indices.len() {
         eyre::bail!("swap bits and indices must have the same length");
     }
+
+    let list_len = list.len();
+    for (idx1, idx2) in indices.iter() {
+        if *idx1 >= list_len || *idx2 >= list_len {
+            bail!(
+                "index out of bounds in swap_indices: ({}, {}) for list of length {}",
+                idx1,
+                idx2,
+                list_len
+            );
+        }
+    }
+
     let role = session.own_role();
     // Convert vector ids into trivial shares (promoted to ring T)
     let mut encrypted_list = list
@@ -515,16 +528,14 @@ where
         })
         .collect::<Vec<_>>();
     // Lift swap bits to T shares
-    let swap_bits_lifted: Vec<Share<T>> = bit_inject(session, VecShare::<Bit>::new_vec(swap_bits))
-        .await?
-        .inner();
+    let swap_bits_lifted: Vec<Share<T>> =
+        bit_inject(session, VecShare::<Bit>::new_vec(swap_when_zero_bits))
+            .await?
+            .inner();
 
     let distances_to_swap = indices
         .iter()
-        .filter_map(|(idx1, idx2)| match (list.get(*idx1), list.get(*idx2)) {
-            (Some((_, d1)), Some((_, d2))) => Some((*d1, *d2)),
-            _ => None,
-        })
+        .map(|(idx1, idx2)| (list[*idx1].1, list[*idx2].1))
         .collect::<Vec<_>>();
     // Select the first distance in each pair based on the control bits
     let first_distances =
@@ -570,7 +581,7 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances<T>(
     session: &mut Session,
-    swap_bits: Vec<Share<Bit>>,
+    swap_when_zero_bits: Vec<Share<Bit>>,
     list: &[IdDistance<T>],
     indices: &[(usize, usize)],
 ) -> Result<Vec<IdDistance<T>>>
@@ -578,13 +589,14 @@ where
     T: IntRing2k + NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
 {
-    if swap_bits.len() != indices.len() {
+    if swap_when_zero_bits.len() != indices.len() {
         return Err(eyre!("swap bits and indices must have the same length"));
     }
     // Lift bits to T shares
-    let swap_bits_lifted: Vec<Share<T>> = bit_inject(session, VecShare::<Bit>::new_vec(swap_bits))
-        .await?
-        .inner();
+    let swap_bits_lifted: Vec<Share<T>> =
+        bit_inject(session, VecShare::<Bit>::new_vec(swap_when_zero_bits))
+            .await?
+            .inner();
 
     // A helper closure to compute the difference of two input shares and prepare the a part of the product of this difference and the control bit.
     let mut mul_share_a = |x: Share<T>, y: Share<T>, sb: &Share<T>| -> RingElement<T> {
@@ -731,7 +743,10 @@ pub async fn batch_signed_lift_vec_ring48(
 mod tests {
     use super::*;
     use crate::execution::local::{generate_local_identities, LocalRuntime};
+    use crate::protocol::test_utils::create_array_sharing;
+    use aes_prng::AesRng;
     use rand::RngCore;
+    use rand::SeedableRng;
     use tokio::task::JoinSet;
 
     #[tokio::test]
@@ -822,5 +837,310 @@ mod tests {
         // The shared seed should be XOR of all three seeds
         let expected: PrfSeed = std::array::from_fn(|i| seeds[0][i] ^ seeds[1][i] ^ seeds[2][i]);
         assert_eq!(results[0], expected);
+    }
+
+    #[tokio::test]
+    async fn test_conditionally_select_distances_with_plain_ids() {
+        let mut rng = AesRng::seed_from_u64(44_u64);
+
+        // Two distance pairs with plaintext ids
+        // When control bit = 1, select left; when 0, select right.
+        let left_ids: Vec<u32> = vec![10, 20];
+        let right_ids: Vec<u32> = vec![30, 40];
+        let left_code: Vec<u32> = vec![100, 200];
+        let left_mask: Vec<u32> = vec![500, 600];
+        let right_code: Vec<u32> = vec![300, 400];
+        let right_mask: Vec<u32> = vec![700, 800];
+        // control bits: [1, 0] -> select left for first, right for second
+        let control_vals: Vec<u32> = vec![1, 0];
+
+        // Share all values
+        let all_vals: Vec<u32> = [
+            &left_code[..],
+            &left_mask[..],
+            &right_code[..],
+            &right_mask[..],
+            &control_vals[..],
+        ]
+        .concat();
+        let shares = create_array_sharing(&mut rng, &all_vals);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = shares.of_party(i).clone();
+            let left_ids = left_ids.clone();
+            let right_ids = right_ids.clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let n = 2usize;
+                let left_dist: Vec<(u32, DistanceShare<u32>)> = (0..n)
+                    .map(|j| {
+                        (
+                            left_ids[j],
+                            DistanceShare::new(shares_i[j], shares_i[n + j]),
+                        )
+                    })
+                    .collect();
+                let right_dist: Vec<(u32, DistanceShare<u32>)> = (0..n)
+                    .map(|j| {
+                        (
+                            right_ids[j],
+                            DistanceShare::new(shares_i[2 * n + j], shares_i[3 * n + j]),
+                        )
+                    })
+                    .collect();
+                let control_bits: Vec<Share<u32>> = (0..n).map(|j| shares_i[4 * n + j]).collect();
+
+                let result = conditionally_select_distances_with_plain_ids(
+                    &mut session,
+                    left_dist,
+                    right_dist,
+                    control_bits,
+                )
+                .await
+                .unwrap();
+
+                // Open id, code_dot, mask_dot for each result
+                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+
+                let opened_ids = open_ring(&mut session, &ids).await.unwrap();
+                let opened_codes = open_ring(&mut session, &codes).await.unwrap();
+                let opened_masks = open_ring(&mut session, &masks).await.unwrap();
+                (opened_ids, opened_codes, opened_masks)
+            });
+        }
+
+        let results: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = jobs.join_all().await;
+
+        // All parties agree
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+
+        let (ids, codes, masks) = &results[0];
+        // control bit 1 -> left selected: id=10, code=100, mask=500
+        assert_eq!(ids[0], 10);
+        assert_eq!(codes[0], 100);
+        assert_eq!(masks[0], 500);
+        // control bit 0 -> right selected: id=40, code=400, mask=800
+        assert_eq!(ids[1], 40);
+        assert_eq!(codes[1], 400);
+        assert_eq!(masks[1], 800);
+    }
+
+    #[tokio::test]
+    async fn test_conditionally_select_distances_with_shared_ids() {
+        let mut rng = AesRng::seed_from_u64(45_u64);
+
+        // (id, code_dot, mask_dot) for left and right, plus control bits
+        // left:  [(10, 100, 500), (20, 200, 600)]
+        // right: [(30, 300, 700), (40, 400, 800)]
+        // control: [0, 1] -> select right for first, left for second
+        let vals: Vec<u32> = vec![
+            10, 100, 500, // left[0]: id, code, mask
+            20, 200, 600, // left[1]
+            30, 300, 700, // right[0]
+            40, 400, 800, // right[1]
+            0, 1, // control bits
+        ];
+        let shares = create_array_sharing(&mut rng, &vals);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let s = shares.of_party(i).clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let left: Vec<IdDistance<u32>> = vec![
+                    (s[0], DistanceShare::new(s[1], s[2])),
+                    (s[3], DistanceShare::new(s[4], s[5])),
+                ];
+                let right: Vec<IdDistance<u32>> = vec![
+                    (s[6], DistanceShare::new(s[7], s[8])),
+                    (s[9], DistanceShare::new(s[10], s[11])),
+                ];
+                let control = vec![s[12], s[13]];
+
+                let result = conditionally_select_distances_with_shared_ids(
+                    &mut session,
+                    left,
+                    right,
+                    control,
+                )
+                .await
+                .unwrap();
+
+                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+
+                let opened_ids = open_ring(&mut session, &ids).await.unwrap();
+                let opened_codes = open_ring(&mut session, &codes).await.unwrap();
+                let opened_masks = open_ring(&mut session, &masks).await.unwrap();
+                (opened_ids, opened_codes, opened_masks)
+            });
+        }
+
+        let results: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = jobs.join_all().await;
+
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+
+        let (ids, codes, masks) = &results[0];
+        // control=0 -> right: id=30, code=300, mask=700
+        assert_eq!(ids[0], 30);
+        assert_eq!(codes[0], 300);
+        assert_eq!(masks[0], 700);
+        // control=1 -> left: id=20, code=200, mask=600
+        assert_eq!(ids[1], 20);
+        assert_eq!(codes[1], 200);
+        assert_eq!(masks[1], 600);
+    }
+
+    #[tokio::test]
+    async fn test_conditionally_swap_distances_plain_ids() {
+        let mut rng = AesRng::seed_from_u64(46_u64);
+
+        // List: [(10, (100, 500)), (20, (200, 600)), (30, (300, 700)), (40, (400, 800))]
+        // Non-overlapping swap indices: [(0, 1), (2, 3)]
+        // Swap-when-zero bits: [0, 1]
+        //   bit=0 for (0,1) -> swap positions 0 and 1
+        //   bit=1 for (2,3) -> no swap
+        let list_ids: Vec<u32> = vec![10, 20, 30, 40];
+        let code_vals: Vec<u32> = vec![100, 200, 300, 400];
+        let mask_vals: Vec<u32> = vec![500, 600, 700, 800];
+
+        let all_vals: Vec<u32> = [&code_vals[..], &mask_vals[..]].concat();
+        let shares = create_array_sharing(&mut rng, &all_vals);
+
+        let bit_vals: Vec<Bit> = vec![Bit::new(false), Bit::new(true)];
+        let bit_shares = create_array_sharing(&mut rng, &bit_vals);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let s = shares.of_party(i).clone();
+            let bs = bit_shares.of_party(i).clone();
+            let list_ids = list_ids.clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let n = 4usize;
+                let list: Vec<(u32, DistanceShare<u32>)> = (0..n)
+                    .map(|j| (list_ids[j], DistanceShare::new(s[j], s[n + j])))
+                    .collect();
+                let indices = vec![(0usize, 1usize), (2usize, 3usize)];
+
+                let result =
+                    conditionally_swap_distances_plain_ids(&mut session, bs, &list, &indices)
+                        .await
+                        .unwrap();
+
+                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+
+                let opened_ids = open_ring(&mut session, &ids).await.unwrap();
+                let opened_codes = open_ring(&mut session, &codes).await.unwrap();
+                let opened_masks = open_ring(&mut session, &masks).await.unwrap();
+                (opened_ids, opened_codes, opened_masks)
+            });
+        }
+
+        let results: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = jobs.join_all().await;
+
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+
+        let (ids, codes, masks) = &results[0];
+        // bit=0 for (0,1) -> swap positions 0 and 1
+        assert_eq!(ids[0], 20);
+        assert_eq!(codes[0], 200);
+        assert_eq!(masks[0], 600);
+        assert_eq!(ids[1], 10);
+        assert_eq!(codes[1], 100);
+        assert_eq!(masks[1], 500);
+        // bit=1 for (2,3) -> no swap
+        assert_eq!(ids[2], 30);
+        assert_eq!(codes[2], 300);
+        assert_eq!(masks[2], 700);
+        assert_eq!(ids[3], 40);
+        assert_eq!(codes[3], 400);
+        assert_eq!(masks[3], 800);
+    }
+
+    #[tokio::test]
+    async fn test_conditionally_swap_distances() {
+        let mut rng = AesRng::seed_from_u64(47_u64);
+
+        // List: [(id=10, code=100, mask=500), (id=20, code=200, mask=600), (id=30, code=300, mask=700)]
+        // Swap indices: [(0, 2)]
+        // Swap-when-zero bits: [0] -> swap positions 0 and 2
+        let vals: Vec<u32> = vec![
+            10, 100, 500, // item 0
+            20, 200, 600, // item 1
+            30, 300, 700, // item 2
+        ];
+        let shares = create_array_sharing(&mut rng, &vals);
+        let bit_vals: Vec<Bit> = vec![Bit::new(false)];
+        let bit_shares = create_array_sharing(&mut rng, &bit_vals);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let s = shares.of_party(i).clone();
+            let bs = bit_shares.of_party(i).clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let list: Vec<IdDistance<u32>> = vec![
+                    (s[0], DistanceShare::new(s[1], s[2])),
+                    (s[3], DistanceShare::new(s[4], s[5])),
+                    (s[6], DistanceShare::new(s[7], s[8])),
+                ];
+                let indices = vec![(0usize, 2usize)];
+
+                let result = conditionally_swap_distances(&mut session, bs, &list, &indices)
+                    .await
+                    .unwrap();
+
+                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+
+                let opened_ids = open_ring(&mut session, &ids).await.unwrap();
+                let opened_codes = open_ring(&mut session, &codes).await.unwrap();
+                let opened_masks = open_ring(&mut session, &masks).await.unwrap();
+                (opened_ids, opened_codes, opened_masks)
+            });
+        }
+
+        let results: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = jobs.join_all().await;
+
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+
+        let (ids, codes, masks) = &results[0];
+        // bit=0 -> swap positions 0 and 2
+        // pos0 = old pos2: id=30, code=300, mask=700
+        // pos1 = unchanged: id=20, code=200, mask=600
+        // pos2 = old pos0: id=10, code=100, mask=500
+        assert_eq!(ids[0], 30);
+        assert_eq!(codes[0], 300);
+        assert_eq!(masks[0], 700);
+        assert_eq!(ids[1], 20);
+        assert_eq!(codes[1], 200);
+        assert_eq!(masks[1], 600);
+        assert_eq!(ids[2], 10);
+        assert_eq!(codes[2], 100);
+        assert_eq!(masks[2], 500);
     }
 }
