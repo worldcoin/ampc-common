@@ -9,11 +9,13 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::sync::{LazyLock, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::LazyLock;
 
-/// When set to `Some(n)`, overrides the dynamic batch size calculation.
+/// When non-zero, overrides the dynamic batch size calculation.
+/// This value is mapped to an Option. Zero corresponds to None.
 /// All parties must have the same value for correct MPC operation.
-pub static FIXED_BATCH_SIZE: LazyLock<Mutex<Option<usize>>> = LazyLock::new(|| Mutex::new(None));
+static FIXED_BATCH_SIZE: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigUpdate {
@@ -36,22 +38,29 @@ pub fn runtime_config_routes() -> Router {
     Router::new().route("/config", get(get_config).post(post_config))
 }
 
+pub fn get_fixed_batch_size() -> Option<usize> {
+    match FIXED_BATCH_SIZE.load(Ordering::Relaxed) {
+        0 => None,
+        x => Some(x),
+    }
+}
+
 async fn get_config() -> impl IntoResponse {
-    let fixed = *FIXED_BATCH_SIZE.lock().expect("FIXED_BATCH_SIZE poisoned");
     Json(ConfigResponse {
-        fixed_batch_size: fixed,
+        fixed_batch_size: get_fixed_batch_size(),
     })
 }
 
 async fn post_config(Json(update): Json<ConfigUpdate>) -> impl IntoResponse {
-    let mut fixed = FIXED_BATCH_SIZE.lock().expect("FIXED_BATCH_SIZE poisoned");
-    *fixed = update.fixed_batch_size;
-
+    FIXED_BATCH_SIZE.store(
+        update.fixed_batch_size.unwrap_or_default(),
+        Ordering::Relaxed,
+    );
     match update.fixed_batch_size {
-        Some(size) => {
+        Some(size) if size != 0 => {
             tracing::info!("Runtime config: fixed_batch_size set to {}", size);
         }
-        None => {
+        _ => {
             tracing::info!("Runtime config: fixed_batch_size cleared (dynamic sizing)");
         }
     }

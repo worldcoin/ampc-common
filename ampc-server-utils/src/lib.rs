@@ -40,9 +40,7 @@ pub use task_monitor::TaskMonitor;
 pub fn get_fixed_batch_size() -> Option<usize> {
     #[cfg(feature = "runtime_config")]
     {
-        *runtime_config::FIXED_BATCH_SIZE
-            .lock()
-            .expect("FIXED_BATCH_SIZE poisoned")
+        runtime_config::get_fixed_batch_size()
     }
     #[cfg(not(feature = "runtime_config"))]
     {
