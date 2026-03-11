@@ -1,6 +1,7 @@
 use crate::protocol::binary::bit_inject;
+use crate::protocol::fhd_ops::min_of_pair_batch;
 use crate::protocol::nhd_ops::{nhd_greater_than_threshold, nhd_min_of_pair_batch};
-use crate::protocol::ops::{min_of_pair_batch, DistancePair, B};
+use crate::protocol::ops::{DistancePair, B};
 use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::{Ring48, VecShare};
@@ -234,8 +235,7 @@ mod tests {
             session::{Session, SessionHandles},
         },
         protocol::{
-            ops::{open_ring, translate_threshold_a},
-            test_utils::create_array_sharing,
+            fhd_ops::translate_threshold_a, ops::open_ring, test_utils::create_array_sharing,
         },
     };
     use aes_prng::AesRng;

@@ -2,8 +2,6 @@
 // NHD (Normalized Hamming Distance) protocol functions
 // ---------------------------------------------------------------------------
 
-use std::ops::Not;
-
 use ampc_secret_sharing::{
     shares::{bit::Bit, DistanceShare, Ring48, VecShare},
     Share,
@@ -81,8 +79,7 @@ pub async fn nhd_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
 ) -> Result<Vec<bool>> {
-    let diff = nhd_cross_mul(session, distances).await?;
-    let bits = extract_msb_batch(session, &diff).await?;
+    let bits = nhd_oblivious_cross_compare(session, distances).await?;
     let opened_b = open_bin(session, &bits).await?;
     opened_b.into_iter().map(|x| Ok(x.convert())).collect()
 }
@@ -115,29 +112,6 @@ pub async fn nhd_min_of_pair_batch(
 ) -> Result<Vec<DistanceShare<Ring48>>> {
     let bits = nhd_oblivious_cross_compare_lifted(session, distances).await?;
     conditionally_select_distance(session, distances, bits.as_slice()).await
-}
-
-/// Box the future returned by nhd_oblivious_cross_compare to make it passable to min_round_robin_batch_with.
-fn nhd_oblivious_cross_compare_boxed<'a>(
-    session: &'a mut Session,
-    pairs: &'a [DistancePair<Ring48>],
-) -> crate::protocol::min_round_robin::CrossCompareFnResult<'a> {
-    Box::pin(nhd_oblivious_cross_compare(session, pairs))
-}
-
-/// Round-robin minimum distance selection for NHD.
-pub async fn nhd_min_round_robin_batch(
-    session: &mut Session,
-    distances: &[DistanceShare<Ring48>],
-    batch_size: usize,
-) -> Result<Vec<DistanceShare<Ring48>>> {
-    crate::protocol::min_round_robin::min_round_robin_batch_with(
-        session,
-        distances,
-        batch_size,
-        nhd_oblivious_cross_compare_boxed,
-    )
-    .await
 }
 
 /// Lifts `u16` distance shares to `Ring48` and chunks them into `DistanceShare<Ring48>`.
@@ -186,21 +160,6 @@ pub async fn nhd_greater_than_threshold(
         .collect();
 
     extract_msb_batch(session, &results).await
-}
-
-/// Checks if distances are less than or equal to the NHD threshold (i.e., is_match).
-///
-/// This is the negation of `nhd_greater_than_threshold`: returns `true` when
-/// the distance is at or below threshold (match), `false` otherwise.
-pub async fn nhd_lte_threshold_and_open(
-    session: &mut Session,
-    distances: &[DistanceShare<Ring48>],
-    threshold_ratio: f64,
-) -> Result<Vec<bool>> {
-    let bits = nhd_greater_than_threshold(session, distances, threshold_ratio).await?;
-    open_bin(session, &bits)
-        .await
-        .map(|v| v.into_iter().map(|x| x.convert().not()).collect())
 }
 
 /// Plaintext NHD threshold check: returns `true` if the distance represents a match

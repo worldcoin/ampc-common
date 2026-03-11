@@ -1,6 +1,6 @@
 pub mod anon_stats;
 pub mod binary;
-pub mod min_round_robin;
+pub mod fhd_ops;
 pub mod nhd_ops;
 pub mod ops;
 pub mod prf;
