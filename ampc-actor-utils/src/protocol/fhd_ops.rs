@@ -155,14 +155,20 @@ pub async fn min_of_pair_batch(
 
 #[cfg(test)]
 mod tests {
-    use crate::{execution::{local::{LocalRuntime, generate_local_identities}, session::SessionHandles}, protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing}};
+    use crate::{
+        execution::{
+            local::{generate_local_identities, LocalRuntime},
+            session::SessionHandles,
+        },
+        protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing},
+    };
 
     use super::*;
 
-    use std::{collections::HashMap, sync::Arc};
     use aes_prng::AesRng;
     use eyre::{bail, Result};
     use rand::SeedableRng;
+    use std::{collections::HashMap, sync::Arc};
     use tokio::{sync::Mutex, task::JoinSet};
     use tracing::instrument;
 
