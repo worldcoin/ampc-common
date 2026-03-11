@@ -13,13 +13,15 @@ use ampc_secret_sharing::shares::{
 };
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
+use rand_distr::{Distribution, Standard};
+use std::ops::Not;
 use tracing::instrument;
 
 pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
 pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
 
-pub(crate) const B_BITS: u64 = 16;
-pub(crate) const B: u64 = 1 << B_BITS;
+pub const B_BITS: u64 = 16;
+pub const B: u64 = 1 << B_BITS;
 
 // ---------------------------------------------------------------------------
 // Batched replicated multiplication
@@ -333,6 +335,336 @@ where
         .collect())
 }
 
+/// Conditionally selects equally-sized slices of input shares based on control bits.
+/// If the control bit is 1, it selects the left value shares; otherwise, it selects the right value share.
+async fn select_shared_slices_by_bits<T>(
+    session: &mut Session,
+    left_values: &[Share<T>],
+    right_values: &[Share<T>],
+    control_bits: &[Share<T>],
+    slice_size: usize,
+) -> Result<Vec<Share<T>>>
+where
+    T: IntRing2k + NetworkInt,
+    Standard: Distribution<T>,
+{
+    if left_values.len() != right_values.len() {
+        bail!("Left and right values must have the same length");
+    }
+    if !left_values.len().is_multiple_of(slice_size) {
+        bail!("Left and right values length must be multiple of slice size");
+    }
+    if control_bits.len() != left_values.len() / slice_size {
+        bail!("Number of control bits must match number of slices");
+    }
+
+    // Conditional multiplexing:
+    // If control bit is 1, select left_value, else select right_value.
+    // res = c * (left_value - right_value) + right_value
+    // Compute c * (left_value - right_value)
+    let res_a: Vec<RingElement<T>> = izip!(
+        left_values.chunks(slice_size),
+        right_values.chunks(slice_size),
+        control_bits.iter()
+    )
+    .flat_map(|(left_chunk, right_chunk, c)| {
+        left_chunk
+            .iter()
+            .zip(right_chunk.iter())
+            .map(|(left, right)| {
+                let diff = *left - *right;
+                session.prf.gen_zero_share::<T>() + c.a * diff.a + c.b * diff.a + c.a * diff.b
+            })
+            .collect::<Vec<_>>()
+    })
+    .collect();
+
+    let network = &mut session.network_session;
+
+    network.send_next(T::new_network_vec(res_a.clone())).await?;
+
+    let res_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
+
+    // Pack networking messages into shares and
+    // compute the result by adding the right shares
+    Ok(izip!(res_a, res_b)
+        .map(|(a, b)| Share::new(a, b))
+        .zip(right_values.iter())
+        .map(|(res, right)| res + right)
+        .collect())
+}
+
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn conditionally_select_distances_with_plain_ids<T>(
+    session: &mut Session,
+    left_distances: Vec<(u32, DistanceShare<T>)>,
+    right_distances: Vec<(u32, DistanceShare<T>)>,
+    control_bits: Vec<Share<T>>,
+) -> Result<Vec<IdDistance<T>>>
+where
+    T: IntRing2k + NetworkInt + From<u32>,
+    Standard: Distribution<T>,
+{
+    if left_distances.len() != control_bits.len() {
+        eyre::bail!("Number of distances must match number of control bits");
+    }
+    if left_distances.len() != right_distances.len() {
+        eyre::bail!("Left and right distances must have the same length");
+    }
+    if left_distances.is_empty() {
+        eyre::bail!("Distances must not be empty");
+    }
+
+    // Now select distances
+    let (left_ids, left_dist): (Vec<_>, Vec<_>) = left_distances.into_iter().unzip();
+    let (right_ids, right_dist): (Vec<_>, Vec<_>) = right_distances.into_iter().unzip();
+    let left_dist = left_dist
+        .into_iter()
+        .flat_map(|d| [d.code_dot, d.mask_dot])
+        .collect::<Vec<_>>();
+    let right_dist = right_dist
+        .into_iter()
+        .flat_map(|d| [d.code_dot, d.mask_dot])
+        .collect::<Vec<_>>();
+
+    let distances =
+        select_shared_slices_by_bits(session, &left_dist, &right_dist, &control_bits, 2)
+            .await?
+            .into_iter()
+            .tuples()
+            .map(|(code_dot, mask_dot)| DistanceShare::new(code_dot, mask_dot));
+
+    // Select ids first: c * (left_id - right_id) + right_id
+    let ids = izip!(left_ids, right_ids, control_bits).map(|(left_id, right_id, c)| {
+        let diff = left_id.wrapping_sub(right_id);
+        let mut res = c * RingElement(T::from(diff));
+        res.add_assign_const_role(T::from(right_id), session.own_role());
+        res
+    });
+
+    Ok(izip!(ids, distances)
+        .map(|(id, distance)| (id, distance))
+        .collect::<Vec<_>>())
+}
+
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn conditionally_select_distances_with_shared_ids<T>(
+    session: &mut Session,
+    left_distances: Vec<IdDistance<T>>,
+    right_distances: Vec<IdDistance<T>>,
+    control_bits: Vec<Share<T>>,
+) -> Result<Vec<IdDistance<T>>>
+where
+    T: IntRing2k + NetworkInt,
+    Standard: Distribution<T>,
+{
+    if left_distances.len() != control_bits.len() {
+        eyre::bail!("Number of distances must match number of control bits");
+    }
+    if left_distances.len() != right_distances.len() {
+        eyre::bail!("Left and right distances must have the same length");
+    }
+    if left_distances.is_empty() {
+        eyre::bail!("Distances must not be empty");
+    }
+
+    let left_dist = left_distances
+        .into_iter()
+        .flat_map(|(id, d)| [id, d.code_dot, d.mask_dot])
+        .collect::<Vec<_>>();
+    let right_dist = right_distances
+        .into_iter()
+        .flat_map(|(id, d)| [id, d.code_dot, d.mask_dot])
+        .collect::<Vec<_>>();
+    let distances =
+        select_shared_slices_by_bits(session, &left_dist, &right_dist, &control_bits, 3)
+            .await?
+            .into_iter()
+            .tuples()
+            .map(|(id, code_dot, mask_dot)| (id, DistanceShare::new(code_dot, mask_dot)))
+            .collect::<Vec<_>>();
+
+    Ok(distances)
+}
+
+/// Conditionally swaps the distance shares based on control bits.
+/// Given the ith pair of indices (i1, i2), the function does the following.
+/// If the control bit is 0, it swaps tuples (id, distance share) with index i1 and i2,
+/// otherwise it does nothing.
+/// The vector ids are in plaintext and propagated in secret shared form.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn conditionally_swap_distances_plain_ids<T>(
+    session: &mut Session,
+    swap_bits: Vec<Share<Bit>>,
+    list: &[(u32, DistanceShare<T>)],
+    indices: &[(usize, usize)],
+) -> Result<Vec<IdDistance<T>>>
+where
+    T: IntRing2k + NetworkInt + RingRandFillable + From<u32>,
+    Standard: Distribution<T>,
+{
+    if swap_bits.len() != indices.len() {
+        eyre::bail!("swap bits and indices must have the same length");
+    }
+    let role = session.own_role();
+    // Convert vector ids into trivial shares (promoted to ring T)
+    let mut encrypted_list = list
+        .iter()
+        .map(|(id, d)| {
+            let shared_index = Share::from_const(T::from(*id), role);
+            (shared_index, *d)
+        })
+        .collect::<Vec<_>>();
+    // Lift swap bits to T shares
+    let swap_bits_lifted: Vec<Share<T>> = bit_inject(session, VecShare::<Bit>::new_vec(swap_bits))
+        .await?
+        .inner();
+
+    let distances_to_swap = indices
+        .iter()
+        .filter_map(|(idx1, idx2)| match (list.get(*idx1), list.get(*idx2)) {
+            (Some((_, d1)), Some((_, d2))) => Some((*d1, *d2)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    // Select the first distance in each pair based on the control bits
+    let first_distances =
+        conditionally_select_distance(session, &distances_to_swap, &swap_bits_lifted).await?;
+    // Select the second distance in each pair as sum of both distances minus the first selected distance
+    let second_distances = distances_to_swap
+        .into_iter()
+        .zip(first_distances.iter())
+        .map(|(d_pair, first_d)| {
+            DistanceShare::new(
+                d_pair.0.code_dot + d_pair.1.code_dot - first_d.code_dot,
+                d_pair.0.mask_dot + d_pair.1.mask_dot - first_d.mask_dot,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for (bit, (idx1, idx2), first_d, second_d) in izip!(
+        swap_bits_lifted.iter(),
+        indices.iter(),
+        first_distances,
+        second_distances
+    ) {
+        let mut not_bit = -bit;
+        not_bit.add_assign_const_role(T::from(1u32), role);
+        let id1 = T::from(list[*idx1].0);
+        let id2 = T::from(list[*idx2].0);
+        // Only propagate index and skip version id.
+        // This computation is local as indices are public.
+        let first_id = bit * id1 + not_bit * id2;
+        let second_id = bit * id2 + not_bit * id1;
+        encrypted_list[*idx1] = (first_id, first_d);
+        encrypted_list[*idx2] = (second_id, second_d);
+    }
+    Ok(encrypted_list)
+}
+
+/// Conditionally swaps the distance shares based on control bits.
+/// Given the ith pair of indices (i1, i2), the function does the following.
+/// If the ith control bit is 0, it swaps tuples (0-indexed vector id, distance share) with index i1 and i2,
+/// otherwise it does nothing.
+/// Assumes that the input shares are originally 16-bit and lifted to T.
+/// The vector ids are 0-indexed and given in secret shared form.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn conditionally_swap_distances<T>(
+    session: &mut Session,
+    swap_bits: Vec<Share<Bit>>,
+    list: &[IdDistance<T>],
+    indices: &[(usize, usize)],
+) -> Result<Vec<IdDistance<T>>>
+where
+    T: IntRing2k + NetworkInt + RingRandFillable,
+    Standard: Distribution<T>,
+{
+    if swap_bits.len() != indices.len() {
+        return Err(eyre!("swap bits and indices must have the same length"));
+    }
+    // Lift bits to T shares
+    let swap_bits_lifted: Vec<Share<T>> = bit_inject(session, VecShare::<Bit>::new_vec(swap_bits))
+        .await?
+        .inner();
+
+    // A helper closure to compute the difference of two input shares and prepare the a part of the product of this difference and the control bit.
+    let mut mul_share_a = |x: Share<T>, y: Share<T>, sb: &Share<T>| -> RingElement<T> {
+        let diff = x - y;
+        session.prf.gen_zero_share::<T>() + sb.a * diff.a + sb.b * diff.a + sb.a * diff.b
+    };
+
+    // Conditional swapping:
+    // If control bit c is 1, return (d1, d2); otherwise, (d2, d1), which can be computed as:
+    // - first tuple element = c * (d1 - d2) + d2;
+    // - second tuple element = d1 - c * (d1 - d2).
+    // We need to do it for ids, code_dot and mask_dot.
+
+    // Compute c * (d1-d2)
+    let res_a: Vec<RingElement<T>> = indices
+        .iter()
+        .zip(swap_bits_lifted.iter())
+        .flat_map(|((idx1, idx2), sb)| {
+            let (id1, d1) = &list[*idx1];
+            let (id2, d2) = &list[*idx2];
+
+            let id = mul_share_a(*id1, *id2, sb);
+            let code_dot_a = mul_share_a(d1.code_dot, d2.code_dot, sb);
+            let mask_dot_a = mul_share_a(d1.mask_dot, d2.mask_dot, sb);
+            [id, code_dot_a, mask_dot_a]
+        })
+        .collect();
+
+    let network = &mut session.network_session;
+
+    network.send_next(T::new_network_vec(res_a.clone())).await?;
+
+    let res_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
+
+    // Finally compute the swapped tuples.
+    let swapped_distances = izip!(res_a, res_b)
+        // combine a and b part into shares
+        .map(|(a, b)| Share::new(a, b))
+        // combine the code and mask parts into DistanceShare
+        .tuples()
+        .map(|(id, code, mask)| {
+            (
+                id,
+                DistanceShare {
+                    code_dot: code,
+                    mask_dot: mask,
+                },
+            )
+        })
+        .zip(indices.iter())
+        .map(|((res_id, res_dist), (idx1, idx2))| {
+            let (id1, dist1) = &list[*idx1];
+            let (id2, dist2) = &list[*idx2];
+            // first tuple element = c * (d1 - d2) + d2
+            // second tuple element = d1 - c * (d1 - d2)
+            let first_id = res_id + *id2;
+            let second_id = *id1 - res_id;
+            let first_distance = DistanceShare {
+                code_dot: res_dist.code_dot + dist2.code_dot,
+                mask_dot: res_dist.mask_dot + dist2.mask_dot,
+            };
+            let second_distance = DistanceShare {
+                code_dot: dist1.code_dot - res_dist.code_dot,
+                mask_dot: dist1.mask_dot - res_dist.mask_dot,
+            };
+            ((first_id, first_distance), (second_id, second_distance))
+        })
+        .collect::<Vec<_>>();
+
+    // Update the input list with the swapped tuples.
+    let mut swapped_list = list.to_vec();
+    for (((id1, d1), (id2, d2)), (idx1, idx2)) in swapped_distances.into_iter().zip(indices) {
+        swapped_list[*idx1] = (id1, d1);
+        swapped_list[*idx2] = (id2, d2);
+    }
+
+    Ok(swapped_list)
+}
+
 /// Computes the `A` term of the threshold comparison based on the formula `A = ((1. - 2. * t) * B)`.
 #[inline]
 pub fn translate_threshold_a(t: f64) -> u32 {
@@ -341,6 +673,44 @@ pub fn translate_threshold_a(t: f64) -> u32 {
         "Threshold must be in the range [0, 1]"
     );
     ((1. - 2. * t) * (B as f64)) as u32
+}
+
+/// Compares the distance between two iris pairs to a threshold.
+///
+/// - Takes as input two code and mask dot products between two irises,
+///   i.e., code_dist = <iris1.code, iris2.code> and mask_dist = <iris1.mask, iris2.mask>,
+///   already lifted to 32 bits if they are originally 16-bit.
+/// - Multiplies with threshold constants B = 2^16 and A = ((1. - 2. * threshold_ratio) * B).
+/// - Compares mask_dist * A > code_dist * B.
+/// - This corresponds to "distance > threshold", that is NOT match.
+pub async fn fhd_greater_than_threshold(
+    session: &mut Session,
+    distances: &[DistanceShare<u32>],
+    threshold_ratio: f64,
+) -> Result<Vec<Share<Bit>>> {
+    let a = translate_threshold_a(threshold_ratio) as u64;
+    let diffs: Vec<Share<u32>> = distances
+        .iter()
+        .map(|d| {
+            let x = d.mask_dot * a as u32;
+            let y = d.code_dot * B as u32;
+            y - x
+        })
+        .collect();
+
+    extract_msb_batch(session, &diffs).await
+}
+
+/// Compares the given FHD distance to a threshold and reveals the bit "less than or equal".
+pub async fn fhd_lte_threshold_and_open(
+    session: &mut Session,
+    distances: &[DistanceShare<u32>],
+    threshold_ratio: f64,
+) -> Result<Vec<bool>> {
+    let bits = fhd_greater_than_threshold(session, distances, threshold_ratio).await?;
+    open_bin(session, &bits)
+        .await
+        .map(|v| v.into_iter().map(|x| x.convert().not()).collect())
 }
 
 /// Computes the cross product of distances shares represented as a fraction (code_dist, mask_dist).
@@ -401,6 +771,24 @@ pub async fn oblivious_cross_compare(
     extract_msb_batch(session, &diff).await
 }
 
+/// For every pair of distance shares (d1, d2), this computes the bit d2 < d1 and opens it.
+///
+/// The less-than operator is implemented in 2 steps:
+///
+/// 1. d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot is computed, which is a numerator of the fraction difference d2.code_dot / d2.mask_dot - d1.code_dot / d1.mask_dot.
+/// 2. The most significant bit of the result is extracted.
+///
+/// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
+pub async fn cross_compare(
+    session: &mut Session,
+    distances: &[DistancePair<u32>],
+) -> Result<Vec<bool>> {
+    let diff = cross_mul(session, distances).await?;
+    let bits = extract_msb_batch(session, &diff).await?;
+    let opened_b = open_bin(session, &bits).await?;
+    opened_b.into_iter().map(|x| Ok(x.convert())).collect()
+}
+
 /// For every pair of distance shares (d1, d2), this computes the secret-shared bit d2 < d1 and lift it to u32 shares.
 ///
 /// The less-than operator is implemented in 2 steps:
@@ -432,6 +820,29 @@ pub async fn min_of_pair_batch(
     let bits = oblivious_cross_compare_lifted(session, distances).await?;
 
     conditionally_select_distance(session, distances, bits.as_slice()).await
+}
+
+/// Box the future returned by oblivious_cross_compare to make it passable to min_round_robin_batch_with.
+fn fhd_oblivious_cross_compare_boxed<'a>(
+    session: &'a mut Session,
+    pairs: &'a [DistancePair<u32>],
+) -> crate::protocol::min_round_robin::CrossCompareFnResult<'a> {
+    Box::pin(oblivious_cross_compare(session, pairs))
+}
+
+/// Round-robin minimum distance selection for FHD.
+pub async fn fhd_min_round_robin_batch(
+    session: &mut Session,
+    distances: &[DistanceShare<u32>],
+    batch_size: usize,
+) -> Result<Vec<DistanceShare<u32>>> {
+    crate::protocol::min_round_robin::min_round_robin_batch_with(
+        session,
+        distances,
+        batch_size,
+        fhd_oblivious_cross_compare_boxed,
+    )
+    .await
 }
 
 /// Lifts a share of a vector (VecShare) of 16-bit values to a share of a vector

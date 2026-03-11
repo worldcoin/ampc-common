@@ -117,6 +117,29 @@ pub async fn nhd_min_of_pair_batch(
     conditionally_select_distance(session, distances, bits.as_slice()).await
 }
 
+/// Box the future returned by nhd_oblivious_cross_compare to make it passable to min_round_robin_batch_with.
+fn nhd_oblivious_cross_compare_boxed<'a>(
+    session: &'a mut Session,
+    pairs: &'a [DistancePair<Ring48>],
+) -> crate::protocol::min_round_robin::CrossCompareFnResult<'a> {
+    Box::pin(nhd_oblivious_cross_compare(session, pairs))
+}
+
+/// Round-robin minimum distance selection for NHD.
+pub async fn nhd_min_round_robin_batch(
+    session: &mut Session,
+    distances: &[DistanceShare<Ring48>],
+    batch_size: usize,
+) -> Result<Vec<DistanceShare<Ring48>>> {
+    crate::protocol::min_round_robin::min_round_robin_batch_with(
+        session,
+        distances,
+        batch_size,
+        nhd_oblivious_cross_compare_boxed,
+    )
+    .await
+}
+
 /// Lifts `u16` distance shares to `Ring48` and chunks them into `DistanceShare<Ring48>`.
 pub async fn nhd_lift_distances(
     session: &mut Session,
