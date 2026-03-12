@@ -441,9 +441,7 @@ where
         res
     });
 
-    Ok(izip!(ids, distances)
-        .map(|(id, distance)| (id, distance))
-        .collect::<Vec<_>>())
+    Ok(izip!(ids, distances).collect::<Vec<_>>())
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
@@ -598,7 +596,7 @@ where
     Standard: Distribution<T>,
 {
     if swap_when_zero_bits.len() != indices.len() {
-        return Err(eyre!("swap bits and indices must have the same length"));
+        bail!("swap bits and indices must have the same length");
     }
     let list_len = list.len();
     for (idx1, idx2) in indices.iter() {
