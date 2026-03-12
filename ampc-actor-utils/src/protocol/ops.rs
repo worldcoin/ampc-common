@@ -263,6 +263,35 @@ pub async fn open_ring_element_broadcast<T: IntRing2k + NetworkInt>(
         .collect::<Result<Vec<_>>>()
 }
 
+/// Batched conditional MUX via the reshare protocol.
+///
+/// For each of `n_elements` elements, computes `c * (left - right) + right`
+/// across `fields_per_element` independent share-pairs in a single
+/// communication round. The caller provides a closure that, given
+/// `(element_index, field_index)`, returns `(left, right)`.
+#[inline]
+async fn reshare_mux<T, F>(
+    session: &mut Session,
+    n_elements: usize,
+    fields_per_element: usize,
+    control_bits: &[Share<T>],
+    mut get_field: F,
+) -> Result<Vec<Share<T>>>
+where
+    T: NetworkInt + RingRandFillable,
+    F: FnMut(usize, usize) -> (Share<T>, Share<T>),
+{
+    reshare_products(session, n_elements * fields_per_element, |i| {
+        let j = i / fields_per_element;
+        let f = i % fields_per_element;
+        let c = &control_bits[j];
+        let (left, right) = get_field(j, f);
+        let diff = left - right;
+        c.a * diff.a + c.b * diff.a + c.a * diff.b + right.a
+    })
+    .await
+}
+
 /// Conditionally selects the distance shares based on control bits.
 /// If the control bit is 1, it selects the first distance share (d1),
 /// otherwise it selects the second distance share (d2).
@@ -280,15 +309,13 @@ where
     }
 
     // res = c * (d1 - d2) + d2, computed for both code_dot and mask_dot.
-    let products = reshare_products(session, distances.len() * 2, |i| {
-        let (d1, d2) = &distances[i / 2];
-        let c = &control_bits[i / 2];
-        let (diff, d2_share) = if i % 2 == 0 {
-            (d1.code_dot - d2.code_dot, d2.code_dot)
+    let products = reshare_mux(session, distances.len(), 2, control_bits, |j, f| {
+        let (d1, d2) = &distances[j];
+        if f == 0 {
+            (d1.code_dot, d2.code_dot)
         } else {
-            (d1.mask_dot - d2.mask_dot, d2.mask_dot)
-        };
-        c.a * diff.a + c.b * diff.a + c.a * diff.b + d2_share.a
+            (d1.mask_dot, d2.mask_dot)
+        }
     })
     .await?;
 
@@ -320,17 +347,14 @@ where
         eyre::bail!("Left and right distances must have the same length");
     }
 
-    let distances = reshare_products(session, n * 2, |i| {
-        let j = i / 2;
+    let distances = reshare_mux(session, n, 2, &control_bits, |j, f| {
         let left = &left_distances[j].1;
         let right = &right_distances[j].1;
-        let c = &control_bits[j];
-        let (diff, right_share) = if i % 2 == 0 {
-            (left.code_dot - right.code_dot, right.code_dot)
+        if f == 0 {
+            (left.code_dot, right.code_dot)
         } else {
-            (left.mask_dot - right.mask_dot, right.mask_dot)
-        };
-        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+            (left.mask_dot, right.mask_dot)
+        }
     })
     .await?
     .into_iter()
@@ -371,25 +395,14 @@ where
         eyre::bail!("Left and right distances must have the same length");
     }
 
-    let flat_res = reshare_products(session, n * 3, |i| {
-        let j = i / 3;
+    let flat_res = reshare_mux(session, n, 3, &control_bits, |j, f| {
         let (left_id, left_dist) = &left_distances[j];
         let (right_id, right_dist) = &right_distances[j];
-        let c = &control_bits[j];
-        let (diff, right_share) = if i % 3 == 0 {
-            (*left_id - right_id, *right_id)
-        } else if i % 3 == 1 {
-            (
-                left_dist.code_dot - right_dist.code_dot,
-                right_dist.code_dot,
-            )
-        } else {
-            (
-                left_dist.mask_dot - right_dist.mask_dot,
-                right_dist.mask_dot,
-            )
-        };
-        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+        match f {
+            0 => (*left_id, *right_id),
+            1 => (left_dist.code_dot, right_dist.code_dot),
+            _ => (left_dist.mask_dot, right_dist.mask_dot),
+        }
     })
     .await?;
 
@@ -438,7 +451,7 @@ where
 
     let role = session.own_role();
     // Convert vector ids into trivial shares (promoted to ring T)
-    let mut encrypted_list = list
+    let mut swapped_list = list
         .iter()
         .map(|(id, d)| {
             let shared_index = Share::from_const(T::from(*id), role);
@@ -476,18 +489,19 @@ where
         first_distances,
         second_distances
     ) {
-        let mut not_bit = -bit;
-        not_bit.add_assign_const_role(T::from(1u32), role);
-        let id1 = T::from(list[*idx1].0);
-        let id2 = T::from(list[*idx2].0);
-        // Only propagate index and skip version id.
-        // This computation is local as indices are public.
-        let first_id = bit * id1 + not_bit * id2;
-        let second_id = bit * id2 + not_bit * id1;
-        encrypted_list[*idx1] = (first_id, first_d);
-        encrypted_list[*idx2] = (second_id, second_d);
+        let id1 = list[*idx1].0;
+        let id2 = list[*idx2].0;
+        // Local computation: IDs are public so no reshare needed.
+        // first_id = bit * (id1 - id2) + id2
+        let mut first_id = *bit * RingElement(T::from(id1.wrapping_sub(id2)));
+        first_id.add_assign_const_role(T::from(id2), role);
+        // second_id = (id1 + id2) - first_id
+        let mut second_id = -first_id;
+        second_id.add_assign_const_role(T::from(id1.wrapping_add(id2)), role);
+        swapped_list[*idx1] = (first_id, first_d);
+        swapped_list[*idx2] = (second_id, second_d);
     }
-    Ok(encrypted_list)
+    Ok(swapped_list)
 }
 
 /// Conditionally swaps the distance shares based on control bits.
@@ -531,25 +545,14 @@ where
             .await?
             .inner();
 
-    let selected = reshare_products(session, indices.len() * 3, |i| {
-        let j = i / 3;
+    let selected = reshare_mux(session, indices.len(), 3, &swap_bits_lifted, |j, f| {
         let (left_id, left_dist) = &list[indices[j].0];
         let (right_id, right_dist) = &list[indices[j].1];
-        let c = &swap_bits_lifted[j];
-        let (diff, right_share) = if i % 3 == 0 {
-            (*left_id - right_id, *right_id)
-        } else if i % 3 == 1 {
-            (
-                left_dist.code_dot - right_dist.code_dot,
-                right_dist.code_dot,
-            )
-        } else {
-            (
-                left_dist.mask_dot - right_dist.mask_dot,
-                right_dist.mask_dot,
-            )
-        };
-        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+        match f {
+            0 => (*left_id, *right_id),
+            1 => (left_dist.code_dot, right_dist.code_dot),
+            _ => (left_dist.mask_dot, right_dist.mask_dot),
+        }
     })
     .await?;
 
