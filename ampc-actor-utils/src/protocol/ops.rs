@@ -441,11 +441,8 @@ where
         res
     });
 
-    Ok(izip!(ids, distances)
-        .map(|(id, distance)| (id, distance))
-        .collect::<Vec<_>>())
+    Ok(izip!(ids, distances).collect::<Vec<_>>())
 }
-
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_select_distances_with_shared_ids<T>(
     session: &mut Session,
