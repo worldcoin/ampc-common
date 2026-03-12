@@ -91,7 +91,7 @@ pub async fn cross_mul(
         .collect())
 }
 
-/// For every pair of distance shares (d1, d2), this computes the secret-shared bit d1 < d2.
+/// For every pair of distance fraction shares (d1, d2), this computes the secret-shared bit d2 < d1.
 ///
 /// The less-than operator is implemented in 2 steps:
 ///
@@ -105,7 +105,7 @@ async fn oblivious_cross_compare(
     extract_msb_batch(session, &diff).await
 }
 
-/// For every pair of distance shares (d1, d2), this computes the secret-shared bit d1 < d2 and open it.
+/// For every pair of distance fraction shares (d1, d2), this computes the secret-shared bit d2 < d1 and open it.
 ///
 /// The less-than operator is implemented in 2 steps:
 ///
@@ -120,7 +120,7 @@ pub async fn cross_compare(
     opened_b.into_iter().map(|x| Ok(x.convert())).collect()
 }
 
-/// For every pair of distance shares (d1, d2), this computes the secret-shared bit d2 < d1 and lift it to u32 shares.
+/// For every pair of distance fraction shares (d1, d2), this computes the secret-shared bit d2 < d1 and lift it to u32 shares.
 ///
 /// The less-than operator is implemented in 2 steps:
 ///
@@ -132,7 +132,7 @@ pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
-    // compute the secret-shared bits d1 < d2
+    // compute the secret-shared bits d2 < d1
     let bits = oblivious_cross_compare(session, distances).await?;
     // inject bits to T shares
     Ok(bit_inject(session, VecShare { shares: bits })
@@ -140,14 +140,14 @@ pub async fn oblivious_cross_compare_lifted(
         .inner())
 }
 
-/// For every pair of distance shares (d1, d2), this computes the bit d2 < d1 uses it to return the lower of the two distances.
+/// For every pair of distance fraction shares (d1, d2), this computes the bit d2 < d1 uses it to return the lower of the two distances.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
 pub async fn min_of_pair_batch(
     session: &mut Session,
     distances: &[DistancePair<u32>],
 ) -> Result<Vec<DistanceShare<u32>>> {
-    // compute the secret-shared bits d1 < d2
+    // compute the secret-shared bits d2 < d1
     let bits = oblivious_cross_compare_lifted(session, distances).await?;
 
     conditionally_select_distance(session, distances, bits.as_slice()).await
