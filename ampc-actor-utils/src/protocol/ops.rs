@@ -279,117 +279,23 @@ where
         bail!("Number of distances must match number of control bits");
     }
 
-    // Conditional multiplexing:
-    // If control bit is 1, select d1, else select d2.
-    // res = c * d1 + (1 - c) * d2 = d2 + c * (d1 - d2);
-    // We need to do it for both code_dot and mask_dot.
-
-    // we start with the mult of c and d1-d2
-    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len() * 2);
-
-    let res_a: Vec<RingElement<T>> = izip!(
-        distances.iter(),
-        control_bits.iter(),
-        prf_my_values.0.chunks(2),
-        prf_prev_values.0.chunks(2)
-    )
-    .flat_map(|((d1, d2), c, my_prf, prev_prf)| {
-        let code = d1.code_dot - d2.code_dot;
-        let mask = d1.mask_dot - d2.mask_dot;
-        let code_zero_share = my_prf[0] - prev_prf[0]; // equivalent to gen_zero_share()
-        let mask_zero_share = my_prf[1] - prev_prf[1]; // equivalent to gen_zero_share()
-        let code_mul_a = code_zero_share + c.a * code.a + c.b * code.a + c.a * code.b;
-        let mask_mul_a = mask_zero_share + c.a * mask.a + c.b * mask.a + c.a * mask.b;
-        [code_mul_a, mask_mul_a]
+    // res = c * (d1 - d2) + d2, computed for both code_dot and mask_dot.
+    let products = reshare_products(session, distances.len() * 2, |i| {
+        let (d1, d2) = &distances[i / 2];
+        let c = &control_bits[i / 2];
+        let (diff, d2_share) = if i % 2 == 0 {
+            (d1.code_dot - d2.code_dot, d2.code_dot)
+        } else {
+            (d1.mask_dot - d2.mask_dot, d2.mask_dot)
+        };
+        c.a * diff.a + c.b * diff.a + c.a * diff.b + d2_share.a
     })
-    .collect();
+    .await?;
 
-    let network = &mut session.network_session;
-
-    let message = if res_a.len() == 1 {
-        T::new_network_element(res_a[0])
-    } else {
-        T::new_network_vec(res_a.clone())
-    };
-    network.send_next(message).await?;
-
-    let res_b = T::into_vec(network.receive_prev().await?)?;
-
-    // finally compute the result by adding the d2 shares
-    Ok(izip!(res_a.into_iter(), res_b.into_iter())
-        // combine a and b part into shares
-        .map(|(a, b)| Share::new(a, b))
-        // combine the code and mask parts into DistanceShare
+    Ok(products
+        .into_iter()
         .tuples()
-        .map(|(code, mask)| DistanceShare {
-            code_dot: code,
-            mask_dot: mask,
-        })
-        // add the d2 shares
-        .zip(distances.iter())
-        .map(|(res, (_, d2))| DistanceShare {
-            code_dot: res.code_dot + d2.code_dot,
-            mask_dot: res.mask_dot + d2.mask_dot,
-        })
-        .collect())
-}
-
-/// Conditionally selects equally-sized slices of input shares based on control bits.
-/// If the control bit is 1, it selects the left value shares; otherwise, it selects the right value share.
-async fn select_shared_slices_by_bits<T>(
-    session: &mut Session,
-    left_values: &[Share<T>],
-    right_values: &[Share<T>],
-    control_bits: &[Share<T>],
-    slice_size: usize,
-) -> Result<Vec<Share<T>>>
-where
-    T: IntRing2k + NetworkInt,
-    Standard: Distribution<T>,
-{
-    if left_values.len() != right_values.len() {
-        bail!("Left and right values must have the same length");
-    }
-    if !left_values.len().is_multiple_of(slice_size) {
-        bail!("Left and right values length must be multiple of slice size");
-    }
-    if control_bits.len() != left_values.len() / slice_size {
-        bail!("Number of control bits must match number of slices");
-    }
-
-    // Conditional multiplexing:
-    // If control bit is 1, select left_value, else select right_value.
-    // res = c * (left_value - right_value) + right_value
-    // Compute c * (left_value - right_value)
-    let res_a: Vec<RingElement<T>> = izip!(
-        left_values.chunks(slice_size),
-        right_values.chunks(slice_size),
-        control_bits.iter()
-    )
-    .flat_map(|(left_chunk, right_chunk, c)| {
-        left_chunk
-            .iter()
-            .zip(right_chunk.iter())
-            .map(|(left, right)| {
-                let diff = *left - *right;
-                session.prf.gen_zero_share::<T>() + c.a * diff.a + c.b * diff.a + c.a * diff.b
-            })
-            .collect::<Vec<_>>()
-    })
-    .collect();
-
-    let network = &mut session.network_session;
-
-    network.send_next(T::new_network_vec(res_a.clone())).await?;
-
-    let res_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
-
-    // Pack networking messages into shares and
-    // compute the result by adding the right shares
-    Ok(izip!(res_a, res_b)
-        .map(|(a, b)| Share::new(a, b))
-        .zip(right_values.iter())
-        .map(|(res, right)| res + right)
+        .map(|(code, mask)| DistanceShare::new(code, mask))
         .collect())
 }
 
@@ -401,47 +307,47 @@ pub async fn conditionally_select_distances_with_plain_ids<T>(
     control_bits: Vec<Share<T>>,
 ) -> Result<Vec<IdDistance<T>>>
 where
-    T: IntRing2k + NetworkInt + From<u32>,
-    Standard: Distribution<T>,
+    T: NetworkInt + RingRandFillable + From<u32>,
 {
-    if left_distances.len() != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
-    }
-    if left_distances.len() != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
-    }
-    if left_distances.is_empty() {
+    let n = left_distances.len();
+    if n == 0 {
         eyre::bail!("Distances must not be empty");
     }
+    if n != control_bits.len() {
+        eyre::bail!("Number of distances must match number of control bits");
+    }
+    if n != right_distances.len() {
+        eyre::bail!("Left and right distances must have the same length");
+    }
 
-    // Now select distances
-    let (left_ids, left_dist): (Vec<_>, Vec<_>) = left_distances.into_iter().unzip();
-    let (right_ids, right_dist): (Vec<_>, Vec<_>) = right_distances.into_iter().unzip();
-    let left_dist = left_dist
-        .into_iter()
-        .flat_map(|d| [d.code_dot, d.mask_dot])
-        .collect::<Vec<_>>();
-    let right_dist = right_dist
-        .into_iter()
-        .flat_map(|d| [d.code_dot, d.mask_dot])
-        .collect::<Vec<_>>();
-
-    let distances =
-        select_shared_slices_by_bits(session, &left_dist, &right_dist, &control_bits, 2)
-            .await?
-            .into_iter()
-            .tuples()
-            .map(|(code_dot, mask_dot)| DistanceShare::new(code_dot, mask_dot));
+    let distances = reshare_products(session, n * 2, |i| {
+        let j = i / 2;
+        let left = &left_distances[j].1;
+        let right = &right_distances[j].1;
+        let c = &control_bits[j];
+        let (diff, right_share) = if i % 2 == 0 {
+            (left.code_dot - right.code_dot, right.code_dot)
+        } else {
+            (left.mask_dot - right.mask_dot, right.mask_dot)
+        };
+        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+    })
+    .await?
+    .into_iter()
+    .tuples()
+    .map(|(code, mask)| DistanceShare::new(code, mask));
 
     // Select ids first: c * (left_id - right_id) + right_id
-    let ids = izip!(left_ids, right_ids, control_bits).map(|(left_id, right_id, c)| {
+    let ids = izip!(left_distances, right_distances, control_bits).map(|(left, right, c)| {
+        let (left_id, _) = left;
+        let (right_id, _) = right;
         let diff = left_id.wrapping_sub(right_id);
         let mut res = c * RingElement(T::from(diff));
         res.add_assign_const_role(T::from(right_id), session.own_role());
         res
     });
 
-    Ok(izip!(ids, distances).collect::<Vec<_>>())
+    Ok(izip!(ids, distances).collect())
 }
 
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
@@ -452,36 +358,46 @@ pub async fn conditionally_select_distances_with_shared_ids<T>(
     control_bits: Vec<Share<T>>,
 ) -> Result<Vec<IdDistance<T>>>
 where
-    T: IntRing2k + NetworkInt,
-    Standard: Distribution<T>,
+    T: NetworkInt + RingRandFillable,
 {
-    if left_distances.len() != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
-    }
-    if left_distances.len() != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
-    }
     if left_distances.is_empty() {
         eyre::bail!("Distances must not be empty");
     }
+    let n = left_distances.len();
+    if n != control_bits.len() {
+        eyre::bail!("Number of distances must match number of control bits");
+    }
+    if n != right_distances.len() {
+        eyre::bail!("Left and right distances must have the same length");
+    }
 
-    let left_dist = left_distances
-        .into_iter()
-        .flat_map(|(id, d)| [id, d.code_dot, d.mask_dot])
-        .collect::<Vec<_>>();
-    let right_dist = right_distances
-        .into_iter()
-        .flat_map(|(id, d)| [id, d.code_dot, d.mask_dot])
-        .collect::<Vec<_>>();
-    let distances =
-        select_shared_slices_by_bits(session, &left_dist, &right_dist, &control_bits, 3)
-            .await?
-            .into_iter()
-            .tuples()
-            .map(|(id, code_dot, mask_dot)| (id, DistanceShare::new(code_dot, mask_dot)))
-            .collect::<Vec<_>>();
+    let flat_res = reshare_products(session, n * 3, |i| {
+        let j = i / 3;
+        let (left_id, left_dist) = &left_distances[j];
+        let (right_id, right_dist) = &right_distances[j];
+        let c = &control_bits[j];
+        let (diff, right_share) = if i % 3 == 0 {
+            (*left_id - right_id, *right_id)
+        } else if i % 3 == 1 {
+            (
+                left_dist.code_dot - right_dist.code_dot,
+                right_dist.code_dot,
+            )
+        } else {
+            (
+                left_dist.mask_dot - right_dist.mask_dot,
+                right_dist.mask_dot,
+            )
+        };
+        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+    })
+    .await?;
 
-    Ok(distances)
+    Ok(flat_res
+        .into_iter()
+        .tuples()
+        .map(|(id, code, mask)| (id, DistanceShare::new(code, mask)))
+        .collect())
 }
 
 /// Conditionally swaps the distance shares based on control bits.
@@ -592,7 +508,7 @@ pub async fn conditionally_swap_distances<T>(
     indices: &[(usize, usize)],
 ) -> Result<Vec<IdDistance<T>>>
 where
-    T: IntRing2k + NetworkInt + RingRandFillable,
+    T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
 {
     if swap_when_zero_bits.len() != indices.len() {
@@ -615,79 +531,44 @@ where
             .await?
             .inner();
 
-    // A helper closure to compute the difference of two input shares and prepare the a part of the product of this difference and the control bit.
-    let mut mul_share_a = |x: Share<T>, y: Share<T>, sb: &Share<T>| -> RingElement<T> {
-        let diff = x - y;
-        session.prf.gen_zero_share::<T>() + sb.a * diff.a + sb.b * diff.a + sb.a * diff.b
-    };
-
-    // Conditional swapping:
-    // If control bit c is 1, return (d1, d2); otherwise, (d2, d1), which can be computed as:
-    // - first tuple element = c * (d1 - d2) + d2;
-    // - second tuple element = d1 - c * (d1 - d2).
-    // We need to do it for ids, code_dot and mask_dot.
-
-    // Compute c * (d1-d2)
-    let res_a: Vec<RingElement<T>> = indices
-        .iter()
-        .zip(swap_bits_lifted.iter())
-        .flat_map(|((idx1, idx2), sb)| {
-            let (id1, d1) = &list[*idx1];
-            let (id2, d2) = &list[*idx2];
-
-            let id = mul_share_a(*id1, *id2, sb);
-            let code_dot_a = mul_share_a(d1.code_dot, d2.code_dot, sb);
-            let mask_dot_a = mul_share_a(d1.mask_dot, d2.mask_dot, sb);
-            [id, code_dot_a, mask_dot_a]
-        })
-        .collect();
-
-    let network = &mut session.network_session;
-
-    network.send_next(T::new_network_vec(res_a.clone())).await?;
-
-    let res_b: Vec<RingElement<T>> = T::into_vec(network.receive_prev().await?)?;
-
-    // Finally compute the swapped tuples.
-    let swapped_distances = izip!(res_a, res_b)
-        // combine a and b part into shares
-        .map(|(a, b)| Share::new(a, b))
-        // combine the code and mask parts into DistanceShare
-        .tuples()
-        .map(|(id, code, mask)| {
+    let selected = reshare_products(session, indices.len() * 3, |i| {
+        let j = i / 3;
+        let (left_id, left_dist) = &list[indices[j].0];
+        let (right_id, right_dist) = &list[indices[j].1];
+        let c = &swap_bits_lifted[j];
+        let (diff, right_share) = if i % 3 == 0 {
+            (*left_id - right_id, *right_id)
+        } else if i % 3 == 1 {
             (
-                id,
-                DistanceShare {
-                    code_dot: code,
-                    mask_dot: mask,
-                },
+                left_dist.code_dot - right_dist.code_dot,
+                right_dist.code_dot,
             )
-        })
-        .zip(indices.iter())
-        .map(|((res_id, res_dist), (idx1, idx2))| {
-            let (id1, dist1) = &list[*idx1];
-            let (id2, dist2) = &list[*idx2];
-            // first tuple element = c * (d1 - d2) + d2
-            // second tuple element = d1 - c * (d1 - d2)
-            let first_id = res_id + *id2;
-            let second_id = *id1 - res_id;
-            let first_distance = DistanceShare {
-                code_dot: res_dist.code_dot + dist2.code_dot,
-                mask_dot: res_dist.mask_dot + dist2.mask_dot,
-            };
-            let second_distance = DistanceShare {
-                code_dot: dist1.code_dot - res_dist.code_dot,
-                mask_dot: dist1.mask_dot - res_dist.mask_dot,
-            };
-            ((first_id, first_distance), (second_id, second_distance))
-        })
-        .collect::<Vec<_>>();
+        } else {
+            (
+                left_dist.mask_dot - right_dist.mask_dot,
+                right_dist.mask_dot,
+            )
+        };
+        c.a * diff.a + c.b * diff.a + c.a * diff.b + right_share.a
+    })
+    .await?;
 
-    // Update the input list with the swapped tuples.
+    // Derive both swap elements: first = selected, second = d1 + d2 - selected.
     let mut swapped_list = list.to_vec();
-    for (((id1, d1), (id2, d2)), (idx1, idx2)) in swapped_distances.into_iter().zip(indices) {
-        swapped_list[*idx1] = (id1, d1);
-        swapped_list[*idx2] = (id2, d2);
+    for (chunk, (idx1, idx2)) in selected.chunks(3).zip(indices) {
+        let first_id = chunk[0];
+        let first_dist = DistanceShare::new(chunk[1], chunk[2]);
+
+        let (id1, dist1) = &list[*idx1];
+        let (id2, dist2) = &list[*idx2];
+        let second_id = *id1 + *id2 - first_id;
+        let second_dist = DistanceShare::new(
+            dist1.code_dot + dist2.code_dot - first_dist.code_dot,
+            dist1.mask_dot + dist2.mask_dot - first_dist.mask_dot,
+        );
+
+        swapped_list[*idx1] = (first_id, first_dist);
+        swapped_list[*idx2] = (second_id, second_dist);
     }
 
     Ok(swapped_list)
