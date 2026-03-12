@@ -491,6 +491,10 @@ where
 /// If the control bit is 0, it swaps tuples (id, distance share) with index i1 and i2,
 /// otherwise it does nothing.
 /// The vector ids are in plaintext and propagated in secret shared form.
+///
+/// Note: `indices` must be pairwise-disjoint. Swaps are computed against the original
+/// list snapshot and applied afterwards, so overlapping index pairs will produce
+/// incorrect results.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances_plain_ids<T>(
     session: &mut Session,
@@ -578,6 +582,10 @@ where
 /// otherwise it does nothing.
 /// Assumes that the input shares are originally 16-bit and lifted to T.
 /// The vector ids are 0-indexed and given in secret shared form.
+///
+/// Note: `indices` must be pairwise-disjoint. Swaps are computed against the original
+/// list snapshot and applied afterwards, so overlapping index pairs will produce
+/// incorrect results.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances<T>(
     session: &mut Session,
@@ -591,6 +599,17 @@ where
 {
     if swap_when_zero_bits.len() != indices.len() {
         return Err(eyre!("swap bits and indices must have the same length"));
+    }
+    let list_len = list.len();
+    for (idx1, idx2) in indices.iter() {
+        if *idx1 >= list_len || *idx2 >= list_len {
+            bail!(
+                "index out of bounds in swap_indices: ({}, {}) for list of length {}",
+                idx1,
+                idx2,
+                list_len
+            );
+        }
     }
     // Lift bits to T shares
     let swap_bits_lifted: Vec<Share<T>> =

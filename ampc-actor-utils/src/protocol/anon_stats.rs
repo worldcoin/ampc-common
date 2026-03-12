@@ -10,7 +10,7 @@ use eyre::{eyre, Result};
 use itertools::Itertools;
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is a flat vector of Share<u32>, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
 pub async fn compare_against_thresholds_batched(
     session: &mut Session,
@@ -38,7 +38,7 @@ pub async fn compare_against_thresholds_batched(
 }
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is a flat vector of Share<u32>, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
 pub async fn nhd_compare_against_thresholds_batched(
     session: &mut Session,
@@ -60,7 +60,7 @@ pub async fn nhd_compare_against_thresholds_batched(
 }
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
 pub async fn compare_threshold_buckets(
     session: &mut Session,
@@ -81,7 +81,7 @@ pub async fn compare_threshold_buckets(
 }
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
 pub async fn nhd_compare_threshold_buckets(
     session: &mut Session,
@@ -190,7 +190,7 @@ pub async fn nhd_reduce_to_min_distance_batch(
 }
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::ops::translate_threshold_a) function to compute the A term of the threshold comparison.
+/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
 /// The result of the comparisons is then summed up bucket-wise, with each bucket corresponding to a threshold.
 ///
 /// In comparison to `compare_threshold_buckets`, this function takes grouped distances as input, and for each group
