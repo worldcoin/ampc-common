@@ -46,3 +46,8 @@ statrs = "0.17"
 name = "bit_inject"
 harness = false
 path = "benches/bit_inject.rs"
+
+[[bench]]
+name = "reshare_mux"
+harness = false
+path = "benches/reshare_mux.rs"
