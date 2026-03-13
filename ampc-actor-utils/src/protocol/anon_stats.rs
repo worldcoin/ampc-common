@@ -22,7 +22,7 @@ pub async fn compare_against_thresholds_batched(
         .flat_map(|a| {
             distances.iter().map(|d| {
                 let x = d.mask_dot * *a;
-                let y = d.code_dot * B as u32;
+                let y = d.code_dot * B;
                 x - y
             })
         })

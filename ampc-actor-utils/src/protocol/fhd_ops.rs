@@ -43,7 +43,7 @@ pub async fn fhd_greater_than_threshold(
         .iter()
         .map(|d| {
             let x = d.mask_dot * a;
-            let y = d.code_dot * B as u32;
+            let y = d.code_dot * B;
             y - x
         })
         .collect();
