@@ -1,13 +1,11 @@
 use std::ops::{AddAssign, Neg, SubAssign};
-
 use aes_prng::AesRng;
 use ampc_secret_sharing::{
-    shares::{
-        bit::Bit,
+    IntRing2k, ReplicatedShare, RingElement, Role, shares::{
+        bit::{self, Bit},
         primefield::Mod19,
         share::{AdditiveShare, AdditiveSharePrime},
-    },
-    IntRing2k, ReplicatedShare, RingElement, Role,
+    }
 };
 use eyre::{bail, eyre, Error, Result};
 use futures::SinkExt;
@@ -23,6 +21,8 @@ use crate::{
 };
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean
 // shares (bit7..bit0), and a shared random bit 'b_bit' embedded as a Share<T> share.
+
+// TODO: generalize r_bits to work for any type T; make it Vec<ReplicatedShare<Bit>> maybe?
 pub struct OfflineRandomShares<T: IntRing2k> {
     r: ReplicatedShare<T>,
     r_bits: [ReplicatedShare<Bit>; 8], // r_7, ..., r_0
@@ -33,6 +33,11 @@ pub struct OfflineRandomShares<T: IntRing2k> {
 /// Returns the per-party view of precomputed randomness for extract_msb_rand.
 /// Each party gets its replicated ABY3 share (a,b) of the same global values.
 fn offline_shares_for_role(role: &impl Role) -> Result<OfflineRandomShares<u8>, Error> {
+
+    // TODO 1: make it general for any T: u8 / u32
+    // TODO 2: replace hard-coded randomness 
+    //         1. instead sample 8 or 32 bits and combine to a private ring element 2. generate shares of each of the bits and private ring element
+    //         use how private_values, private_value, shares are generated in test_bitlt_u8()
 
     let elem_r0 = RingElement(57u8);
     let elem_r1 = RingElement(200u8);
@@ -125,6 +130,9 @@ pub async fn setup_shared_seed_dealer_model(
     Ok(shared_seed)
 }
 
+// TODO: implement the struct OfflineRandomShares with a new function that instantiates a new instance for type T
+// can we just instantiate a new instance within the MSB protocol?? 
+
 pub async fn extract_msb_rand<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     x: ReplicatedShare<T>,
@@ -154,36 +162,52 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt>(
     let mask: T = T::one().wrapping_shl((T::K - 1) as u32).wrapping_sub(&T::one());
     let c_prime: T = c & mask;
 
-    // step 3: compute bitLT = (c' < r')
-    // bitLT = 1
-    let bitLT: (u8, u8, u8) = (0, 1, 0);
+    // step 3: compute bitLT using c_prime and replicated bits r_bits[7], ..., r_bits[1]
+    // convert the replicated bits to additive shares of bits
+    let mut r_bits_additive = Vec::with_capacity(offline.r_bits.len() - 1);
+    for rep_bit_share in offline.r_bits.iter().skip(1) {
+        r_bits_additive.push(rep_to_add2(session, *rep_bit_share).await?);
+    }
 
-    // Replicated shares for parties 0,1,2
-    
-    let bitLT_share = match session.own_role().index() {
-    0 => {
-        let (b0, _, b2) = bitLT;
-        ReplicatedShare::new(
-            RingElement(Bit::new(b0 == 1)),
-            RingElement(Bit::new(b2 == 1)),
-        )
-    }
-    1 => {
-        let (b0, b1,_) = bitLT;
-        ReplicatedShare::new(
-            RingElement(Bit::new(b1 == 1)),
-            RingElement(Bit::new(b0 == 1)),
-        )
-    }
-    2 => {
-        let (_, b1, b2) = bitLT;
-        ReplicatedShare::new(
-            RingElement(Bit::new(b2 == 1)),
-            RingElement(Bit::new(b1 == 1)),
-        )
-    }
-    _ => unreachable!("invalid role index"),
-    };
+    // sample a prf 
+    let prf_seed = PrfSeed::from([rng.gen::<u8>(); 16]);
+    // TODO: compute bitlt using additive shares and prf seed -> output is additive share of bitLT 
+    let bitLT_share_add2 = bitlt(session, r_bits_additive.clone(), c_prime, prf_seed).await?;
+
+    // TODO convert the additive share of bitlt back to replicated share of bitlt (for nowww))
+    let mut bitLT_share = add2_to_rep_binary(session, bitLT_share_add2).await?;
+    let one_bit = ReplicatedShare::from_const(Bit::one(), session.own_role());
+    bitLT_share = bitLT_share + one_bit;
+                    // // step 3: compute bitLT = (c' < r'), we have c_prime (const) and r' = r_bits[7], ..., r_bits[1]
+                    // // bitLT = 1
+                    // let bitLT: (u8, u8, u8) = (0, 1, 0);
+
+                    // // Replicated shares for parties 0,1,2
+                    
+                    // let bitLT_share = match session.own_role().index() {
+                    // 0 => {
+                    //     let (b0, _, b2) = bitLT;
+                    //     ReplicatedShare::new(
+                    //         RingElement(Bit::new(b0 == 1)),
+                    //         RingElement(Bit::new(b2 == 1)),
+                    //     )
+                    // }
+                    // 1 => {
+                    //     let (b0, b1,_) = bitLT;
+                    //     ReplicatedShare::new(
+                    //         RingElement(Bit::new(b1 == 1)),
+                    //         RingElement(Bit::new(b0 == 1)),
+                    //     )
+                    // }
+                    // 2 => {
+                    //     let (_, b1, b2) = bitLT;
+                    //     ReplicatedShare::new(
+                    //         RingElement(Bit::new(b2 == 1)),
+                    //         RingElement(Bit::new(b1 == 1)),
+                    //     )
+                    // }
+                    // _ => unreachable!("invalid role index"),
+                    // };
 
     // step 4: [a']_k = 2^{k-1} [u]_1 + c' - [r']_k, [d]_k = [a]_k - [a']_k
 
@@ -230,8 +254,9 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt>(
     offline.b_bit.a * scale,
     offline.b_bit.b * scale,
     );
-    let one = ReplicatedShare::from_const(T::one(), session.own_role());
     msb = msb - msb_tmp;
+    let one = ReplicatedShare::from_const(T::one(), session.own_role());
+   
     let msb = if e_msb_bool { one - offline.b_bit } else { offline.b_bit };
     Ok(msb)
     
@@ -262,6 +287,36 @@ pub async fn rep_to_add2<T: IntRing2k>(
 
     Ok(share)
 }
+
+pub async fn add2_to_rep_binary(
+    session: &mut Session,
+    share: AdditiveShare<Bit>,
+) -> Result<ReplicatedShare<Bit>, Error> {
+    let network = &mut session.network_session;
+
+    let randomized_input = match network.own_role.index() {
+        0 | 1 | 2 => {
+            // Local additive zero-share of bits
+            let zero_share = session.prf.gen_binary_zero_share::<Bit>();
+            share.value ^ zero_share
+        }
+        _ => {
+            bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
+        }
+    };
+
+    network
+        .send_next(NetworkValue::RingElementBit(randomized_input))
+        .await?;
+
+    let randomized_input_prev = match network.receive_prev().await {
+        Ok(NetworkValue::RingElementBit(value)) => value,
+        _ => bail!("Could not deserialize RingElementBit"),
+    };
+
+    Ok(ReplicatedShare::new(randomized_input, randomized_input_prev))
+}
+
 
 pub async fn bin_to_primefield(
     session: &mut Session,
@@ -748,17 +803,17 @@ pub async fn send_prime_shares_to_dealer(
     Ok(values_received)
 }
 
-pub async fn bitlt(
+pub async fn bitlt<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     shares: Vec<AdditiveShare<Bit>>,
-    public_value: u8,
+    public_value: T,
     prf_seed: PrfSeed,
 ) -> Result<AdditiveShare<Bit>> {
     // Scale the public value to avoid leakage to dealer if the private and public values are equal.
     // I.e., scaled = 2 * public_value + 1
-    let scaled_public_value_bits: Vec<bool> = (0..8)
+    let scaled_public_value_bits: Vec<bool> = (0..T::K - 1)
         .rev()
-        .map(|i| ((public_value >> i) & 1) == 1)
+        .map(|i| ((public_value >> i) & T::one()) == T::one())
         .chain(std::iter::once(true))
         .collect();
 
@@ -888,7 +943,7 @@ mod tests {
     use ampc_secret_sharing::shares::share::AdditiveShare;
     use ampc_secret_sharing::shares::{bit::Bit, VecShare};
     use ampc_secret_sharing::{IntRing2k, ReplicatedShare, RingElement};
-    use eyre::{bail, Result};
+    use eyre::{bail, Error,  Result};
     use num_traits::Zero;
     use rand::{Rng, SeedableRng};
     use rand_distr::{Distribution, Standard};
@@ -896,7 +951,7 @@ mod tests {
     use crate::protocol::ops::open_ring;
     use crate::execution::player::Role;
     use crate::protocol::msb_preprocessing::{
-        bitlt, open_additive_share_bit, open_additive_share_u8, rep_to_add2,
+        add2_to_rep_binary, bitlt, open_additive_share_bit, open_additive_share_u8, rep_to_add2
     };
     use crate::protocol::test_utils::{
         create_single_sharing_additive, create_single_sharing_replicated,
@@ -913,11 +968,11 @@ mod tests {
 
     async fn test_extract_msb_rand_u8() -> Result<()> {
         let mut rng = AesRng::from_random_seed();
-        let len = 1usize;
+        let len = 4usize;
 
         // Random cleartext values + expected MSB bits
         let ints: Vec<u8> = (0..len).map(|_| rng.gen::<u8>()).collect();
-        let ints: Vec<u8> = vec![241u8; len];
+        //let ints: Vec<u8> = vec![241u8, 128u8, 34u8, 255u8, 11u8];
 
         let expected: Vec<u8> = ints
         .iter()
@@ -966,7 +1021,7 @@ mod tests {
 
         Ok(())
     }
-
+    
     #[tokio::test]
     async fn test_extract_msb_rand() -> Result<()> {
         test_extract_msb_rand_u8().await
@@ -1022,6 +1077,60 @@ mod tests {
     async fn test_rep_to_add2() -> Result<()> {
         test_rep_to_add2_u8().await
     }
+
+    async fn test_add2_to_rep_binary() -> Result<()> {
+        let mut rng = AesRng::from_entropy();
+        let sessions = LocalRuntime::mock_sessions_with_channel().await?;
+        let mut jobs = JoinSet::new();
+
+        let value = Bit::new(rng.gen::<bool>());
+        let expected = value;
+
+        // Two-party additive sharing of the bit; dealer/party 2 gets zero.
+        let shares = create_single_sharing_additive::<AesRng, Bit>(&mut rng, value);
+
+        for session in sessions.into_iter() {
+            let session = session.clone();
+
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+
+                let share_i = match session.own_role().index() {
+                    0 => shares.0,
+                    1 => shares.1,
+                    2 => AdditiveShare::zero(),
+                    _ => {
+                        bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]")
+                    }
+                };
+
+                let out = add2_to_rep_binary(&mut session, share_i).await?;
+
+                // Open replicated bit share
+                let opened = open_bin(&mut session, std::slice::from_ref(&out)).await?;
+                Ok::<Bit, Error>(opened[0])
+            });
+        }
+
+        let opened = jobs
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        assert_eq!(opened.len(), 3);
+        assert_eq!(opened[0], opened[1]);
+        assert_eq!(opened[1], opened[2]);
+        assert_eq!(opened[0], expected);
+
+        Ok(())
+    }
+
+#[tokio::test]
+async fn test_add2_to_rep() -> Result<()> {
+    test_add2_to_rep_binary().await
+}
+
 
     async fn test_bitlt_u8() -> Result<()>
     where
