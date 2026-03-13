@@ -20,7 +20,7 @@ pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
 pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
 
 pub const B_BITS: u64 = 16;
-pub const B: u64 = 1 << B_BITS;
+pub const B: u32 = 1 << B_BITS;
 
 // ---------------------------------------------------------------------------
 // Batched replicated multiplication
@@ -443,6 +443,7 @@ where
 
     Ok(izip!(ids, distances).collect::<Vec<_>>())
 }
+
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_select_distances_with_shared_ids<T>(
     session: &mut Session,

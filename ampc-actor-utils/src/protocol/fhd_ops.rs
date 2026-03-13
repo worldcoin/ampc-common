@@ -38,11 +38,11 @@ pub async fn fhd_greater_than_threshold(
     distances: &[DistanceShare<u32>],
     threshold_ratio: f64,
 ) -> Result<Vec<Share<Bit>>> {
-    let a = translate_threshold_a(threshold_ratio) as u64;
+    let a = translate_threshold_a(threshold_ratio);
     let diffs: Vec<Share<u32>> = distances
         .iter()
         .map(|d| {
-            let x = d.mask_dot * a as u32;
+            let x = d.mask_dot * a;
             let y = d.code_dot * B as u32;
             y - x
         })
@@ -156,6 +156,7 @@ pub async fn min_of_pair_batch(
 #[cfg(test)]
 mod tests {
     use crate::{
+        constants::MATCH_THRESHOLD_RATIO,
         execution::{
             local::{generate_local_identities, LocalRuntime},
             session::SessionHandles,
@@ -251,5 +252,110 @@ mod tests {
         // check first party output is equal to the expected result.
         let t = jobs.join_next().await.unwrap().unwrap();
         assert_eq!(t, RingElement(2));
+    }
+
+    /// Reference plaintext FHD: (mask_dot - code_dot) / (2 * mask_dot).
+    /// `code_dot` here is the raw dot product which can be negative (represented
+    /// as wrapping u16).
+    fn reference_fhd_greater_than_threshold(cd: i64, md: i64) -> bool {
+        if md == 0 {
+            return false; // maximal distance -> treat as no match
+        }
+        let fhd = (md as f64 - cd as f64) / (2.0 * md as f64);
+        fhd > MATCH_THRESHOLD_RATIO
+    }
+
+    #[tokio::test]
+    async fn test_fhd_greater_than_threshold() {
+        let mut rng = AesRng::seed_from_u64(44_u64);
+
+        // Test with known values of `(code_dot, mask_dot)` and their expected
+        // FHD threshold comparison result.
+        // FHD = (md - cd) / (2*md), threshold = 0.375.
+        // Expected boolean: FHD > threshold (i.e. NOT a match).
+        let test_cases: Vec<(u16, u16, bool)> = vec![
+            // cd=100, md=500 -> FHD = 400/1000 = 0.4 > 0.375 -> true
+            (100, 500, true),
+            // cd=200, md=500 -> FHD = 300/1000 = 0.3 < 0.375 -> false
+            (200, 500, false),
+            // cd=125, md=500 -> FHD = 375/1000 = 0.375, not strictly greater -> false
+            (125, 500, false),
+            // cd=124, md=500 -> FHD = 376/1000 = 0.376 > 0.375 -> true
+            (124, 500, true),
+            // Large mask dot, well below threshold
+            (3000, 4000, false), // FHD = 1000/8000 = 0.125
+            // Large mask dot, well above threshold
+            (100, 4000, true), // FHD = 3900/8000 = 0.4875
+            // Negative code_dot (wrapping u16): cd = -1 -> 0xFFFF
+            (u16::MAX, 200, true), // cd=-1, md=200 -> FHD = 201/400 = 0.5025
+            // cd=0, md=100 -> FHD = 100/200 = 0.5 > 0.375 -> true
+            (0, 100, true),
+            // cd very close to md -> small FHD
+            (490, 500, false), // FHD = 10/1000 = 0.01
+            // md = 0 -> treat as no match
+            (10, 0, false),
+        ];
+
+        let flat_values: Vec<u16> = test_cases
+            .iter()
+            .flat_map(|(cd, md, _)| [*cd, *md])
+            .collect();
+        let flat_shares = create_array_sharing(&mut rng, &flat_values);
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (i, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares_i = match i {
+                0 => flat_shares.p0.clone(),
+                1 => flat_shares.p1.clone(),
+                2 => flat_shares.p2.clone(),
+                _ => unreachable!(),
+            };
+            let n = test_cases.len();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let lifted = batch_signed_lift_vec(&mut session, shares_i).await.unwrap();
+                let distances: Vec<DistanceShare<u32>> = (0..n)
+                    .map(|j| DistanceShare::new(lifted[2 * j], lifted[2 * j + 1]))
+                    .collect();
+                let bits =
+                    fhd_greater_than_threshold(&mut session, &distances, MATCH_THRESHOLD_RATIO)
+                        .await
+                        .unwrap();
+                let opened = open_bin(&mut session, &bits).await.unwrap();
+                opened
+                    .into_iter()
+                    .map(|x| x.convert())
+                    .collect::<Vec<bool>>()
+            });
+        }
+
+        let results: Vec<Vec<bool>> = jobs.join_all().await;
+
+        // All parties should agree
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+
+        // Check against plaintext reference
+        for (i, (cd, md, expected)) in test_cases.into_iter().enumerate() {
+            let ref_cd = if cd > (1 << 15) {
+                cd as i64 - (1 << 16)
+            } else {
+                cd as i64
+            };
+            let reference = reference_fhd_greater_than_threshold(ref_cd, md as i64);
+            assert_eq!(
+                results[0][i], reference,
+                "Reference FHD threshold mismatch for (cd={}, md={}): got {}, expected {}",
+                cd, md, results[0][i], reference
+            );
+            assert_eq!(
+                results[0][i], expected,
+                "FHD threshold mismatch for (cd={}, md={}): got {}, expected {}",
+                cd, md, results[0][i], expected
+            );
+        }
     }
 }
