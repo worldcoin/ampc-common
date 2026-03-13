@@ -307,12 +307,7 @@ mod tests {
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = match i {
-                0 => flat_shares.p0.clone(),
-                1 => flat_shares.p1.clone(),
-                2 => flat_shares.p2.clone(),
-                _ => unreachable!(),
-            };
+            let shares_i = flat_shares.of_party(i).clone();
             let n = test_cases.len();
             jobs.spawn(async move {
                 let mut session = session.lock().await;
