@@ -1,34 +1,44 @@
-use std::{cmp, time::Duration};
+use eyre::Result;
+use serde::{Deserialize, Deserializer, Serialize};
+use socket2::{SockRef, TcpKeepalive};
+use std::time::Duration;
+use tokio::net::TcpStream;
 
-#[derive(Default, Clone, Debug)]
-pub struct TcpConfig {
-    pub timeout_duration: Duration,
-    // the number of sessions managed at once
-    pub num_sessions: u32,
-    // number of TCP connections
-    pub num_connections: u32,
+/// Set no_delay and keepalive on a TCP stream
+pub fn configure_tcp_stream(stream: &TcpStream) -> Result<()> {
+    let params = TcpKeepalive::new()
+        // idle time before keepalives get sent. NGINX default is 60 seconds. want to be less than that.
+        .with_time(Duration::from_secs(30))
+        // how often to send keepalives
+        .with_interval(Duration::from_secs(30))
+        // how many unanswered probes before the connection is closed
+        .with_retries(4);
+    let socket_ref = SockRef::from(stream);
+    socket_ref.set_tcp_nodelay(true)?;
+    socket_ref.set_tcp_keepalive(&params)?;
+    Ok(())
 }
 
-impl TcpConfig {
-    pub fn new(timeout_duration: Duration, num_connections: usize, num_sessions: usize) -> Self {
-        // don't allow fewer requests than connections...
-        let connection_parallelism = cmp::min(num_connections, num_sessions);
+/// TLS configuration for secure network communication.
+#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
+#[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
+pub struct TlsConfig {
+    #[arg(required = false)]
+    #[serde(default)]
+    pub private_key: Option<String>,
 
-        Self {
-            timeout_duration,
-            num_sessions: num_sessions as u32,
-            num_connections: connection_parallelism as u32,
-        }
-    }
+    #[arg(required = false)]
+    #[serde(default)]
+    pub leaf_cert: Option<String>,
 
-    pub fn get_sessions_for_connection(&self, idx: u32) -> u32 {
-        let num_sessions = self.num_sessions;
-        let num_connections = self.num_connections;
-        num_sessions / num_connections
-            + if idx < (num_sessions % num_connections) {
-                1
-            } else {
-                0
-            }
-    }
+    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
+    pub root_certs: Vec<String>,
+}
+
+pub fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = Deserialize::deserialize(deserializer)?;
+    serde_json::from_str(&value).map_err(serde::de::Error::custom)
 }

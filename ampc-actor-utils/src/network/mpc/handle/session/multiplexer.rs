@@ -12,8 +12,11 @@ use tokio::{
 use crate::{
     execution::session::SessionId,
     network::{
-        tcp::{connection::ConnectionState, data::OutboundMsg, NetworkConnection},
-        value::{DescriptorByte, NetworkValue},
+        mpc::{
+            handle::data::OutboundMsg,
+            value::{DescriptorByte, NetworkValue},
+        },
+        tcp::{ConnectionState, NetworkConnection},
     },
 };
 

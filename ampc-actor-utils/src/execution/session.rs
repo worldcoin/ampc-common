@@ -1,9 +1,6 @@
 use crate::{
     execution::player::{Identity, Role},
-    network::{
-        value::{NetworkInt, NetworkValue},
-        Networking,
-    },
+    network::mpc::{NetworkInt, NetworkValue, Networking},
     protocol::prf::Prf,
 };
 use ampc_secret_sharing::shares::ring_impl::VecRingElement;

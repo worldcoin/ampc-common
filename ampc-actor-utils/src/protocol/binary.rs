@@ -1,7 +1,7 @@
 use crate::fast_metrics::FastHistogram;
 use crate::{
     execution::session::{Session, SessionHandles},
-    network::value::{NetworkInt, NetworkValue},
+    network::mpc::{NetworkInt, NetworkValue},
 };
 use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{

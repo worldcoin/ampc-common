@@ -7,15 +7,15 @@ use crate::{
         session::{NetworkSession, Session},
     },
     network::{
-        tcp::{
-            config::TcpConfig,
-            connection::{accept_loop, ConnectionRequest, ConnectionState},
-            data::{ConnectionId, Peer, PeerConnections},
-            session::TcpSession,
-            Client, NetworkConnection, NetworkHandle, Server,
+        mpc::{
+            handle::{config::TcpConfig, data::PeerConnections, session::TcpSession},
+            value::NetworkValue,
+            NetworkHandle, Networking,
         },
-        value::NetworkValue,
-        Networking,
+        tcp::{
+            accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState,
+            NetworkConnection, Peer, Server,
+        },
     },
     protocol::ops::setup_replicated_prf,
 };
@@ -204,7 +204,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
         for peer in self.peers.iter() {
             for idx in 0..conns_per_peer {
                 let connection_id = ConnectionId::new(idx);
-                let fut = super::connection::connect(
+                let fut = crate::network::tcp::connect(
                     connection_id,
                     self.my_id.clone(),
                     peer.clone(),
@@ -260,14 +260,11 @@ mod tests {
     use super::super::testing::*;
 
     use eyre::Result;
-
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::task::JoinSet;
-
     use tracing_test::traced_test;
 
     use crate::execution::local::generate_local_identities;
-
     use crate::network::tcp::TcpStreamConn;
 
     #[tokio::test(flavor = "multi_thread")]

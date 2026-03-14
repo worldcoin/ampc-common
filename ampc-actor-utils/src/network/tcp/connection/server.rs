@@ -1,5 +1,6 @@
-use crate::network::tcp::data::configure_tcp_stream;
-use crate::network::tcp::{DynStreamConn, Server, TcpStreamConn, TlsStreamConn};
+use crate::network::tcp::{
+    configure_tcp_stream, DynStreamConn, Server, TcpStreamConn, TlsStreamConn,
+};
 use async_trait::async_trait;
 use eyre::{eyre, Result};
 use std::{net::SocketAddr, sync::Arc};
