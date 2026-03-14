@@ -111,6 +111,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "statrs",
+ "thiserror",
  "tokio",
  "tokio-rustls",
  "tokio-util",

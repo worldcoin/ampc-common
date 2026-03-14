@@ -1,1 +1,144 @@
-// Networking primitives for a worker pool will live here. code is needed to manage TCP/TLS connections (different from the multi-stream based connections needed for MPC), and to scatter/gather jobs.
+use std::io;
+
+use crate::network::{tcp::NetworkConnection, workpool::value::NetworkValue};
+use bytes::BytesMut;
+use thiserror::Error;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+};
+
+pub mod leader;
+pub mod value;
+pub mod worker;
+
+pub type Payload = Vec<u8>;
+
+#[derive(Error, Debug, Clone)]
+pub enum NetworkFailure {
+    #[error("worker {worker_id} lost jobs: expected last received job_id {expected}, but worker reports {actual:?}")]
+    JobsLost {
+        worker_id: u16,
+        expected: u32,
+        actual: Option<u32>,
+    },
+    #[error("worker {worker_id} disconnected")]
+    WorkerDisconnected { worker_id: u16 },
+    #[error("job timeout: job_id {0}")]
+    JobTimeout(u32),
+    #[error("channel closed")]
+    ChannelClosed,
+}
+
+#[derive(Error, Debug)]
+pub enum LeaderError {
+    #[error("connection error: {0}")]
+    ConnectionError(String),
+    #[error("parse error: {0}")]
+    ParseError(String),
+    #[error("channel closed")]
+    ChannelClosed,
+    #[error("channel receive error: {0}")]
+    ChannelRecvError(#[from] tokio::sync::oneshot::error::RecvError),
+    #[error("io error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum WorkerError {
+    #[error("connection error: {0}")]
+    ConnectionError(String),
+    #[error("parse error: {0}")]
+    ParseError(String),
+    #[error("channel closed")]
+    ChannelClosed,
+    #[error("io error: {0}")]
+    IoError(#[from] std::io::Error),
+}
+
+pub(crate) async fn handle_outbound_traffic<T: NetworkConnection, F>(
+    mut stream: WriteHalf<T>,
+    cmd_rx: &mut UnboundedReceiver<NetworkValue>,
+    mut on_send: F,
+) -> io::Result<()>
+where
+    F: FnMut(&NetworkValue),
+{
+    const BUFFER_CAPACITY: usize = 64 * 1024 * 1024;
+
+    let mut buf = BytesMut::with_capacity(1024 * 64);
+    while let Some(msg) = cmd_rx.recv().await {
+        on_send(&msg);
+        buf.clear();
+        msg.serialize(&mut buf);
+
+        // Try to batch more messages
+        while let Ok(msg) = cmd_rx.try_recv() {
+            on_send(&msg);
+            msg.serialize(&mut buf);
+            if buf.len() >= BUFFER_CAPACITY {
+                break;
+            }
+        }
+        stream.write_all(&buf).await?;
+        stream.flush().await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn handle_inbound_traffic<T, R, F>(
+    mut reader: BufReader<ReadHalf<T>>,
+    tx: &UnboundedSender<R>,
+    mut convert_and_send: F,
+) -> io::Result<()>
+where
+    T: NetworkConnection,
+    F: FnMut(NetworkValue, &UnboundedSender<R>) -> io::Result<()>,
+{
+    use value::DescriptorByte;
+    let mut buf = vec![0u8; 64 * 1024];
+
+    loop {
+        // Read descriptor byte first
+        reader.read_exact(&mut buf[..1]).await?;
+        let descriptor: DescriptorByte = buf[0]
+            .try_into()
+            .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", buf[0])))?;
+
+        // Read remaining bytes based on message type
+        let total_len = match descriptor {
+            DescriptorByte::Request | DescriptorByte::Response => {
+                // Read: job_id (4) + partition_id (2) + payload_len (4)
+                reader.read_exact(&mut buf[1..11]).await?;
+                let payload_len = u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize;
+
+                // Read payload
+                if buf.len() < 11 + payload_len {
+                    buf.resize(11 + payload_len, 0);
+                }
+                reader.read_exact(&mut buf[11..11 + payload_len]).await?;
+                11 + payload_len
+            }
+            DescriptorByte::QueryJobState => {
+                // Read: worker_id (2)
+                reader.read_exact(&mut buf[1..3]).await?;
+                3
+            }
+            DescriptorByte::JobStateResponse => {
+                // Read: worker_id (2) + last_received (5) + last_responded (5)
+                reader.read_exact(&mut buf[1..13]).await?;
+                13
+            }
+        };
+
+        // Deserialize the NetworkValue
+        match NetworkValue::deserialize(&buf[..total_len]) {
+            Ok(network_value) => {
+                convert_and_send(network_value, tx)?;
+            }
+            Err(e) => {
+                return Err(io::Error::other(format!("Failed to deserialize: {}", e)));
+            }
+        }
+    }
+}
