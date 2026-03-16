@@ -10,12 +10,11 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::LazyLock;
 
 /// When non-zero, overrides the dynamic batch size calculation.
 /// This value is mapped to an Option. Zero corresponds to None.
 /// All parties must have the same value for correct MPC operation.
-static FIXED_BATCH_SIZE: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+static FIXED_BATCH_SIZE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigUpdate {
@@ -68,7 +67,7 @@ async fn post_config(Json(update): Json<ConfigUpdate>) -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(ConfigResponse {
-            fixed_batch_size: update.fixed_batch_size,
+            fixed_batch_size: get_fixed_batch_size().map(|x| x as u32),
         }),
     )
 }
