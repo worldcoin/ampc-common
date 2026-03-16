@@ -20,7 +20,7 @@ pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
 pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
 
 pub const B_BITS: u64 = 16;
-pub const B: u64 = 1 << B_BITS;
+pub const B: u32 = 1 << B_BITS;
 
 // ---------------------------------------------------------------------------
 // Batched replicated multiplication
@@ -338,13 +338,13 @@ where
 {
     let n = left_distances.len();
     if n == 0 {
-        eyre::bail!("Distances must not be empty");
+        bail!("Distances must not be empty");
     }
     if n != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
+        bail!("Number of distances must match number of control bits");
     }
     if n != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
+        bail!("Left and right distances must have the same length");
     }
 
     let distances = reshare_mux(session, n, 2, &control_bits, |j, f| {
@@ -385,14 +385,14 @@ where
     T: NetworkInt + RingRandFillable,
 {
     if left_distances.is_empty() {
-        eyre::bail!("Distances must not be empty");
+        bail!("Distances must not be empty");
     }
     let n = left_distances.len();
     if n != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
+        bail!("Number of distances must match number of control bits");
     }
     if n != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
+        bail!("Left and right distances must have the same length");
     }
 
     let flat_res = reshare_mux(session, n, 3, &control_bits, |j, f| {
@@ -434,7 +434,7 @@ where
     Standard: Distribution<T>,
 {
     if swap_when_zero_bits.len() != indices.len() {
-        eyre::bail!("swap bits and indices must have the same length");
+        bail!("swap bits and indices must have the same length");
     }
 
     let list_len = list.len();

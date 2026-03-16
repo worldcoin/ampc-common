@@ -4,6 +4,7 @@
 //! face embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
+use eyre::bail;
 use rand::{CryptoRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
 use serde::{Deserialize, Serialize};
@@ -158,10 +159,10 @@ impl FaceVector {
     ) -> eyre::Result<[FaceSecretSharedVector; 3]> {
         #[allow(clippy::manual_is_multiple_of)]
         if FACE_VECTOR_SIZE % 4 != 0 {
-            return Err(eyre::eyre!(
+            bail!(
                 "Vector size must be divisible by 4, got {}",
                 FACE_VECTOR_SIZE
-            ));
+            );
         }
 
         let mut shares = [

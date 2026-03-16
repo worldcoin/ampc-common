@@ -1,5 +1,6 @@
 use ampc_actor_utils::execution::session::Session;
 use ampc_actor_utils::network::value::NetworkValue;
+use eyre::bail;
 use itertools::Itertools;
 
 pub async fn sync_on_job_sizes(session: &mut Session, job_size: usize) -> eyre::Result<usize> {
@@ -58,13 +59,13 @@ async fn broadcast_u64(session: &mut Session, value: u64) -> eyre::Result<[u64; 
     for (i, nv) in broadcasted_values.iter().enumerate() {
         if let NetworkValue::Bytes(b) = nv {
             if b.len() != 8 {
-                return Err(eyre::eyre!("Unexpected byte length for usize"));
+                bail!("Unexpected byte length for usize");
             }
             let mut arr = [0u8; 8];
             arr.copy_from_slice(&b[..8]);
             result[i] = u64::from_le_bytes(arr);
         } else {
-            return Err(eyre::eyre!("Unexpected network value type"));
+            bail!("Unexpected network value type");
         }
     }
     Ok(result)

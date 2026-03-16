@@ -11,7 +11,7 @@ use itertools::Itertools;
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
 /// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
-/// The result of the comparisons is a flat vector of Share<u32>, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
+/// The result of the comparisons is a flat vector of `Share<u32>`, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
 pub async fn compare_against_thresholds_batched(
     session: &mut Session,
     threshold_a_terms: &[u32],
@@ -22,7 +22,7 @@ pub async fn compare_against_thresholds_batched(
         .flat_map(|a| {
             distances.iter().map(|d| {
                 let x = d.mask_dot * *a;
-                let y = d.code_dot * B as u32;
+                let y = d.code_dot * B;
                 x - y
             })
         })
@@ -39,7 +39,7 @@ pub async fn compare_against_thresholds_batched(
 
 /// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
 /// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
-/// The result of the comparisons is a flat vector of Share<u32>, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
+/// The result of the comparisons is a flat vector of `Share<u32>`, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
 pub async fn nhd_compare_against_thresholds_batched(
     session: &mut Session,
     threshold_a_terms: &[f64],

@@ -1,4 +1,5 @@
 use super::{bit::Bit, int_ring::IntRing2k};
+use eyre::bail;
 use num_traits::{One, Zero};
 use rand::{
     distributions::{Distribution, Standard},
@@ -116,7 +117,7 @@ impl<T: IntRing2k> Add for VecRingElement<T> {
 
     fn add(self, rhs: Self) -> Self::Output {
         if self.0.len() != rhs.0.len() {
-            eyre::bail!("Adding vectors of different lengths");
+            bail!("Adding vectors of different lengths");
         }
         let sum = itertools::izip!(self.0, rhs.0)
             .map(|(a, b)| a + b)
@@ -130,7 +131,7 @@ impl<T: IntRing2k> BitXor<&Self> for VecRingElement<T> {
 
     fn bitxor(self, rhs: &Self) -> Self::Output {
         if self.0.len() != rhs.0.len() {
-            eyre::bail!("Adding vectors of different lengths");
+            bail!("Adding vectors of different lengths");
         }
         let sum = itertools::izip!(self.0, rhs.0.iter())
             .map(|(a, b)| a ^ b)
@@ -144,7 +145,7 @@ impl<T: IntRing2k> Sub for VecRingElement<T> {
 
     fn sub(self, rhs: Self) -> Self::Output {
         if self.0.len() != rhs.0.len() {
-            eyre::bail!("Subtracting vectors of different lengths");
+            bail!("Subtracting vectors of different lengths");
         }
         let diff = itertools::izip!(self.0, rhs.0)
             .map(|(a, b)| a - b)
@@ -158,7 +159,7 @@ impl<T: IntRing2k> Sub<&Self> for VecRingElement<T> {
 
     fn sub(self, rhs: &Self) -> Self::Output {
         if self.0.len() != rhs.0.len() {
-            eyre::bail!("Subtracting vectors of different lengths");
+            bail!("Subtracting vectors of different lengths");
         }
         let diff = itertools::izip!(self.0, rhs.0.iter())
             .map(|(a, b)| a - b)
@@ -173,7 +174,7 @@ impl<T: IntRing2k> Mul<&Self> for VecRingElement<T> {
     /// Component-wise multiplication
     fn mul(self, rhs: &Self) -> Self::Output {
         if self.0.len() != rhs.0.len() {
-            eyre::bail!("Multiplying vectors of different lengths");
+            bail!("Multiplying vectors of different lengths");
         }
 
         let prod = itertools::izip!(self.0, rhs.0.iter())

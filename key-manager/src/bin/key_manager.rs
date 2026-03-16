@@ -9,7 +9,7 @@ use aws_sdk_secretsmanager::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::{bail, Result};
 use rand::{thread_rng, Rng};
 use reqwest::Client;
 use sodiumoxide::crypto::box_::{curve25519xsalsa20poly1305, PublicKey, SecretKey, Seed};
@@ -216,9 +216,7 @@ async fn rotate_keys(
         }
         Err(e) => {
             eprintln!("Error uploading private key to Secrets Manager: {:?}", e);
-            return Err(eyre::eyre!(
-                "Error uploading private key to Secrets Manager"
-            ));
+            bail!("Error uploading private key to Secrets Manager");
         }
     }
 
@@ -232,7 +230,7 @@ async fn rotate_keys(
         }
         Err(e) => {
             eprintln!("Error uploading public key to S3: {:?}", e);
-            return Err(eyre::eyre!("Error uploading public key to S3"));
+            bail!("Error uploading public key to S3");
         }
     }
 
