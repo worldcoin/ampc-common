@@ -281,6 +281,16 @@ where
     T: NetworkInt + RingRandFillable,
     F: FnMut(usize, usize) -> (Share<T>, Share<T>),
 {
+    if fields_per_element == 0 {
+        bail!("reshare_mux: fields_per_element must be greater than zero");
+    }
+    if control_bits.len() < n_elements {
+        bail!(
+            "reshare_mux: control_bits length ({}) is smaller than n_elements ({})",
+            control_bits.len(),
+            n_elements
+        );
+    }
     reshare_products(session, n_elements * fields_per_element, |i| {
         let j = i / fields_per_element;
         let f = i % fields_per_element;
