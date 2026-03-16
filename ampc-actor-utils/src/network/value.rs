@@ -263,7 +263,7 @@ impl NetworkValue {
             bail!("Can't parse vector length: buffer too short");
         }
         if serialized[0] != DescriptorByte::NetworkVec as u8 {
-            return Err(eyre!("called deserialize_vec() on invalid buffer"));
+            bail!("called deserialize_vec() on invalid buffer");
         }
         let payload_len = u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[1..5])?) as usize;
         if serialized.len() != 5 + payload_len {

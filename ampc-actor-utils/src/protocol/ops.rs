@@ -405,13 +405,13 @@ where
     Standard: Distribution<T>,
 {
     if left_distances.len() != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
+        bail!("Number of distances must match number of control bits");
     }
     if left_distances.len() != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
+        bail!("Left and right distances must have the same length");
     }
     if left_distances.is_empty() {
-        eyre::bail!("Distances must not be empty");
+        bail!("Distances must not be empty");
     }
 
     // Now select distances
@@ -456,13 +456,13 @@ where
     Standard: Distribution<T>,
 {
     if left_distances.len() != control_bits.len() {
-        eyre::bail!("Number of distances must match number of control bits");
+        bail!("Number of distances must match number of control bits");
     }
     if left_distances.len() != right_distances.len() {
-        eyre::bail!("Left and right distances must have the same length");
+        bail!("Left and right distances must have the same length");
     }
     if left_distances.is_empty() {
-        eyre::bail!("Distances must not be empty");
+        bail!("Distances must not be empty");
     }
 
     let left_dist = left_distances
@@ -505,7 +505,7 @@ where
     Standard: Distribution<T>,
 {
     if swap_when_zero_bits.len() != indices.len() {
-        eyre::bail!("swap bits and indices must have the same length");
+        bail!("swap bits and indices must have the same length");
     }
 
     let list_len = list.len();
@@ -596,7 +596,7 @@ where
     Standard: Distribution<T>,
 {
     if swap_when_zero_bits.len() != indices.len() {
-        return Err(eyre!("swap bits and indices must have the same length"));
+        bail!("swap bits and indices must have the same length");
     }
     let list_len = list.len();
     for (idx1, idx2) in indices.iter() {

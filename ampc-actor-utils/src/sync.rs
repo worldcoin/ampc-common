@@ -1,5 +1,6 @@
 use crate::execution::session::Session;
 use crate::network::value::NetworkValue;
+use eyre::bail;
 
 pub const JOB_HASH_LEN: usize = 32;
 
@@ -25,7 +26,7 @@ pub async fn sync_on_job_hash(
         0 => [local, from_next, from_prev],
         1 => [from_prev, local, from_next],
         2 => [from_next, from_prev, local],
-        _ => return Err(eyre::eyre!("Invalid party id")),
+        _ => bail!("Invalid party id"),
     };
 
     let all_bytes: Vec<&[u8]> = all

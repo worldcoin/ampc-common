@@ -1,17 +1,15 @@
 use ampc_secret_sharing::{
     shares::{bit::Bit, DistanceShare, VecShare},
-    RingElement, Share,
+    Share,
 };
-use eyre::{bail, Result};
-use itertools::izip;
+use eyre::Result;
 use tracing::instrument;
 
 use crate::{
     execution::session::Session,
-    network::value::NetworkValue,
     protocol::{
         binary::{bit_inject, extract_msb_batch, open_bin},
-        ops::{conditionally_select_distance, DistancePair, B},
+        ops::{conditionally_select_distance, reshare_products, DistancePair, B},
     },
 };
 
@@ -60,35 +58,11 @@ pub async fn cross_mul(
     session: &mut Session,
     distances: &[DistancePair<u32>],
 ) -> Result<Vec<Share<u32>>> {
-    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(distances.len());
-    let res_a: Vec<RingElement<u32>> = izip!(
-        distances.iter(),
-        prf_my_values.0.into_iter(),
-        prf_prev_values.0.into_iter()
-    )
-    .map(|(&(d1, d2), a, b)| {
-        let zero_share = a - b; // equivalent to gen_zero_share()
-        zero_share + d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
+    reshare_products(session, distances.len(), |i| {
+        let (d1, d2) = distances[i];
+        d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
     })
-    .collect();
-
-    let network = &mut session.network_session;
-
-    let message = if res_a.len() == 1 {
-        NetworkValue::RingElement32(res_a[0])
-    } else {
-        NetworkValue::VecRing32(res_a.clone())
-    };
-    network.send_next(message).await?;
-
-    let res_b = match network.receive_prev().await {
-        Ok(NetworkValue::RingElement32(element)) => vec![element],
-        Ok(NetworkValue::VecRing32(elements)) => elements,
-        _ => bail!("Could not deserialize RingElement32"),
-    };
-    Ok(izip!(res_a.into_iter(), res_b.into_iter())
-        .map(|(a, b)| Share::new(a, b))
-        .collect())
+    .await
 }
 
 /// For every pair of distance fraction shares (d1, d2), this computes the secret-shared bit d2 < d1.
@@ -166,7 +140,10 @@ mod tests {
 
     use super::*;
 
+    use crate::network::value::NetworkValue;
+
     use aes_prng::AesRng;
+    use ampc_secret_sharing::RingElement;
     use eyre::{bail, Result};
     use rand::SeedableRng;
     use std::{collections::HashMap, sync::Arc};
