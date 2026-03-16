@@ -1,4 +1,4 @@
-use eyre::Result;
+use eyre::{bail, Result};
 use itertools::Itertools;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
@@ -101,13 +101,13 @@ where
 {
     // check that distances is not empty
     if distances.is_empty() {
-        eyre::bail!("Input distances cannot be empty");
+        bail!("Input distances cannot be empty");
     }
 
     // check that all batches have the same length
     let batch_size = distances[0].len();
     if !distances.iter().all(|batch| batch.len() == batch_size) {
-        eyre::bail!("All batches must have the same length");
+        bail!("All batches must have the same length");
     }
 
     let flattened_distances = distances.into_iter().flatten().collect_vec();
@@ -119,7 +119,7 @@ where
         0 => shuffle_party_0(session, flattened_distances, batch_size).await?,
         1 => shuffle_party_1(session, flattened_distances, batch_size).await?,
         2 => shuffle_party_2(session, flattened_distances, batch_size).await?,
-        _ => eyre::bail!("Invalid shuffle role: {}", shuffle_role),
+        _ => bail!("Invalid shuffle role: {}", shuffle_role),
     };
 
     // Reshape flattened_results back into batches

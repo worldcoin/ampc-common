@@ -2,6 +2,7 @@ use ampc_actor_utils::network::config::TlsConfig;
 use ampc_server_utils::config::{AwsConfig, ServiceConfig};
 use ampc_server_utils::ServerCoordinationConfig;
 use clap::Parser;
+use eyre::bail;
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Parser)]
@@ -289,26 +290,26 @@ impl AnonStatsServerConfig {
             || self.max_rows_per_job_1d < self.min_1d_job_size_recovery
             || self.max_rows_per_job_1d < self.min_face_job_size
         {
-            return Err(eyre::eyre!(
+            bail!(
                 "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {})",
                 self.max_rows_per_job_1d,
                 self.min_1d_job_size,
                 self.min_1d_job_size_reauth,
                 self.min_1d_job_size_recovery,
                 self.min_face_job_size
-            ));
+            );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
             || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
             || self.max_rows_per_job_2d < self.min_2d_job_size_recovery
         {
-            return Err(eyre::eyre!(
+            bail!(
                 "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {})",
                 self.max_rows_per_job_2d,
                 self.min_2d_job_size,
                 self.min_2d_job_size_reauth,
                 self.min_2d_job_size_recovery
-            ));
+            );
         }
         Ok(())
     }

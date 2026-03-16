@@ -17,7 +17,7 @@ use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::handle::TcpNetworkHandle;
 use async_trait::async_trait;
-use eyre::Result;
+use eyre::{bail, Result};
 use itertools::izip;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -133,9 +133,7 @@ pub async fn build_network_handle(
 
         tracing::info!("Running in full app TLS mode.");
         if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(eyre::eyre!(
-                "TLS configuration is required for this operation"
-            ));
+            bail!("TLS configuration is required for this operation");
         }
         let private_key = tls
             .private_key

@@ -1284,11 +1284,11 @@ pub async fn open_bin(session: &mut Session, shares: &[Share<Bit>]) -> Result<Ve
         .map_err(|e| eyre!("Wrong value type received in open_bin operation: {}", e))?;
 
     if b_from_previous.len() != shares.len() {
-        return Err(eyre!(
+        bail!(
             "Bit count mismatch in open_bin: expected {} but received {}",
             shares.len(),
             b_from_previous.len()
-        ));
+        );
     }
 
     // XOR shares with the received shares
