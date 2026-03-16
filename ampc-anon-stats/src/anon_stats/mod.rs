@@ -1,4 +1,4 @@
-use ampc_actor_utils::protocol::ops::translate_threshold_a;
+use ampc_actor_utils::protocol::fhd_ops::translate_threshold_a;
 // Note: The following imports will need to be resolved when integrating with iris-mpc:
 // - MATCH_THRESHOLD_RATIO from iris_mpc_common::iris_db::iris
 // For now, these remain as iris_mpc_common dependencies
