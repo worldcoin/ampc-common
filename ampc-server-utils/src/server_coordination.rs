@@ -161,6 +161,12 @@ where
             // Merge profiling routes
             app = app.merge(pprof_routes());
 
+            // Merge runtime config routes if the feature flag is enabled
+            #[cfg(feature = "runtime_config")]
+            {
+                app = app.merge(crate::runtime_config::runtime_config_routes());
+            }
+
             // Merge caller-provided extra routes (e.g., /rerand-watermark)
             if let Some(extra) = extra_routes {
                 app = app.merge(extra);
