@@ -159,24 +159,31 @@ Loop forever:
 The protocol uses a compact binary format with a descriptor byte prefix:
 
 ```rust
+pub type WorkerId = u16;
+pub type JobId = u32;
+
 enum NetworkValue {
     Request {
-        job_id: u32,
-        worker_id: u16,
+        job_id: JobId,
+        worker_id: WorkerId,
         payload: Vec<u8>,
     },
     Response {
-        job_id: u32,
-        worker_id: u16,
+        job_id: JobId,
+        worker_id: WorkerId,
         payload: Vec<u8>,
     },
     QueryJobState {
-        worker_id: u16,
+        worker_id: WorkerId,
     },
     JobStateResponse {
-        worker_id: u16,
-        last_received_job_id: Option<u32>,
-        last_responded_job_id: Option<u32>,
+        worker_id: WorkerId,
+        last_received_job_id: Option<JobId>,
+        last_responded_job_id: Option<JobId>,
+    },
+    Cancel {
+        job_id: JobId,
+        worker_id: WorkerId,
     },
 }
 ```
@@ -209,9 +216,18 @@ Total: 3 bytes
 └──────────┴───────────┴─────────────────┴─────────────────┘
 Total: 13 bytes
 
-Option<u32> encoding:
+Option<JobId> encoding:
   - First byte: 0 = None, 1 = Some
-  - Next 4 bytes: u32 value (if Some)
+  - Next 4 bytes: JobId value (if Some)
+```
+
+#### Cancel (Descriptor: 0x05)
+```
+┌──────────┬──────────┬───────────┐
+│Descriptor│ job_id   │ worker_id │
+│  1 byte  │ 4 bytes  │  2 bytes  │
+└──────────┴──────────┴───────────┘
+Total: 7 bytes
 ```
 
 ### Message Batching
@@ -491,21 +507,20 @@ The JobTracker is the core component for coordinating multi-worker operations.
 
 ```rust
 pub struct JobTracker {
-    next_job_id: AtomicU32,              // Atomic counter for job IDs
-    pending_jobs: DashMap<u32, PendingJob>,  // Concurrent map of active jobs
+    pending_jobs: DashMap<JobId, PendingJob>,  // Concurrent map of active jobs
 }
 
 struct PendingJob {
-    partitions_pending: HashSet<u16>,    // Set of worker_ids awaiting response
-    results: Vec<Option<WorkerRsp>>,     // Results indexed by worker_id (may contain errors)
+    partitions_pending: HashSet<WorkerId>,    // Set of worker_ids awaiting response
+    results: HashMap<WorkerId, WorkerRsp>,    // Results by worker_id (may contain errors)
     response_tx: oneshot::Sender<WorkpoolRes>,  // Channel to caller
 }
 
 pub type WorkpoolRes = Result<Vec<WorkerRsp>, WorkpoolError>;
 
 pub enum JobType {
-    ScatterGather { num_partitions: u16 },
-    Broadcast { num_workers: u16 },
+    ScatterGather { worker_ids: HashSet<WorkerId> },
+    Broadcast { num_workers: WorkerId },
 }
 ```
 
@@ -515,12 +530,13 @@ pub enum JobType {
 ┌─────────────────────────────────────────────────────────────┐
 │                    1. Job Registration                      │
 └─────────────────────────────────────────────────────────────┘
-    register_job(job_type, response_tx) → job_id
-    - Atomically increment next_job_id
-    - Initialize partitions_pending = {0..num_workers}
-    - Initialize results = [None, None, ..., None]
+    register_job(job_id, job_type, response_tx)
+    - Initialize partitions_pending from job_type:
+      * Broadcast: {0..num_workers}
+      * ScatterGather: worker_ids from msgs
+    - Initialize results = HashMap::new()
     - Store PendingJob in DashMap
-    - Return job_id
+    - Job ID assigned by LeaderHandle (atomic counter)
 
 ┌─────────────────────────────────────────────────────────────┐
 │                  2. Response Collection                     │
@@ -538,17 +554,18 @@ pub enum JobType {
 └─────────────────────────────────────────────────────────────┘
     complete_job(job_id)
     - Remove PendingJob from DashMap
-    - Unwrap all results from Vec<Option<WorkerRsp>>
+    - Sort results by worker_id for deterministic ordering
     - Assemble Vec<WorkerRsp> in order (may contain success and error responses)
     - Send Ok(results) via response_tx to caller
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    4. Job Cancellation                      │
 └─────────────────────────────────────────────────────────────┘
-    cancel_job(job_id, error)
+    cancel_job(job_id) -> Result<Vec<WorkerId>>
     - Remove PendingJob from DashMap
-    - Drop response_tx (caller receives RecvError)
-    - Log error message
+    - Return list of worker_ids that were still pending
+    - Leader sends Cancel message to those workers (best-effort)
+    - Drop response_tx (caller's JobHandle receives cancelled error)
 ```
 
 ### Concurrency Safety
@@ -731,7 +748,11 @@ loop {
 #### WorkpoolError (runtime errors)
 ```rust
 pub enum WorkpoolError {
-    JobsLost { worker_id, expected, actual },  // Detected via reconciliation
+    JobsLost {
+        worker_id: WorkerId,
+        expected: JobId,
+        actual: Option<JobId>
+    },  // Detected via reconciliation
     SendFailed,                                // Lost connection to worker tasks
     InvalidInput(String),                      // Input validation failed
 }
@@ -746,23 +767,34 @@ pub enum SetupError {
 }
 ```
 
-### Future Error Handling TODO
+### Job Cancellation
 
-From the code comments, these error handling paths are incomplete:
+Jobs can be cancelled via the `JobHandle` returned from `broadcast()` and `scatter_gather()`:
 
-1. **Reconciliation Failures** (leader_task.rs:194):
-   ```rust
-   if let Err(e) = detect_dropped_jobs(...) {
-       // TODO: emit error for every job being tracked
-   }
-   ```
-   Should cancel all pending jobs involving the affected worker.
+```rust
+// Submit a job
+let handle = leader.broadcast(payload)?;
 
-2. **Job Loss Notification** (leader_task.rs:280):
-   ```rust
-   todo!("send error via channel");
-   ```
-   Should propagate `WorkpoolError::JobsLost` to application layer.
+// Cancel it before it completes
+handle.cancel()?;
+
+// Or await the result (will fail if cancelled)
+let result = handle.await;
+```
+
+**Cancellation Flow:**
+1. User calls `JobHandle::cancel()`
+2. Leader sends `Job::Cancel { job_id }` to leader_task
+3. JobTracker removes the job, returns list of pending workers
+4. Leader sends `NetworkValue::Cancel` to each pending worker (best-effort)
+5. Workers receive Cancel message, log it, and continue (no action required)
+6. JobHandle's result channel is dropped, caller receives error
+
+**Notes:**
+- Cancellation at worker level is not enforced (workers may still compute and send results)
+- Worker responses to cancelled jobs are dropped by the leader (job not in JobTracker)
+- This design avoids overhead for short-lived jobs while still supporting cancellation
+- For long-running jobs requiring immediate cancellation, application-level protocols are recommended
 
 ---
 
@@ -815,8 +847,8 @@ Assumes:
 Job overhead = PendingJob size ≈ 100 bytes + (num_workers × 100 bytes)
 
 Includes:
-  - HashSet<u16> for partitions_pending
-  - Vec<Option<Result<WorkerRsp>>> for results
+  - HashSet<WorkerId> for partitions_pending
+  - HashMap<WorkerId, WorkerRsp> for results
   - oneshot::Sender
 ```
 
@@ -835,11 +867,12 @@ Where:
 - Tested: Unknown (no benchmarks in code)
 - Theoretical: Limited by file descriptor limits (~1000s)
 - Per worker: ~100 KB memory overhead
+- WorkerId type: u16, supports up to 65,536 workers
 
 **Number of Concurrent Jobs**:
 - Limited only by memory
 - DashMap scales to millions of entries
-- AtomicU32 job IDs wrap at 4 billion
+- JobId type: u32, wraps at 4.3 billion jobs
 
 **Message Size**:
 - Max message: 64 MB (buffer capacity)

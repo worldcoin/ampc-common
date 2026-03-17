@@ -115,8 +115,11 @@ async fn broadcast_command(leader: &LeaderHandle) -> Result<(), WorkpoolError> {
     };
     let payload = bincode::serialize(&cmd).unwrap();
 
-    // Broadcast to all workers
-    let responses = leader.broadcast(payload).await?;
+    // Broadcast to all workers (returns JobHandle)
+    let handle = leader.broadcast(payload)?;
+
+    // Await the results
+    let responses = handle.await?;
 
     // Process responses (may contain errors from individual workers)
     println!("Received {} responses", responses.len());
@@ -176,7 +179,7 @@ fn execute_command(cmd: &Command) {
 
 ```rust
 use ampc_actor_utils::network::workpool::leader::{LeaderHandle, WorkerJob};
-use ampc_actor_utils::network::workpool::WorkpoolError;
+use ampc_actor_utils::network::workpool::{WorkpoolError, WorkerId};
 
 async fn scatter_gather_computation(
     leader: &LeaderHandle,
@@ -190,13 +193,16 @@ async fn scatter_gather_computation(
     for (worker_id, chunk) in data.chunks(chunk_size).enumerate() {
         let payload = bincode::serialize(chunk).unwrap();
         msgs.push(WorkerJob {
-            worker_id: worker_id as u16,
+            worker_id: worker_id as WorkerId,
             payload,
         });
     }
 
-    // Scatter to workers, gather results
-    let responses = leader.scatter_gather(msgs).await?;
+    // Scatter to workers, gather results (returns JobHandle)
+    let handle = leader.scatter_gather(msgs)?;
+
+    // Await the results
+    let responses = handle.await?;
 
     // Deserialize and combine results (handle potential errors)
     let mut results = Vec::new();
@@ -246,10 +252,10 @@ use ampc_actor_utils::network::workpool::leader::LeaderHandle;
 use ampc_actor_utils::network::workpool::WorkpoolError;
 
 async fn pipelined_operations(leader: &LeaderHandle) -> Result<(), WorkpoolError> {
-    // Submit multiple jobs without waiting
-    let job1 = leader.broadcast(vec![1, 2, 3]);
-    let job2 = leader.broadcast(vec![4, 5, 6]);
-    let job3 = leader.broadcast(vec![7, 8, 9]);
+    // Submit multiple jobs without waiting (returns JobHandles)
+    let job1 = leader.broadcast(vec![1, 2, 3])?;
+    let job2 = leader.broadcast(vec![4, 5, 6])?;
+    let job3 = leader.broadcast(vec![7, 8, 9])?;
 
     // All jobs execute concurrently
     let (r1, r2, r3) = tokio::join!(job1, job2, job3);
@@ -310,7 +316,15 @@ use ampc_actor_utils::network::workpool::leader::LeaderHandle;
 use ampc_actor_utils::network::workpool::WorkpoolError;
 
 async fn robust_broadcast(leader: &LeaderHandle, payload: Vec<u8>) {
-    match leader.broadcast(payload.clone()).await {
+    let handle = match leader.broadcast(payload.clone()) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Failed to submit job: {}", e);
+            return;
+        }
+    };
+
+    match handle.await {
         Ok(responses) => {
             println!("Received {} responses", responses.len());
 
@@ -374,6 +388,104 @@ fn process_with_error_handling(data: Vec<u8>) -> Result<Vec<u8>, String> {
 }
 ```
 
+## Pattern 5: Job Cancellation
+
+**Use Case**: Cancel long-running jobs that are no longer needed.
+
+### Basic Cancellation
+
+```rust
+use ampc_actor_utils::network::workpool::leader::LeaderHandle;
+use ampc_actor_utils::network::workpool::WorkpoolError;
+
+async fn cancellable_job(leader: &LeaderHandle) -> Result<(), WorkpoolError> {
+    // Submit a job and get a handle
+    let handle = leader.broadcast(vec![1, 2, 3])?;
+
+    // Get the job ID if needed
+    let job_id = handle.job_id();
+    println!("Started job {}", job_id);
+
+    // Cancel the job before it completes
+    handle.cancel()?;
+
+    println!("Job {} cancelled", job_id);
+    Ok(())
+}
+```
+
+### Conditional Cancellation
+
+```rust
+use tokio::time::{timeout, Duration};
+use ampc_actor_utils::network::workpool::leader::LeaderHandle;
+use ampc_actor_utils::network::workpool::WorkpoolError;
+
+async fn timeout_or_cancel(leader: &LeaderHandle) -> Result<(), WorkpoolError> {
+    let handle = leader.broadcast(vec![1, 2, 3])?;
+
+    // Wait up to 5 seconds for completion
+    match timeout(Duration::from_secs(5), handle).await {
+        Ok(Ok(responses)) => {
+            println!("Job completed with {} responses", responses.len());
+        }
+        Ok(Err(e)) => {
+            eprintln!("Job failed: {}", e);
+        }
+        Err(_) => {
+            eprintln!("Job timed out after 5 seconds");
+            // Note: Job is already dropped/cancelled when timeout expires
+        }
+    }
+
+    Ok(())
+}
+```
+
+### User-Driven Cancellation
+
+```rust
+use tokio::sync::oneshot;
+use ampc_actor_utils::network::workpool::leader::LeaderHandle;
+use ampc_actor_utils::network::workpool::WorkpoolError;
+
+async fn user_cancellable_job(
+    leader: &LeaderHandle,
+    cancel_signal: oneshot::Receiver<()>,
+) -> Result<(), WorkpoolError> {
+    let handle = leader.broadcast(vec![1, 2, 3])?;
+
+    tokio::select! {
+        result = handle => {
+            match result {
+                Ok(responses) => {
+                    println!("Job completed with {} responses", responses.len());
+                }
+                Err(e) => {
+                    eprintln!("Job failed: {}", e);
+                }
+            }
+        }
+        _ = cancel_signal => {
+            println!("User requested cancellation");
+            // handle is dropped here, job is cancelled
+        }
+    }
+
+    Ok(())
+}
+```
+
+### Important Notes on Cancellation
+
+1. **Leader-Side Only**: Cancellation removes the job from the JobTracker on the leader. Workers may still complete the job and send responses, but these responses will be dropped.
+
+2. **Best-Effort Cancel Notification**: The leader sends `Cancel` messages to workers, but workers are not required to stop processing. For short jobs (~microseconds), the overhead of tracking cancellation at the worker level is not worthwhile.
+
+3. **No Worker-Side Enforcement**: Workers receive Cancel messages but currently only log them. The work may still complete.
+
+4. **Automatic Cleanup**: When a `JobHandle` is dropped without being awaited or cancelled, the job continues to run but the results are discarded.
+
 ## Handling Dropped Jobs
 
 When workers reconnect after a network disruption, the system automatically detects and handles dropped jobs.
@@ -387,7 +499,15 @@ use ampc_actor_utils::network::workpool::WorkpoolError;
 async fn resilient_computation(leader: &LeaderHandle) {
     let payload = vec![1, 2, 3, 4, 5];
 
-    match leader.broadcast(payload).await {
+    let handle = match leader.broadcast(payload) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Failed to submit job: {}", e);
+            return;
+        }
+    };
+
+    match handle.await {
         Ok(responses) => {
             // Responses may contain both successes and dropped job errors
             let mut successes = 0;
