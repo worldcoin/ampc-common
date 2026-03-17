@@ -7,7 +7,7 @@ use ampc_actor_utils::protocol::test_utils::create_array_sharing;
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::Share;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use itertools::Itertools;
 use rand::SeedableRng;
 use tokio::task::JoinSet;
@@ -26,34 +26,44 @@ fn bench_select_distance(c: &mut Criterion) {
         let shares = create_array_sharing(&mut rng, &vals);
 
         group.bench_function(BenchmarkId::new("e2e", n), |b| {
-            b.iter(|| {
-                rt.block_on(async {
-                    let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
-                    let mut jobs = JoinSet::new();
+            b.iter_batched(
+                || {
+                    rt.block_on(LocalRuntime::mock_sessions_with_channel())
+                        .unwrap()
+                },
+                |sessions| {
+                    rt.block_on(async {
+                        let mut jobs = JoinSet::new();
 
-                    for (i, session) in sessions.into_iter().enumerate() {
-                        let s = shares.of_party(i).clone();
-                        jobs.spawn(async move {
-                            let mut session = session.lock().await;
-                            let distances: Vec<DistancePair<u32>> = (0..n)
-                                .map(|j| {
-                                    (
-                                        DistanceShare::new(s[j], s[n + j]),
-                                        DistanceShare::new(s[2 * n + j], s[3 * n + j]),
-                                    )
-                                })
-                                .collect();
-                            let control_bits: Vec<Share<u32>> =
-                                (0..n).map(|j| s[4 * n + j]).collect();
+                        for (i, session) in sessions.into_iter().enumerate() {
+                            let s = shares.of_party(i).clone();
+                            jobs.spawn(async move {
+                                let mut session = session.lock().await;
+                                let distances: Vec<DistancePair<u32>> = (0..n)
+                                    .map(|j| {
+                                        (
+                                            DistanceShare::new(s[j], s[n + j]),
+                                            DistanceShare::new(s[2 * n + j], s[3 * n + j]),
+                                        )
+                                    })
+                                    .collect();
+                                let control_bits: Vec<Share<u32>> =
+                                    (0..n).map(|j| s[4 * n + j]).collect();
 
-                            conditionally_select_distance(&mut session, &distances, &control_bits)
+                                conditionally_select_distance(
+                                    &mut session,
+                                    &distances,
+                                    &control_bits,
+                                )
                                 .await
                                 .unwrap()
-                        });
-                    }
-                    jobs.join_all().await
-                })
-            });
+                            });
+                        }
+                        jobs.join_all().await
+                    })
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
 
@@ -79,34 +89,43 @@ fn bench_swap_distances(c: &mut Criterion) {
         let indices: Vec<(usize, usize)> = (0..list_size).tuples().collect();
 
         group.bench_function(BenchmarkId::new("e2e", num_pairs), |b| {
-            b.iter(|| {
-                rt.block_on(async {
-                    let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
-                    let mut jobs = JoinSet::new();
+            b.iter_batched(
+                || {
+                    rt.block_on(LocalRuntime::mock_sessions_with_channel())
+                        .unwrap()
+                },
+                |sessions| {
+                    rt.block_on(async {
+                        let mut jobs = JoinSet::new();
 
-                    for (i, session) in sessions.into_iter().enumerate() {
-                        let s = shares.of_party(i).clone();
-                        let bs = bit_shares.of_party(i).clone();
-                        let indices = indices.clone();
-                        jobs.spawn(async move {
-                            let mut session = session.lock().await;
-                            let list: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
-                                .map(|j| {
-                                    (
-                                        s[j],
-                                        DistanceShare::new(s[list_size + j], s[2 * list_size + j]),
-                                    )
-                                })
-                                .collect();
+                        for (i, session) in sessions.into_iter().enumerate() {
+                            let s = shares.of_party(i).clone();
+                            let bs = bit_shares.of_party(i).clone();
+                            let indices = indices.clone();
+                            jobs.spawn(async move {
+                                let mut session = session.lock().await;
+                                let list: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
+                                    .map(|j| {
+                                        (
+                                            s[j],
+                                            DistanceShare::new(
+                                                s[list_size + j],
+                                                s[2 * list_size + j],
+                                            ),
+                                        )
+                                    })
+                                    .collect();
 
-                            conditionally_swap_distances(&mut session, bs, &list, &indices)
-                                .await
-                                .unwrap()
-                        });
-                    }
-                    jobs.join_all().await
-                })
-            });
+                                conditionally_swap_distances(&mut session, bs, &list, &indices)
+                                    .await
+                                    .unwrap()
+                            });
+                        }
+                        jobs.join_all().await
+                    })
+                },
+                BatchSize::SmallInput,
+            );
         });
     }
 
