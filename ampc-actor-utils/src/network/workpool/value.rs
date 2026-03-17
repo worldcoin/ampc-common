@@ -1,4 +1,4 @@
-use super::Payload;
+use super::{JobId, Payload, WorkerId};
 use bytes::BytesMut;
 use eyre::{bail, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
@@ -8,24 +8,26 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 pub enum NetworkValue {
     /// Request from core to worker
     Request {
-        job_id: u32,
-        worker_id: u16,
+        job_id: JobId,
+        worker_id: WorkerId,
         payload: Payload,
     },
     /// Response from worker to core
     Response {
-        job_id: u32,
-        worker_id: u16,
+        job_id: JobId,
+        worker_id: WorkerId,
         payload: Payload,
     },
     /// Query worker for last job state (reconciliation after reconnect)
-    QueryJobState { worker_id: u16 },
+    QueryJobState { worker_id: WorkerId },
     /// Worker's response to job state query
     JobStateResponse {
-        worker_id: u16,
-        last_received_job_id: Option<u32>,
-        last_responded_job_id: Option<u32>,
+        worker_id: WorkerId,
+        last_received_job_id: Option<JobId>,
+        last_responded_job_id: Option<JobId>,
     },
+    /// Currently unused. Potentially useful in the future.
+    Cancel { job_id: JobId, worker_id: WorkerId },
 }
 
 #[repr(u8)]
@@ -35,21 +37,22 @@ pub enum DescriptorByte {
     Response = 0x02,
     QueryJobState = 0x03,
     JobStateResponse = 0x04,
+    Cancel = 0x05,
 }
 
 impl NetworkValue {
-    pub fn new_request(job_id: u32, partition_id: u16, payload: Payload) -> Self {
+    pub fn new_request(job_id: JobId, worker_id: WorkerId, payload: Payload) -> Self {
         Self::Request {
             job_id,
-            worker_id: partition_id,
+            worker_id,
             payload,
         }
     }
 
-    pub fn new_response(job_id: u32, partition_id: u16, payload: Payload) -> Self {
+    pub fn new_response(job_id: JobId, worker_id: WorkerId, payload: Payload) -> Self {
         Self::Response {
             job_id,
-            worker_id: partition_id,
+            worker_id,
             payload,
         }
     }
@@ -60,6 +63,7 @@ impl NetworkValue {
             NetworkValue::Response { .. } => DescriptorByte::Response,
             NetworkValue::QueryJobState { .. } => DescriptorByte::QueryJobState,
             NetworkValue::JobStateResponse { .. } => DescriptorByte::JobStateResponse,
+            NetworkValue::Cancel { .. } => DescriptorByte::Cancel,
         }
     }
 
@@ -67,7 +71,7 @@ impl NetworkValue {
     pub fn byte_len(&self) -> usize {
         match self {
             NetworkValue::Request { payload, .. } | NetworkValue::Response { payload, .. } => {
-                // descriptor (1) + job_id (4) + partition_id (2) + payload_len (4) + payload
+                // descriptor (1) + job_id (4) + worker_id (2) + payload_len (4) + payload
                 11 + payload.len()
             }
             NetworkValue::QueryJobState { .. } => {
@@ -89,30 +93,35 @@ impl NetworkValue {
                 }
                 size
             }
+            NetworkValue::Cancel { .. } => {
+                // descriptor (1) + job_id (4) + worker_id (2)
+                7
+            }
         }
     }
 
     /// Serialize to bytes
     /// Format:
-    /// - Request/Response: descriptor (1) + job_id (4) + partition_id (2) + payload_len (4) + payload
+    /// - Request/Response: descriptor (1) + job_id (4) + worker_id (2) + payload_len (4) + payload
     /// - QueryJobState: descriptor (1) + worker_id (2)
     /// - JobStateResponse: descriptor (1) + worker_id (2) + bitfield (1) + optional values (0-8 bytes)
+    /// - Cancel: descriptor (1) + job_id (4) + worker_id (2)
     pub fn serialize(&self, buf: &mut BytesMut) {
         buf.extend_from_slice(&[self.get_descriptor_byte() as u8]);
 
         match self {
             NetworkValue::Request {
                 job_id,
-                worker_id: partition_id,
+                worker_id,
                 payload,
             }
             | NetworkValue::Response {
                 job_id,
-                worker_id: partition_id,
+                worker_id,
                 payload,
             } => {
                 buf.extend_from_slice(&job_id.to_le_bytes());
-                buf.extend_from_slice(&partition_id.to_le_bytes());
+                buf.extend_from_slice(&worker_id.to_le_bytes());
                 buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
                 buf.extend_from_slice(payload);
             }
@@ -142,6 +151,10 @@ impl NetworkValue {
                     buf.extend_from_slice(&job_id.to_le_bytes());
                 }
             }
+            NetworkValue::Cancel { job_id, worker_id } => {
+                buf.extend_from_slice(&job_id.to_le_bytes());
+                buf.extend_from_slice(&worker_id.to_le_bytes());
+            }
         }
     }
 
@@ -165,7 +178,7 @@ impl NetworkValue {
                 }
 
                 let job_id = u32::from_le_bytes(bytes[1..5].try_into()?);
-                let partition_id = u16::from_le_bytes(bytes[5..7].try_into()?);
+                let worker_id = u16::from_le_bytes(bytes[5..7].try_into()?);
                 let payload_len = u32::from_le_bytes(bytes[7..11].try_into()?) as usize;
 
                 if bytes.len() < 11 + payload_len {
@@ -181,12 +194,12 @@ impl NetworkValue {
                 match descriptor {
                     DescriptorByte::Request => Ok(NetworkValue::Request {
                         job_id,
-                        worker_id: partition_id,
+                        worker_id,
                         payload,
                     }),
                     DescriptorByte::Response => Ok(NetworkValue::Response {
                         job_id,
-                        worker_id: partition_id,
+                        worker_id,
                         payload,
                     }),
                     _ => unreachable!(),
@@ -231,8 +244,7 @@ impl NetworkValue {
                     if bytes.len() < offset + 4 {
                         bail!("Buffer too short for last_responded_job_id");
                     }
-                    let value = Some(u32::from_le_bytes(bytes[offset..offset + 4].try_into()?));
-                    value
+                    Some(u32::from_le_bytes(bytes[offset..offset + 4].try_into()?))
                 } else {
                     None
                 };
@@ -242,6 +254,14 @@ impl NetworkValue {
                     last_received_job_id,
                     last_responded_job_id,
                 })
+            }
+            DescriptorByte::Cancel => {
+                if bytes.len() < 7 {
+                    bail!("Buffer too short for Cancel: {} bytes", bytes.len());
+                }
+                let job_id = u32::from_le_bytes(bytes[1..5].try_into()?);
+                let worker_id = u16::from_le_bytes(bytes[5..7].try_into()?);
+                Ok(NetworkValue::Cancel { job_id, worker_id })
             }
         }
     }
@@ -365,5 +385,19 @@ mod tests {
         assert_eq!(serialized2.len(), 8); // descriptor + worker_id + bitfield + 1 u32
         let deserialized2 = NetworkValue::deserialize(&serialized2).unwrap();
         assert_eq!(msg2, deserialized2);
+    }
+
+    #[test]
+    fn test_cancel_roundtrip() {
+        let msg = NetworkValue::Cancel {
+            job_id: 12345,
+            worker_id: 7,
+        };
+
+        let serialized = msg.to_network();
+        assert_eq!(serialized.len(), 7); // descriptor + job_id + worker_id
+
+        let deserialized = NetworkValue::deserialize(&serialized).unwrap();
+        assert_eq!(msg, deserialized);
     }
 }

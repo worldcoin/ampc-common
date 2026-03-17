@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Job, Msg};
 use crate::network::workpool::value::NetworkValue;
-use crate::network::workpool::{handle_inbound_traffic, handle_outbound_traffic};
+use crate::network::workpool::{handle_inbound_traffic, handle_outbound_traffic, JobId};
 use crate::{
     execution::player::Identity,
     network::tcp::{
@@ -59,8 +59,8 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     job_tx: UnboundedSender<Job>,
     shutdown_ct: CancellationToken,
 ) {
-    let last_received_job_id = Arc::new(Mutex::new(None));
-    let last_responded_job_id = Arc::new(Mutex::new(None));
+    let last_received_job_id = Arc::new(Mutex::new(None::<JobId>));
+    let last_responded_job_id = Arc::new(Mutex::new(None::<JobId>));
 
     loop {
         let connection_id = ConnectionId::new(0); // Worker only has one connection
@@ -80,7 +80,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
             }
             Err(e) => {
                 tracing::error!("Failed to connect to leader: {:?}", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                sleep(Duration::from_secs(1)).await;
                 continue;
             }
         };
@@ -150,8 +150,8 @@ fn convert_to_job(
     network_value: NetworkValue,
     tx: &UnboundedSender<Job>,
     rsp_tx: UnboundedSender<NetworkValue>,
-    last_received_job_id: &Mutex<Option<u32>>,
-    last_responded_job_id: &Mutex<Option<u32>>,
+    last_received_job_id: &Mutex<Option<JobId>>,
+    last_responded_job_id: &Mutex<Option<JobId>>,
 ) -> io::Result<()> {
     match network_value {
         NetworkValue::Request {
@@ -184,6 +184,14 @@ fn convert_to_job(
             rsp_tx
                 .send(response)
                 .map_err(|_| io::Error::other("Failed to send job state response"))
+        }
+        NetworkValue::Cancel { job_id, worker_id } => {
+            tracing::info!(
+                "Received cancellation for job {} on worker {}",
+                job_id,
+                worker_id
+            );
+            Ok(())
         }
         NetworkValue::Response { .. } | NetworkValue::JobStateResponse { .. } => Err(
             io::Error::other("Unexpected Response/JobStateResponse on worker connection"),

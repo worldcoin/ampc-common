@@ -10,6 +10,7 @@
 7. [Job Tracking](#job-tracking)
 8. [Reconciliation & Error Handling](#reconciliation--error-handling)
 9. [Performance Characteristics](#performance-characteristics)
+10. [Example Usage](ExampleUsage.md) - Practical examples and patterns
 
 ---
 
@@ -411,8 +412,8 @@ let responses = leader.broadcast(payload).await?;
 ```rust
 // User API
 let msgs = vec![
-    WorkerRsp { worker_id: 0, payload: vec![...], job_id: 0 },
-    WorkerRsp { worker_id: 1, payload: vec![...], job_id: 0 },
+    WorkerJob { worker_id: 0, payload: vec![...] },
+    WorkerJob { worker_id: 1, payload: vec![...] },
     // ... more workers
 ];
 let responses = leader.scatter_gather(msgs).await?;
@@ -495,11 +496,12 @@ pub struct JobTracker {
 }
 
 struct PendingJob {
-    job_type: JobType,                   // Broadcast or ScatterGather
     partitions_pending: HashSet<u16>,    // Set of worker_ids awaiting response
-    results: Vec<Option<Result<WorkerRsp>>>,  // Results indexed by worker_id
-    response_tx: oneshot::Sender<Vec<WorkerRsp>>,  // Channel to caller
+    results: Vec<Option<WorkerRsp>>,     // Results indexed by worker_id (may contain errors)
+    response_tx: oneshot::Sender<WorkpoolRes>,  // Channel to caller
 }
+
+pub type WorkpoolRes = Result<Vec<WorkerRsp>, WorkpoolError>;
 
 pub enum JobType {
     ScatterGather { num_partitions: u16 },
@@ -536,11 +538,9 @@ pub enum JobType {
 └─────────────────────────────────────────────────────────────┘
     complete_job(job_id)
     - Remove PendingJob from DashMap
-    - Unwrap all results from Vec<Option<Result<WorkerRsp>>>
-    - Check for errors in any result
-    - If any error: return early (response_tx dropped)
-    - Assemble Vec<WorkerRsp> in order
-    - Send via response_tx to caller
+    - Unwrap all results from Vec<Option<WorkerRsp>>
+    - Assemble Vec<WorkerRsp> in order (may contain success and error responses)
+    - Send Ok(results) via response_tx to caller
 
 ┌─────────────────────────────────────────────────────────────┐
 │                    4. Job Cancellation                      │
@@ -571,9 +571,10 @@ pub enum JobType {
    - Protects against index panics
 
 3. **Worker Error**:
-   - `record_error(job_id, worker_id, error)` stores error in results
-   - Job still waits for all workers
-   - Error propagated during completion
+   - Workers can send `WorkerRsp` with `payload: Err(WorkpoolError)`
+   - `record_response` stores error responses alongside successful ones
+   - Job still waits for all workers to respond (success or error)
+   - Mixed results (some successes, some errors) returned in final response
 
 4. **Missing Results**:
    - `complete_job` checks all results are Some
@@ -591,35 +592,52 @@ pub enum JobType {
 
 ### Job State Reconciliation
 
-After a network disconnection, leader and worker may have inconsistent views of which jobs were sent/received. The system uses a reconciliation protocol to detect lost jobs.
+After a network disconnection, leader and worker may have inconsistent views of which jobs were sent/received. The system uses a reconciliation protocol to detect and handle lost jobs.
 
-#### Leader-Side Reconciliation (detect_dropped_jobs)
+#### Leader-Side Reconciliation
 
+**Step 1: Query Worker State (get_last_rxd_job_id)**
 ```rust
-async fn detect_dropped_jobs(
+async fn get_last_rxd_job_id(
     conn: &mut T,
     worker_id: u16,
-    expected_last_sent: Option<u32>,
-) -> io::Result<()>
+) -> Result<Option<u32>, LeaderError>
 ```
 
 **Process**:
 1. Leader reconnects to worker
 2. Leader sends `QueryJobState { worker_id }`
 3. Leader reads `JobStateResponse { worker_id, last_received_job_id, ... }`
-4. Compare `expected_last_sent` with `last_received_job_id`
-5. If mismatch:
-   - Log `NetworkFailure::JobsLost` error
-   - TODO: Cancel all pending jobs for this worker
+4. Returns the worker's `last_received_job_id`
+
+**Step 2: Handle Dropped Jobs (check_for_dropped_jobs)**
+```rust
+pub fn check_for_dropped_jobs(
+    &self,
+    worker_id: u16,
+    last_rxd_job: Option<u32>
+)
+```
+
+**Process**:
+1. Find all pending jobs where `job_id < last_rxd_job` (or all jobs if `last_rxd_job` is None)
+2. For each dropped job:
+   - Create `WorkerRsp` with `payload: Err(WorkpoolError::JobsLost)`
+   - Call `record_response` to mark partition as complete with error
+3. If all partitions for a job are complete, send mixed results to caller
 
 **Scenarios**:
 
-| Leader Last Sent | Worker Last Received | Outcome |
-|------------------|----------------------|---------|
-| None | None | ✓ First connection |
-| Some(100) | Some(100) | ✓ No jobs lost |
-| Some(100) | Some(95) | ✗ Jobs 96-100 lost |
-| Some(100) | None | ✗ All jobs lost |
+| Worker Last Received | Pending Jobs | Outcome |
+|---------------------|--------------|---------|
+| None | Jobs 0-5 | All 6 jobs marked as dropped with errors |
+| Some(3) | Jobs 0,2,5 | Jobs 0,2 marked as dropped; Job 5 still pending |
+| Some(10) | Jobs 5,7,8 | All 3 jobs marked as dropped with errors |
+
+**Key Behavior**:
+- Dropped partitions are marked as completed with `WorkpoolError::JobsLost`
+- Jobs complete with mixed results (successful responses + error responses)
+- This allows scatter-gather to return partial results when some workers succeed
 
 #### Worker-Side State Tracking
 
@@ -648,8 +666,15 @@ loop {
     }
 
     // 2. Reconcile job state
-    if detect_dropped_jobs(...).is_err() {
-        // TODO: Cancel pending jobs
+    match get_last_rxd_job_id(&mut conn, worker_id).await {
+        Ok(last_rxd_job) => {
+            job_tracker.check_for_dropped_jobs(worker_id, last_rxd_job);
+        }
+        Err(e) => {
+            tracing::error!("Failed to query job state: {}", e);
+            sleep(1 second);
+            continue;
+        }
     }
 
     // 3. Run traffic handlers
@@ -703,34 +728,21 @@ loop {
 
 ### Error Types
 
-#### NetworkFailure (recoverable)
+#### WorkpoolError (runtime errors)
 ```rust
-pub enum NetworkFailure {
+pub enum WorkpoolError {
     JobsLost { worker_id, expected, actual },  // Detected via reconciliation
-    WorkerDisconnected { worker_id },          // Connection lost
-    JobTimeout(job_id),                        // Job exceeded deadline
-    ChannelClosed,                             // Internal channel error
+    SendFailed,                                // Lost connection to worker tasks
+    InvalidInput(String),                      // Input validation failed
 }
 ```
 
-#### LeaderError (fatal)
+#### SetupError (initialization errors)
 ```rust
-pub enum LeaderError {
-    ConnectionError(String),   // Failed to bind/listen
-    ParseError(String),        // Invalid address
-    ChannelClosed,             // Internal error
-    ChannelRecvError,          // Oneshot receive failed
-    IoError,                   // I/O failure
-}
-```
-
-#### WorkerError (fatal)
-```rust
-pub enum WorkerError {
-    ConnectionError(String),   // Failed to bind/listen
-    ParseError(String),        // Invalid address
-    ChannelClosed,             // Internal error
-    IoError,                   // I/O failure
+pub enum SetupError {
+    BadConfig(String),      // Configuration error (e.g., missing TLS certs)
+    InvalidAddress(String), // Invalid address format
+    ListenFailed(String),   // Failed to bind/listen on socket
 }
 ```
 
@@ -750,7 +762,7 @@ From the code comments, these error handling paths are incomplete:
    ```rust
    todo!("send error via channel");
    ```
-   Should propagate `NetworkFailure::JobsLost` to application layer.
+   Should propagate `WorkpoolError::JobsLost` to application layer.
 
 ---
 
@@ -853,7 +865,7 @@ Where:
 ### Leader Example
 
 ```rust
-use ampc_actor_utils::network::workpool::leader::{build_leader, LeaderArgs};
+use ampc_actor_utils::network::workpool::leader::{build_leader, LeaderArgs, WorkerJob};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -877,8 +889,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Scatter-gather example
     let msgs = vec![
-        WorkerRsp { job_id: 0, worker_id: 0, payload: vec![10] },
-        WorkerRsp { job_id: 0, worker_id: 1, payload: vec![20] },
+        WorkerJob { worker_id: 0, payload: vec![10] },
+        WorkerJob { worker_id: 1, payload: vec![20] },
     ];
     let responses = leader.scatter_gather(msgs).await?;
     println!("Scatter-gather responses: {:?}", responses);

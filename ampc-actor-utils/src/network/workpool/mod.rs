@@ -13,47 +13,40 @@ pub mod value;
 pub mod worker;
 
 pub type Payload = Vec<u8>;
+pub type WorkerId = u16;
+pub type JobId = u32;
 
-#[derive(Error, Debug, Clone)]
-pub enum NetworkFailure {
+#[derive(Error, Debug, Clone, PartialEq)]
+pub enum WorkpoolError {
     #[error("worker {worker_id} lost jobs: expected last received job_id {expected}, but worker reports {actual:?}")]
     JobsLost {
-        worker_id: u16,
-        expected: u32,
-        actual: Option<u32>,
+        worker_id: WorkerId,
+        expected: JobId,
+        actual: Option<JobId>,
     },
-    #[error("worker {worker_id} disconnected")]
-    WorkerDisconnected { worker_id: u16 },
-    #[error("job timeout: job_id {0}")]
-    JobTimeout(u32),
-    #[error("channel closed")]
-    ChannelClosed,
+    #[error("lost connection to worker tasks")]
+    SendFailed,
+    #[error("Input failed validation {0}")]
+    InvalidInput(String),
+}
+
+// used when constructing a worker or leader handle
+#[derive(Error, Debug)]
+pub enum SetupError {
+    #[error("connection error: {0}")]
+    BadConfig(String),
+    #[error("parse error: {0}")]
+    InvalidAddress(String),
+    #[error("error in TCP stack: {0}")]
+    ListenFailed(String),
 }
 
 #[derive(Error, Debug)]
-pub enum LeaderError {
-    #[error("connection error: {0}")]
-    ConnectionError(String),
-    #[error("parse error: {0}")]
-    ParseError(String),
-    #[error("channel closed")]
-    ChannelClosed,
-    #[error("channel receive error: {0}")]
-    ChannelRecvError(#[from] tokio::sync::oneshot::error::RecvError),
-    #[error("io error: {0}")]
-    IoError(#[from] std::io::Error),
-}
-
-#[derive(Error, Debug)]
-pub enum WorkerError {
-    #[error("connection error: {0}")]
-    ConnectionError(String),
-    #[error("parse error: {0}")]
-    ParseError(String),
-    #[error("channel closed")]
-    ChannelClosed,
-    #[error("io error: {0}")]
-    IoError(#[from] std::io::Error),
+pub(crate) enum LeaderError {
+    #[error("bad response: {0}")]
+    BadResponse(String),
+    #[error("io err")]
+    IO(#[from] tokio::io::Error),
 }
 
 pub(crate) async fn handle_outbound_traffic<T: NetworkConnection, F>(
@@ -128,6 +121,11 @@ where
                 // Read: worker_id (2) + last_received (5) + last_responded (5)
                 reader.read_exact(&mut buf[1..13]).await?;
                 13
+            }
+            DescriptorByte::Cancel => {
+                // Read: job_id (4) + worker_id (2)
+                reader.read_exact(&mut buf[1..7]).await?;
+                7
             }
         };
 

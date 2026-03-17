@@ -1,45 +1,101 @@
 mod job_tracker;
 mod leader_task;
 
-use super::{LeaderError, NetworkFailure, Payload};
 pub use job_tracker::{JobTracker, JobType};
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{
-        self,
-        connection::{
-            client::{BoxTcpClient, TcpClient, TlsClient},
-            server::{BoxTcpServer, TcpServer, TlsServer},
+    network::{
+        tcp::{
+            self,
+            connection::{
+                client::{BoxTcpClient, TcpClient, TlsClient},
+                server::{BoxTcpServer, TcpServer, TlsServer},
+            },
+            TlsConfig,
         },
-        TlsConfig,
+        workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
     },
 };
-use std::net::{self, SocketAddr};
+use std::{
+    collections::HashSet,
+    future::Future,
+    net::{self, SocketAddr},
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
+    task::{Context, Poll},
+};
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub struct WorkerRsp {
-    pub job_id: u32,
-    pub payload: Payload,
-    pub worker_id: u16,
+    pub payload: Result<Payload, WorkpoolError>,
+    pub job_id: JobId,
+    pub worker_id: WorkerId,
 }
 
-enum Job {
+pub struct WorkerJob {
+    pub payload: Payload,
+    pub worker_id: WorkerId,
+}
+
+pub type WorkpoolRes = Result<Vec<WorkerRsp>, WorkpoolError>;
+
+pub(crate) enum Job {
     Broadcast {
         payload: Payload,
-        rsp: oneshot::Sender<Vec<WorkerRsp>>,
+        result_rsp: oneshot::Sender<WorkpoolRes>,
+        job_id: JobId,
     },
     ScatterGather {
-        msgs: Vec<WorkerRsp>,
-        rsp: oneshot::Sender<Vec<WorkerRsp>>,
+        msgs: Vec<WorkerJob>,
+        result_rsp: oneshot::Sender<WorkpoolRes>,
+        job_id: JobId,
     },
+    Cancel {
+        job_id: JobId,
+    },
+}
+
+/// Handle to a submitted job that can be awaited or cancelled
+pub struct JobHandle {
+    result_rx: oneshot::Receiver<WorkpoolRes>,
+    cancel_tx: UnboundedSender<Job>,
+    job_id: JobId,
+}
+
+impl JobHandle {
+    pub fn job_id(&self) -> JobId {
+        self.job_id
+    }
+
+    pub fn cancel(self) -> Result<(), WorkpoolError> {
+        self.cancel_tx
+            .send(Job::Cancel {
+                job_id: self.job_id,
+            })
+            .map_err(|_| WorkpoolError::SendFailed)
+    }
+}
+
+impl Future for JobHandle {
+    type Output = WorkpoolRes;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.result_rx)
+            .poll(cx)
+            .map(|r| r.unwrap_or(Err(WorkpoolError::SendFailed)))
+    }
 }
 
 #[derive(Clone)]
 pub struct LeaderHandle {
     ct: CancellationToken,
     ch: UnboundedSender<Job>,
+    next_job_id: Arc<AtomicU32>,
     num_workers: usize,
 }
 
@@ -57,25 +113,61 @@ impl Drop for LeaderHandle {
 }
 
 impl LeaderHandle {
-    /// Broadcast to all workers, wait for all acks
-    pub async fn broadcast(&self, payload: Payload) -> Result<Vec<WorkerRsp>, NetworkFailure> {
-        let (tx, rx) = oneshot::channel();
+    /// Broadcast to all workers, returns a handle that can be awaited or cancelled
+    ///
+    /// Returns Err only for immediate failures (e.g., channel closed).
+    /// Validation errors and worker failures are returned when awaiting the JobHandle.
+    pub fn broadcast(&self, payload: Payload) -> Result<JobHandle, WorkpoolError> {
+        let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
+        let (result_tx, result_rx) = oneshot::channel();
+
         self.ch
-            .send(Job::Broadcast { payload, rsp: tx })
-            .map_err(|_| NetworkFailure::ChannelClosed)?;
-        rx.await.map_err(|_| NetworkFailure::ChannelClosed)
+            .send(Job::Broadcast {
+                job_id,
+                payload,
+                result_rsp: result_tx,
+            })
+            .map_err(|_| WorkpoolError::SendFailed)?;
+
+        Ok(JobHandle {
+            job_id,
+            result_rx,
+            cancel_tx: self.ch.clone(),
+        })
     }
 
-    /// Scatter-gather: send different payloads to different workers, gather results in partition order
-    pub async fn scatter_gather(
-        &self,
-        msgs: Vec<WorkerRsp>,
-    ) -> Result<Vec<WorkerRsp>, NetworkFailure> {
-        let (tx, rx) = oneshot::channel();
+    /// Scatter-gather: send different payloads to different workers, returns a handle
+    ///
+    /// Returns Err for validation failures or immediate failures (e.g., channel closed).
+    /// Worker failures are returned when awaiting the JobHandle.
+    pub fn scatter_gather(&self, msgs: Vec<WorkerJob>) -> Result<JobHandle, WorkpoolError> {
+        // Validate inputs
+        let mut worker_ids = HashSet::new();
+        for msg in &msgs {
+            if msg.worker_id as usize >= self.num_workers {
+                return Err(WorkpoolError::InvalidInput("invalid worker id".into()));
+            }
+            if !worker_ids.insert(msg.worker_id) {
+                return Err(WorkpoolError::InvalidInput("duplicate worker id".into()));
+            }
+        }
+
+        let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
+        let (result_tx, result_rx) = oneshot::channel();
+
         self.ch
-            .send(Job::ScatterGather { msgs, rsp: tx })
-            .map_err(|_| NetworkFailure::ChannelClosed)?;
-        rx.await.map_err(|_| NetworkFailure::ChannelClosed)
+            .send(Job::ScatterGather {
+                job_id,
+                msgs,
+                result_rsp: result_tx,
+            })
+            .map_err(|_| WorkpoolError::SendFailed)?;
+
+        Ok(JobHandle {
+            job_id,
+            result_rx,
+            cancel_tx: self.ch.clone(),
+        })
     }
 
     pub fn num_workers(&self) -> usize {
@@ -86,75 +178,71 @@ impl LeaderHandle {
 pub async fn build_leader(
     args: LeaderArgs,
     shutdown_ct: CancellationToken,
-) -> Result<LeaderHandle, LeaderError> {
+) -> Result<LeaderHandle, SetupError> {
     tcp::init_rustls_crypto_provider();
     let shutdown_ct = shutdown_ct.child_token();
 
     let leader_addr: SocketAddr = args
         .leader_address
         .parse()
-        .map_err(|e: net::AddrParseError| LeaderError::ParseError(e.to_string()))?;
+        .map_err(|e: net::AddrParseError| SetupError::InvalidAddress(e.to_string()))?;
     let num_workers = args.worker_addresses.len();
     let worker_urls = args.worker_addresses.into_iter();
 
-    let handle_tx =
-        if let Some(tls) = args.tls.as_ref() {
-            tracing::info!("Building WorkPool Leader with TLS");
+    let handle_tx = if let Some(tls) = args.tls.as_ref() {
+        tracing::info!("Building WorkPool Leader with TLS");
 
-            let root_certs = tls.clone().root_certs;
-            if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-                return Err(LeaderError::ConnectionError(
-                    "TLS private key and leaf cert required".to_string(),
-                ));
-            }
-            let private_key = tls.private_key.as_ref().ok_or_else(|| {
-                LeaderError::ConnectionError("TLS private key required".to_string())
-            })?;
+        let root_certs = tls.clone().root_certs;
+        if tls.private_key.is_none() || tls.leaf_cert.is_none() {
+            return Err(SetupError::BadConfig(
+                "TLS private key and leaf cert required".to_string(),
+            ));
+        }
+        let private_key = tls
+            .private_key
+            .as_ref()
+            .ok_or_else(|| SetupError::BadConfig("TLS private key required".to_string()))?;
 
-            let leaf_cert = tls.leaf_cert.as_ref().ok_or_else(|| {
-                LeaderError::ConnectionError("TLS leaf cert required".to_string())
-            })?;
+        let leaf_cert = tls
+            .leaf_cert
+            .as_ref()
+            .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
 
-            let listener = TlsServer::new(leader_addr, private_key, leaf_cert, &root_certs)
-                .await
-                .map_err(|e| {
-                    LeaderError::ConnectionError(format!("Failed to create TLS server: {}", e))
-                })?;
-            let connector = TlsClient::new_with_ca_certs(&root_certs)
-                .await
-                .map_err(|e| {
-                    LeaderError::ConnectionError(format!("Failed to create TLS client: {}", e))
-                })?;
+        let listener = TlsServer::new(leader_addr, private_key, leaf_cert, &root_certs)
+            .await
+            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
+        let connector = TlsClient::new_with_ca_certs(&root_certs)
+            .await
+            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 
-            leader_task::spawn(
-                args.leader_id,
-                worker_urls,
-                connector,
-                listener,
-                shutdown_ct.clone(),
-            )
-            .map_err(|e| LeaderError::ConnectionError(format!("Failed to create leader: {}", e)))
-        } else {
-            tracing::info!("Building WorkPool Leader without TLS");
+        Result::<_, SetupError>::Ok(leader_task::spawn(
+            args.leader_id,
+            worker_urls,
+            connector,
+            listener,
+            shutdown_ct.clone(),
+        ))
+    } else {
+        tracing::info!("Building WorkPool Leader without TLS");
 
-            let listener = BoxTcpServer(TcpServer::new(leader_addr).await.map_err(|e| {
-                LeaderError::ConnectionError(format!("Failed to create TCP server: {}", e))
-            })?);
-            let connector = BoxTcpClient(TcpClient::default());
+        let listener = BoxTcpServer(TcpServer::new(leader_addr).await.map_err(|e| {
+            SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
+        })?);
+        let connector = BoxTcpClient(TcpClient::default());
 
-            leader_task::spawn(
-                args.leader_id,
-                worker_urls,
-                connector,
-                listener,
-                shutdown_ct.clone(),
-            )
-            .map_err(|e| LeaderError::ConnectionError(format!("Failed to create leader: {}", e)))
-        }?;
+        Result::<_, SetupError>::Ok(leader_task::spawn(
+            args.leader_id,
+            worker_urls,
+            connector,
+            listener,
+            shutdown_ct.clone(),
+        ))
+    }?;
 
     Ok(LeaderHandle {
         ct: shutdown_ct,
         ch: handle_tx,
         num_workers,
+        next_job_id: Arc::new(AtomicU32::new(0)),
     })
 }
