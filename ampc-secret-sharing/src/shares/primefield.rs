@@ -1,107 +1,141 @@
-use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
+use std::{
+    ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign},
+    usize,
+};
 
-use num_traits::{Inv, One, Zero};
+use num_traits::{Inv, One, PrimInt, ToPrimitive, Unsigned, Zero};
 use rand::{Rng, RngCore};
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
-pub struct Mod19(u16);
+pub struct PrimeElement<T: PrimInt> {
+    modulus: T,
+    value: T,
+}
 
-impl Mod19 {
-    pub fn new(value: u16) -> Self {
-        Self(value % 19)
+impl<T: PrimInt> PrimeElement<T> {
+    pub fn new(value: T, modulus: T) -> Self {
+        let mod_value = value % modulus;
+        Self {
+            modulus,
+            value: mod_value,
+        }
     }
 
-    pub fn rand(rng: &mut impl Rng) -> Self {
-        Self::new(rng.gen_range(0..19))
+    pub fn zero(modulus: T) -> Self {
+        Self {
+            modulus,
+            value: T::zero(),
+        }
     }
 
-    pub fn rand_multiplicative(rng: &mut impl Rng) -> Self {
-        Self::new(rng.gen_range(1..19))
+    pub fn one(modulus: T) -> Self {
+        Self {
+            modulus,
+            value: T::one(),
+        }
     }
 
-    pub fn convert(&self) -> u16 {
-        self.0
+    pub fn is_zero(self) -> bool {
+        return self.value == T::zero();
+    }
+
+    pub fn rand(rng: &mut impl Rng, modulus: T) -> Self {
+        Self::new(
+            T::from(rng.gen_range(0..modulus.to_u32().unwrap())).unwrap(),
+            modulus,
+        )
+    }
+
+    pub fn rand_multiplicative(rng: &mut impl Rng, modulus: T) -> Self {
+        Self::new(
+            T::from(rng.gen_range(1..modulus.to_u32().unwrap())).unwrap(),
+            modulus,
+        )
+    }
+
+    pub fn convert(&self) -> (T, T) {
+        (self.value, self.modulus)
     }
 }
 
-impl One for Mod19 {
-    fn one() -> Self {
-        Self(1)
+impl<T: PrimInt> Add for PrimeElement<T> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        assert!(self.modulus == rhs.modulus);
+        PrimeElement::new(self.value + rhs.value, self.modulus)
     }
 }
 
-impl Add for Mod19 {
-    type Output = Mod19;
+impl<T: PrimInt> Mul for PrimeElement<T> {
+    type Output = Self;
 
-    fn add(self, other: Mod19) -> Self::Output {
-        Mod19((self.0 + other.0) % 19)
+    fn mul(self, rhs: Self) -> Self::Output {
+        assert!(self.modulus == rhs.modulus);
+        PrimeElement::new(self.value * rhs.value, self.modulus)
     }
 }
 
-impl Mul for Mod19 {
-    type Output = Mod19;
-
-    fn mul(self, other: Mod19) -> Self::Output {
-        Mod19((self.0 * other.0) % 19)
-    }
-}
-
-impl Neg for Mod19 {
-    type Output = Mod19;
+impl<T: PrimInt> Neg for PrimeElement<T> {
+    type Output = Self;
 
     fn neg(self) -> Self::Output {
-        Mod19(19 - self.0)
+        PrimeElement::new(self.modulus - self.value, self.modulus)
     }
 }
 
-impl Sub for Mod19 {
-    type Output = Mod19;
+impl<T: PrimInt> Sub for PrimeElement<T> {
+    type Output = Self;
 
     fn sub(self, rhs: Self) -> Self::Output {
         self + (-rhs)
     }
 }
 
-impl AddAssign for Mod19 {
-    fn add_assign(&mut self, other: Mod19) {
-        self.0 = (self.0 + other.0) % 19
+impl<T: PrimInt> AddAssign for PrimeElement<T> {
+    fn add_assign(&mut self, other: PrimeElement<T>) {
+        assert!(self.modulus == other.modulus);
+        self.value = (self.value + other.value) % self.modulus
     }
 }
 
-impl MulAssign for Mod19 {
-    fn mul_assign(&mut self, other: Mod19) {
-        self.0 = (self.0 * other.0) % 19
+impl<T: PrimInt> MulAssign for PrimeElement<T> {
+    fn mul_assign(&mut self, other: PrimeElement<T>) {
+        assert!(self.modulus == other.modulus);
+        let val = if self.value > other.value {
+            self.value - other.value
+        } else {
+            other.value - self.value + self.modulus
+        };
+        self.value = val
     }
 }
 
-impl SubAssign for Mod19 {
+impl<T: PrimInt> SubAssign for PrimeElement<T> {
     fn sub_assign(&mut self, rhs: Self) {
-        self.0 = (self.0 + (19 - rhs.0)) % 19
+        assert!(self.modulus == rhs.modulus);
+        self.value = (self.value + (self.modulus - rhs.value)) % self.modulus
     }
 }
 
-impl Inv for Mod19 {
-    type Output = Mod19;
+impl<T: PrimInt> Inv for PrimeElement<T> {
+    type Output = Self;
 
     fn inv(self) -> Self::Output {
-        Mod19((self.0.pow(17)) % 19)
+        PrimeElement::new(
+            (self
+                .value
+                .pow((self.modulus - T::from(2).unwrap()).to_u32().unwrap()))
+                % self.modulus,
+            self.modulus,
+        )
     }
 }
 
-impl Div for Mod19 {
-    type Output = Mod19;
+impl<T: PrimInt> Div for PrimeElement<T> {
+    type Output = Self;
 
     fn div(self, rhs: Self) -> Self::Output {
         self * (rhs.inv())
-    }
-}
-
-impl Zero for Mod19 {
-    fn zero() -> Self {
-        Mod19::new(0)
-    }
-
-    fn is_zero(&self) -> bool {
-        self.0 % 19 == 0
     }
 }

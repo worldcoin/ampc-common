@@ -1,5 +1,5 @@
 use ampc_secret_sharing::shares::{
-    self, bit::Bit, primefield::Mod19, ring48::Ring48, ring_impl::RingElement, IntRing2k,
+    self, bit::Bit, primefield::PrimeElement, ring48::Ring48, ring_impl::RingElement, IntRing2k,
 };
 use bytes::BytesMut;
 use eyre::{bail, eyre, Result};
@@ -60,7 +60,9 @@ const PRF_KEY_SIZE: usize = 16;
 #[derive(PartialEq, Clone, Debug)]
 pub enum NetworkValue {
     PrfKey([u8; PRF_KEY_SIZE]),
-    Mod19(Mod19),
+    PrimeElement8(PrimeElement<u8>),
+    PrimeElement16(PrimeElement<u16>),
+    PrimeElement32(PrimeElement<u32>),
     RingElementBit(RingElement<Bit>),
     RingElement8(RingElement<u8>),
     RingElement16(RingElement<u16>),
@@ -84,7 +86,9 @@ pub enum NetworkValue {
 #[derive(Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum DescriptorByte {
     PrfKey = 0x01,
-    Mod19 = 0x11,
+    PrimeElement8 = 0x11,
+    PrimeElement16 = 0x14,
+    PrimeElement32 = 0x15,
     RingElementBit1 = 0x12,
     RingElementBit0 = 0x02,
     RingElement8 = 0x13,
@@ -109,12 +113,11 @@ impl DescriptorByte {
     pub fn base_len(&self) -> usize {
         match self {
             DescriptorByte::PrfKey => 1 + PRF_KEY_SIZE,
-            DescriptorByte::Mod19 => 3,
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => 1,
             DescriptorByte::RingElement8 => 2,
-            DescriptorByte::RingElement16 => 3,
-            DescriptorByte::RingElement32 => 5,
-            DescriptorByte::RingElement64 => 9,
+            DescriptorByte::RingElement16 | DescriptorByte::PrimeElement8 => 3,
+            DescriptorByte::RingElement32 | DescriptorByte::PrimeElement16 => 5,
+            DescriptorByte::RingElement64 | DescriptorByte::PrimeElement32 => 9,
             DescriptorByte::RingElement48 => 7, // 1 descriptor + 6 bytes
             DescriptorByte::VecRing8
             | DescriptorByte::VecRing16
@@ -149,7 +152,9 @@ impl NetworkValue {
     fn get_descriptor_byte(&self) -> u8 {
         let descriptor_byte = match self {
             NetworkValue::PrfKey(_) => DescriptorByte::PrfKey,
-            NetworkValue::Mod19(_) => DescriptorByte::Mod19,
+            NetworkValue::PrimeElement8(_) => DescriptorByte::PrimeElement8,
+            NetworkValue::PrimeElement16(_) => DescriptorByte::PrimeElement16,
+            NetworkValue::PrimeElement32(_) => DescriptorByte::PrimeElement32,
             NetworkValue::RingElementBit(bit) => {
                 if bit.convert().convert() {
                     DescriptorByte::RingElementBit1
@@ -222,7 +227,15 @@ impl NetworkValue {
         match self {
             NetworkValue::PrfKey(key) => res.extend_from_slice(key),
             NetworkValue::PrfCheck(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
-            NetworkValue::Mod19(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
+            NetworkValue::PrimeElement8(v) => res.extend_from_slice(
+                &[v.convert().0.to_le_bytes(), v.convert().1.to_le_bytes()].concat(),
+            ),
+            NetworkValue::PrimeElement16(v) => res.extend_from_slice(
+                &[v.convert().0.to_le_bytes(), v.convert().1.to_le_bytes()].concat(),
+            ),
+            NetworkValue::PrimeElement32(v) => res.extend_from_slice(
+                &[v.convert().0.to_le_bytes(), v.convert().1.to_le_bytes()].concat(),
+            ),
             NetworkValue::RingElementBit(_) => {
                 // Do nothing, the descriptor byte already contains the bit
                 // value
@@ -288,9 +301,9 @@ impl NetworkValue {
             let value_len = match descriptor_byte {
                 DescriptorByte::RingElementBit0 | DescriptorByte::RingElementBit1 => 1,
                 DescriptorByte::RingElement8 => 2,
-                DescriptorByte::Mod19 | DescriptorByte::RingElement16 => 3,
-                DescriptorByte::RingElement32 => 5,
-                DescriptorByte::RingElement64 => 9,
+                DescriptorByte::PrimeElement16 | DescriptorByte::PrimeElement8 => 3,
+                DescriptorByte::RingElement32 | DescriptorByte::PrimeElement16 => 5,
+                DescriptorByte::RingElement64 | DescriptorByte::PrimeElement32 => 9,
                 DescriptorByte::RingElement48 => 1 + Ring48::BYTES,
                 DescriptorByte::VecRing8
                 | DescriptorByte::VecRing16
@@ -339,13 +352,32 @@ impl NetworkValue {
                     <[u8; 16]>::try_from(&serialized[1..1 + 16])?,
                 ))))
             }
-            DescriptorByte::Mod19 => {
+            DescriptorByte::PrimeElement8 => {
                 if serialized.len() != 3 {
                     bail!("Invalid length for RingElement16");
                 }
-                Ok(NetworkValue::Mod19(Mod19::new(u16::from_le_bytes(
-                    <[u8; 2]>::try_from(&serialized[1..3])?,
-                ))))
+                Ok(NetworkValue::PrimeElement8(PrimeElement::<u8>::new(
+                    u8::from_le_bytes(<[u8; 1]>::try_from(&serialized[1..2])?),
+                    u8::from_le_bytes(<[u8; 1]>::try_from(&serialized[2..3])?),
+                )))
+            }
+            DescriptorByte::PrimeElement16 => {
+                if serialized.len() != 5 {
+                    bail!("Invalid length for RingElement16");
+                }
+                Ok(NetworkValue::PrimeElement16(PrimeElement::<u16>::new(
+                    u16::from_le_bytes(<[u8; 2]>::try_from(&serialized[1..3])?),
+                    u16::from_le_bytes(<[u8; 2]>::try_from(&serialized[3..5])?),
+                )))
+            }
+            DescriptorByte::PrimeElement32 => {
+                if serialized.len() != 9 {
+                    bail!("Invalid length for RingElement16");
+                }
+                Ok(NetworkValue::PrimeElement32(PrimeElement::<u32>::new(
+                    u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[1..5])?),
+                    u32::from_le_bytes(<[u8; 4]>::try_from(&serialized[5..9])?),
+                )))
             }
             DescriptorByte::RingElementBit1 | DescriptorByte::RingElementBit0 => {
                 if serialized.len() != 1 {
