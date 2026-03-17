@@ -411,7 +411,8 @@ where
         match f {
             0 => (*left_id, *right_id),
             1 => (left_dist.code_dot, right_dist.code_dot),
-            _ => (left_dist.mask_dot, right_dist.mask_dot),
+            2 => (left_dist.mask_dot, right_dist.mask_dot),
+            _ => unreachable!(),
         }
     })
     .await?;
@@ -561,7 +562,8 @@ where
         match f {
             0 => (*left_id, *right_id),
             1 => (left_dist.code_dot, right_dist.code_dot),
-            _ => (left_dist.mask_dot, right_dist.mask_dot),
+            2 => (left_dist.mask_dot, right_dist.mask_dot),
+            _ => unreachable!(),
         }
     })
     .await?;
