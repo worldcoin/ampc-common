@@ -102,12 +102,7 @@ impl<T: PrimInt> AddAssign for PrimeElement<T> {
 impl<T: PrimInt> MulAssign for PrimeElement<T> {
     fn mul_assign(&mut self, other: PrimeElement<T>) {
         assert!(self.modulus == other.modulus);
-        let val = if self.value > other.value {
-            self.value - other.value
-        } else {
-            other.value - self.value + self.modulus
-        };
-        self.value = val
+        self.value = (self.value * other.value) % self.modulus
     }
 }
 

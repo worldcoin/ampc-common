@@ -301,7 +301,7 @@ impl NetworkValue {
             let value_len = match descriptor_byte {
                 DescriptorByte::RingElementBit0 | DescriptorByte::RingElementBit1 => 1,
                 DescriptorByte::RingElement8 => 2,
-                DescriptorByte::PrimeElement16 | DescriptorByte::PrimeElement8 => 3,
+                DescriptorByte::RingElement16 | DescriptorByte::PrimeElement8 => 3,
                 DescriptorByte::RingElement32 | DescriptorByte::PrimeElement16 => 5,
                 DescriptorByte::RingElement64 | DescriptorByte::PrimeElement32 => 9,
                 DescriptorByte::RingElement48 => 1 + Ring48::BYTES,
