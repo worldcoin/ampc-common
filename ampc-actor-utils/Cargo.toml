@@ -40,8 +40,10 @@ aes_rng_prf = []
 
 [dev-dependencies]
 tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 criterion = "0.8.1"
 statrs = "0.17"
+serial_test = "3"
 
 [[bench]]
 name = "bit_inject"

@@ -78,20 +78,9 @@ impl NetworkValue {
                 // descriptor (1) + worker_id (2)
                 3
             }
-            NetworkValue::JobStateResponse {
-                last_received_job_id,
-                last_responded_job_id,
-                ..
-            } => {
-                // descriptor (1) + worker_id (2) + bitfield (1) + optional values
-                let mut size = 4;
-                if last_received_job_id.is_some() {
-                    size += 4;
-                }
-                if last_responded_job_id.is_some() {
-                    size += 4;
-                }
-                size
+            NetworkValue::JobStateResponse { .. } => {
+                // descriptor (1) + worker_id (2) + last_received (4) + last_responded (4)
+                11
             }
             NetworkValue::Cancel { .. } => {
                 // descriptor (1) + job_id (4) + worker_id (2)
@@ -134,22 +123,9 @@ impl NetworkValue {
                 last_responded_job_id,
             } => {
                 buf.extend_from_slice(&worker_id.to_le_bytes());
-                // Encode presence of options as bitfield: bit 0 = last_received, bit 1 = last_responded
-                let mut bitfield = 0u8;
-                if last_received_job_id.is_some() {
-                    bitfield |= 0x01;
-                }
-                if last_responded_job_id.is_some() {
-                    bitfield |= 0x02;
-                }
-                buf.extend_from_slice(&[bitfield]);
-                // Only write values that are present
-                if let Some(job_id) = last_received_job_id {
-                    buf.extend_from_slice(&job_id.to_le_bytes());
-                }
-                if let Some(job_id) = last_responded_job_id {
-                    buf.extend_from_slice(&job_id.to_le_bytes());
-                }
+                // Fixed length: 0 means "no job"
+                buf.extend_from_slice(&last_received_job_id.unwrap_or(0).to_le_bytes());
+                buf.extend_from_slice(&last_responded_job_id.unwrap_or(0).to_le_bytes());
             }
             NetworkValue::Cancel { job_id, worker_id } => {
                 buf.extend_from_slice(&job_id.to_le_bytes());
@@ -213,40 +189,26 @@ impl NetworkValue {
                 Ok(NetworkValue::QueryJobState { worker_id })
             }
             DescriptorByte::JobStateResponse => {
-                if bytes.len() < 4 {
+                if bytes.len() < 11 {
                     bail!(
                         "Buffer too short for JobStateResponse: {} bytes",
                         bytes.len()
                     );
                 }
                 let worker_id = u16::from_le_bytes(bytes[1..3].try_into()?);
-                let bitfield = bytes[3];
+                // Fixed length: 0 means "no job"
+                let last_received_raw = u32::from_le_bytes(bytes[3..7].try_into()?);
+                let last_responded_raw = u32::from_le_bytes(bytes[7..11].try_into()?);
 
-                let has_received = (bitfield & 0x01) != 0;
-                let has_responded = (bitfield & 0x02) != 0;
-
-                let mut offset = 4;
-
-                // Decode last_received_job_id if present
-                let last_received_job_id = if has_received {
-                    if bytes.len() < offset + 4 {
-                        bail!("Buffer too short for last_received_job_id");
-                    }
-                    let value = Some(u32::from_le_bytes(bytes[offset..offset + 4].try_into()?));
-                    offset += 4;
-                    value
-                } else {
+                let last_received_job_id = if last_received_raw == 0 {
                     None
+                } else {
+                    Some(last_received_raw)
                 };
-
-                // Decode last_responded_job_id if present
-                let last_responded_job_id = if has_responded {
-                    if bytes.len() < offset + 4 {
-                        bail!("Buffer too short for last_responded_job_id");
-                    }
-                    Some(u32::from_le_bytes(bytes[offset..offset + 4].try_into()?))
-                } else {
+                let last_responded_job_id = if last_responded_raw == 0 {
                     None
+                } else {
+                    Some(last_responded_raw)
                 };
 
                 Ok(NetworkValue::JobStateResponse {
@@ -341,7 +303,7 @@ mod tests {
         };
 
         let serialized = msg.to_network();
-        assert_eq!(serialized.len(), 12); // descriptor + worker_id + bitfield + 2 u32s
+        assert_eq!(serialized.len(), 11); // fixed: descriptor + worker_id + 2 u32s
 
         let deserialized = NetworkValue::deserialize(&serialized).unwrap();
         assert_eq!(msg, deserialized);
@@ -356,7 +318,7 @@ mod tests {
         };
 
         let serialized = msg.to_network();
-        assert_eq!(serialized.len(), 4); // descriptor + worker_id + bitfield (no values)
+        assert_eq!(serialized.len(), 11); // fixed length (zeros for None)
 
         let deserialized = NetworkValue::deserialize(&serialized).unwrap();
         assert_eq!(msg, deserialized);
@@ -371,7 +333,7 @@ mod tests {
             last_responded_job_id: None,
         };
         let serialized1 = msg1.to_network();
-        assert_eq!(serialized1.len(), 8); // descriptor + worker_id + bitfield + 1 u32
+        assert_eq!(serialized1.len(), 11); // fixed length
         let deserialized1 = NetworkValue::deserialize(&serialized1).unwrap();
         assert_eq!(msg1, deserialized1);
 
@@ -382,7 +344,7 @@ mod tests {
             last_responded_job_id: Some(99),
         };
         let serialized2 = msg2.to_network();
-        assert_eq!(serialized2.len(), 8); // descriptor + worker_id + bitfield + 1 u32
+        assert_eq!(serialized2.len(), 11); // fixed length
         let deserialized2 = NetworkValue::deserialize(&serialized2).unwrap();
         assert_eq!(msg2, deserialized2);
     }

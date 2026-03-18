@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::BufReader;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::watch;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -23,13 +24,18 @@ use crate::{
     },
 };
 
+/// Spawns the leader task and per-worker manager tasks.
+///
+/// Returns the job sender and one `watch::Receiver<bool>` per worker.
+/// Each receiver starts as `false` and flips to `true` once that worker's
+/// connection (including the job-state handshake) is fully established.
 pub fn spawn<T, C, I, S>(
     my_id: Identity,
     worker_urls: I,
     connector: C,
     listener: S,
     shutdown_ct: CancellationToken,
-) -> UnboundedSender<Job>
+) -> (UnboundedSender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
     C: Client<Output = T> + 'static,
@@ -50,15 +56,19 @@ where
 
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();
+    let mut conn_rxs = Vec::with_capacity(workers.len());
 
     for (idx, worker) in workers.iter().enumerate() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         worker_cmd_txs.push(cmd_tx);
+        let (conn_tx, conn_rx) = watch::channel(false);
+        conn_rxs.push(conn_rx);
         tokio::spawn(worker_mgr(
             idx as WorkerId,
             my_id.clone(),
             worker.clone(),
             job_tracker.clone(),
+            conn_tx,
             connector.clone(),
             connection_state.clone(),
             conn_cmd_tx.clone(),
@@ -77,7 +87,7 @@ where
         shutdown_ct,
     ));
 
-    job_tx
+    (job_tx, conn_rxs)
 }
 
 async fn leader_task(
@@ -174,6 +184,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     my_id: Arc<Identity>,
     worker: Arc<Peer>,
     job_tracker: Arc<JobTracker>,
+    conn_tx: watch::Sender<bool>,
     connector: C,
     connection_state: ConnectionState,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
@@ -184,7 +195,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     let mut last_sent_job_id: Option<JobId> = None;
 
     loop {
-        let connection_id = ConnectionId::new(worker_id as _);
+        let connection_id = ConnectionId::new(0); // workers always connect with id 0
         let mut conn = match crate::network::tcp::connect(
             connection_id,
             my_id.clone(),
@@ -209,6 +220,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
         match get_last_rxd_job_id(&mut conn, worker_id).await {
             Ok(opt) => {
                 job_tracker.check_for_dropped_jobs(worker_id, opt);
+                let _ = conn_tx.send(true);
             }
             Err(e) => {
                 tracing::error!("Failed to check for dropped jobs: {}", e);
@@ -250,10 +262,12 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
 
         match evt {
             Evt::OutboundClosed | Evt::InboundClosed => {
+                let _ = conn_tx.send(false);
                 tracing::info!("Worker {} connection closed, reconnecting...", worker_id);
                 sleep(Duration::from_secs(1)).await;
             }
             Evt::Shutdown => {
+                let _ = conn_tx.send(false);
                 tracing::info!("Worker {} task shutting down", worker_id);
                 break;
             }
@@ -261,7 +275,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     }
 }
 
-// returns the last received job is
+// returns the last received job id
 async fn get_last_rxd_job_id<T: NetworkConnection>(
     conn: &mut T,
     worker_id: WorkerId,
@@ -275,8 +289,9 @@ async fn get_last_rxd_job_id<T: NetworkConnection>(
     conn.write_all(&buf).await?;
     conn.flush().await?;
 
-    // Read JobStateResponse (13 bytes)
-    let mut response_buf = vec![0u8; 13];
+    // Read JobStateResponse: fixed 11 bytes
+    // descriptor (1) + worker_id (2) + last_received (4) + last_responded (4)
+    let mut response_buf = [0u8; 11];
     conn.read_exact(&mut response_buf).await?;
 
     let response = NetworkValue::deserialize(&response_buf)

@@ -28,7 +28,7 @@ use std::{
     },
     task::{Context, Poll},
 };
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tokio::sync::{mpsc::UnboundedSender, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 pub struct WorkerRsp {
@@ -97,6 +97,7 @@ pub struct LeaderHandle {
     ch: UnboundedSender<Job>,
     next_job_id: Arc<AtomicU32>,
     num_workers: usize,
+    worker_connected: Vec<watch::Receiver<bool>>,
 }
 
 pub struct LeaderArgs {
@@ -173,6 +174,14 @@ impl LeaderHandle {
     pub fn num_workers(&self) -> usize {
         self.num_workers
     }
+
+    /// Waits until all workers have established their connections.
+    /// Returns immediately if all are already connected.
+    pub async fn wait_for_all_connections(&mut self) {
+        for rx in &mut self.worker_connected {
+            let _ = rx.wait_for(|&v| v).await;
+        }
+    }
 }
 
 pub async fn build_leader(
@@ -189,7 +198,7 @@ pub async fn build_leader(
     let num_workers = args.worker_addresses.len();
     let worker_urls = args.worker_addresses.into_iter();
 
-    let handle_tx = if let Some(tls) = args.tls.as_ref() {
+    let (handle_tx, worker_connected) = if let Some(tls) = args.tls.as_ref() {
         tracing::info!("Building WorkPool Leader with TLS");
 
         let root_certs = tls.clone().root_certs;
@@ -244,5 +253,6 @@ pub async fn build_leader(
         ch: handle_tx,
         num_workers,
         next_job_id: Arc::new(AtomicU32::new(0)),
+        worker_connected,
     })
 }

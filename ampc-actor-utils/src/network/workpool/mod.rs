@@ -118,9 +118,9 @@ where
                 3
             }
             DescriptorByte::JobStateResponse => {
-                // Read: worker_id (2) + last_received (5) + last_responded (5)
-                reader.read_exact(&mut buf[1..13]).await?;
-                13
+                // Fixed length: worker_id (2) + last_received (4) + last_responded (4)
+                reader.read_exact(&mut buf[1..11]).await?;
+                11
             }
             DescriptorByte::Cancel => {
                 // Read: job_id (4) + worker_id (2)
