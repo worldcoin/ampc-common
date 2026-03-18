@@ -1,6 +1,6 @@
 use crate::{
     execution::player::Identity,
-    network::{value::NetworkValue, Networking},
+    network::mpc::{NetworkValue, Networking},
 };
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -98,7 +98,7 @@ impl Networking for LocalNetworking {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::value::NetworkValue;
+    use crate::network::mpc::NetworkValue;
     use ampc_secret_sharing::shares::ring_impl::RingElement;
 
     #[tokio::test]

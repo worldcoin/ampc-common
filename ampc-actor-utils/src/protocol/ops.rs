@@ -2,7 +2,7 @@
 // This file contains only the non-iris-specific protocol operations
 
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
-use crate::network::value::{NetworkInt, NetworkValue};
+use crate::network::mpc::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
@@ -199,7 +199,7 @@ pub async fn gte_zero_and_open_u16(
 /// This is a helper function for opening shares
 #[allow(dead_code)]
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
+pub async fn open_ring<T: IntRing2k + crate::network::mpc::NetworkInt>(
     session: &mut Session,
     shares: &[Share<T>],
 ) -> Result<Vec<T>> {

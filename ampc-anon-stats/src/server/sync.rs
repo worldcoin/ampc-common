@@ -1,5 +1,5 @@
 use ampc_actor_utils::execution::session::Session;
-use ampc_actor_utils::network::value::NetworkValue;
+use ampc_actor_utils::network::mpc::NetworkValue;
 use eyre::bail;
 use itertools::Itertools;
 

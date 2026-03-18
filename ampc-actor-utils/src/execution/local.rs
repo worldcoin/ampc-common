@@ -3,10 +3,9 @@ use crate::{
         player::*,
         session::{NetworkSession, Session, SessionId},
     },
-    network::{
-        local::LocalNetworkingStore,
-        tcp::testing::{interleave_vecs, setup_local_tcp_networking},
-        NetworkType,
+    network::mpc::{
+        handle::testing::{interleave_vecs, setup_local_tcp_networking},
+        LocalNetworkingStore, NetworkType,
     },
     protocol::{
         ops::setup_replicated_prf,

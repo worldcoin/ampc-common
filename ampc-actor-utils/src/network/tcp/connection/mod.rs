@@ -10,10 +10,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{
-        data::{ConnectionId, Peer},
-        Client, NetworkConnection,
-    },
+    network::tcp::{Client, ConnectionId, NetworkConnection, Peer},
 };
 use eyre::Result;
 use std::{sync::Arc, time::Duration};

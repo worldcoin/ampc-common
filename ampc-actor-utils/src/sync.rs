@@ -1,5 +1,5 @@
 use crate::execution::session::Session;
-use crate::network::value::NetworkValue;
+use crate::network::mpc::NetworkValue;
 use eyre::bail;
 
 pub const JOB_HASH_LEN: usize = 32;
