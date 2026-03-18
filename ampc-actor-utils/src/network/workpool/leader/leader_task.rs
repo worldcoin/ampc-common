@@ -113,7 +113,9 @@ async fn leader_task(
             },
             rsp_opt = worker_rsp_rx.recv() => {
                 if let Some(rsp) = rsp_opt {
-                    handle_worker_response(rsp, &job_tracker);
+                    if let Err(e) = job_tracker.record_response(rsp) {
+                        tracing::warn!("handle_worker_response: {}", e);
+                    }
                 } else {
                     tracing::debug!("Worker event channel closed");
                 }
@@ -169,12 +171,6 @@ fn send_to_workpool(
             // doesn't have a way to skip the work yet.
             let _ = job_tracker.cancel_job(job_id);
         }
-    }
-}
-
-fn handle_worker_response(rsp: WorkerRsp, job_tracker: &JobTracker) {
-    if let Err(e) = job_tracker.record_response(rsp) {
-        tracing::warn!("handle_worker_response: {}", e);
     }
 }
 

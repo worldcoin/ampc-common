@@ -139,11 +139,7 @@ impl JobTracker {
             .ok_or_else(|| eyre!("Job {} not found", job_id))
             .expect("fatal error in complete_job");
 
-        // Collect results and sort by worker_id for deterministic ordering
-        let mut results: Vec<_> = pending.results.into_iter().collect();
-        results.sort_by_key(|(worker_id, _)| *worker_id);
-        let results: Vec<_> = results.into_iter().map(|(_, rsp)| rsp).collect();
-
+        let results: Vec<_> = pending.results.into_values().collect();
         let _ = pending.response_tx.send(Ok(results));
     }
 

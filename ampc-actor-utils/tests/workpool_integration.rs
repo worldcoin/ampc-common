@@ -10,9 +10,11 @@ use ampc_actor_utils::{
         worker::{build_worker_handle, WorkerArgs},
     },
 };
+use futures::future::join_all;
 use serial_test::serial;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
+use tracing_test::traced_test;
 
 const NUM_WORKERS: usize = 3;
 const JOB_TIMEOUT: Duration = Duration::from_secs(10);
@@ -107,14 +109,11 @@ async fn start_cluster() -> (
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 /// Broadcast sends the same payload to all workers and collects one response
-/// per worker, ordered by worker_id.
+/// per worker
 #[serial]
+#[traced_test]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_broadcast() {
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .try_init();
-
     let (mut leader, shutdown) = start_cluster().await;
     assert_eq!(leader.num_workers(), NUM_WORKERS);
 
@@ -141,11 +140,7 @@ async fn test_broadcast() {
         "expected one response per worker"
     );
 
-    for (expected_worker_id, rsp) in responses.iter().enumerate() {
-        assert_eq!(
-            rsp.worker_id, expected_worker_id as u16,
-            "responses must be in worker_id order"
-        );
+    for rsp in responses.into_iter() {
         assert_eq!(
             rsp.payload.as_ref().expect("worker returned an error"),
             &payload,
@@ -157,59 +152,46 @@ async fn test_broadcast() {
 }
 
 /// Scatter-gather sends a distinct payload to each worker and collects all
-/// responses, sorted by worker_id.
+/// responses
 #[serial]
+#[traced_test]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_scatter_gather() {
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .try_init();
-
     let (mut leader, shutdown) = start_cluster().await;
-
-    let msgs: Vec<WorkerJob> = (0..NUM_WORKERS)
-        .map(|i| WorkerJob {
-            worker_id: i as u16,
-            payload: format!("data-for-worker-{i}").into_bytes(),
-        })
-        .collect();
+    leader.wait_for_all_connections().await;
 
     let expected_payloads: Vec<Vec<u8>> = (0..NUM_WORKERS)
         .map(|i| format!("data-for-worker-{i}").into_bytes())
         .collect();
 
-    leader.wait_for_all_connections().await;
-    tracing::info!("all workers connected");
+    let job_handles: Vec<_> = (1..=NUM_WORKERS)
+        .map(|workers_to_use| {
+            let msgs: Vec<WorkerJob> = (0..workers_to_use)
+                .map(|i| WorkerJob {
+                    worker_id: i as u16,
+                    payload: format!("data-for-worker-{i}").into_bytes(),
+                })
+                .collect();
 
-    tracing::info!("submitting scatter_gather");
+            leader.scatter_gather(msgs).expect("scatter_gather failed")
+        })
+        .collect();
 
-    let responses = timeout(
-        JOB_TIMEOUT,
-        leader
-            .scatter_gather(msgs)
-            .expect("failed to submit scatter_gather"),
-    )
-    .await
-    .expect("scatter_gather timed out")
-    .expect("scatter_gather job failed");
+    let jobs = timeout(JOB_TIMEOUT, join_all(job_handles))
+        .await
+        .expect("scatter_gather timed out");
 
-    tracing::info!(count = responses.len(), "scatter_gather complete");
-    assert_eq!(
-        responses.len(),
-        NUM_WORKERS,
-        "expected one response per worker"
-    );
+    for (idx, responses) in jobs.into_iter().enumerate() {
+        let responses = responses.expect("job failed");
+        assert_eq!(idx + 1, responses.len(), "incorrect number of responses");
 
-    for (expected_worker_id, rsp) in responses.iter().enumerate() {
-        assert_eq!(
-            rsp.worker_id, expected_worker_id as u16,
-            "responses must be in worker_id order"
-        );
-        assert_eq!(
-            rsp.payload.as_ref().expect("worker returned an error"),
-            &expected_payloads[expected_worker_id],
-            "worker should echo its own payload back"
-        );
+        for rsp in responses.into_iter() {
+            assert_eq!(
+                rsp.payload.as_ref().expect("worker returned an error"),
+                &expected_payloads[rsp.worker_id as usize],
+                "worker should echo its own payload back"
+            );
+        }
     }
 
     shutdown.cancel();
