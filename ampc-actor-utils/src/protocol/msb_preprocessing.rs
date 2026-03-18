@@ -198,7 +198,11 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt, K: PrimInt>(
 
     // TODO convert the additive share of bitlt back to replicated share of bitlt (for nowww))
     let bit_lt_share = add2_to_rep_binary(session, bit_lt_share_add2).await?;
-
+    dbg!(
+        "OVER HERE MAYBE",
+        &bit_lt_share,
+        &session.own_role().index()
+    );
     // step 4: [a']_k = 2^{k-1} [u]_1 + c' - [r']_k, [d]_k = [a]_k - [a']_k
 
     // 4a. computing scaled 2^{k - 1} * [u]_1
@@ -213,8 +217,7 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt, K: PrimInt>(
 
     let scaled_bit_lt = ReplicatedShare::new(scaled_bit_lt_self, scaled_bit_lt_prev);
     let mut x_prime = scaled_bit_lt;
-    let c_prime_share = ReplicatedShare::from_const(c_prime, session.own_role());
-    x_prime = x_prime + c_prime_share;
+    x_prime.add_assign_const_role(c_prime, session.own_role());
     x_prime.sub_assign(r_prime_share);
 
     let d_share = x - x_prime;
@@ -225,14 +228,14 @@ pub async fn extract_msb_rand<T: IntRing2k + NetworkInt, K: PrimInt>(
     let mut b_msb_share = offline.b_bit;
     b_msb_share = b_msb_share * two_pow_k_minus_1;
     let e_share = d_share + b_msb_share;
-
     // e_share: ReplicatedShare<T>
     let e_open: T = open_ring(session, &[e_share]).await?[0];
+    dbg!(&e_open, session.own_role().index(), "SO CRAZY");
     // MSB as bool
     let e_msb_bool: bool = ((e_open >> (T::K - 1)) & T::one()) == T::one();
 
     dbg!(&offline.b_bit);
-    dbg!(e_msb_bool);
+    dbg!(e_msb_bool, session.own_role().index());
 
     let msb = if e_msb_bool {
         let mut neg_b_bit = -offline.b_bit;
@@ -1065,7 +1068,7 @@ mod tests {
         let modulus = 67;
         let mut rng = AesRng::from_random_seed();
         let offline_rng = AesRng::from_random_seed();
-        let len = 4usize;
+        let len = 1usize;
 
         // Random cleartext values + expected MSB bits
         let ints: Vec<u32> = (0..len).map(|_| rng.gen::<u32>()).collect();

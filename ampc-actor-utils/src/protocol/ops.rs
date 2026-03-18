@@ -170,6 +170,8 @@ pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
         .and_then(|v| T::into_vec(v))
         .map_err(|e| eyre!("Error in receiving in open operation: {}", e))?;
 
+    dbg!(&shares[0], &c, session.own_role().index());
+
     // ADD shares with the received shares
     shares
         .iter()
