@@ -6,7 +6,7 @@ use rand_distr::{Distribution, Standard};
 use crate::{
     constants::N_PARTIES,
     execution::session::{Session, SessionHandles},
-    network::value::NetworkInt,
+    network::mpc::NetworkInt,
     protocol::ops::IdDistance,
 };
 use ampc_secret_sharing::shares::int_ring::IntRing2k;

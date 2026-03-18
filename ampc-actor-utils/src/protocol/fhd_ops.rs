@@ -129,6 +129,7 @@ pub async fn min_of_pair_batch(
 
 #[cfg(test)]
 mod tests {
+    use crate::network::mpc::NetworkValue;
     use crate::{
         constants::MATCH_THRESHOLD_RATIO,
         execution::{
@@ -139,8 +140,6 @@ mod tests {
     };
 
     use super::*;
-
-    use crate::network::value::NetworkValue;
 
     use aes_prng::AesRng;
     use ampc_secret_sharing::RingElement;

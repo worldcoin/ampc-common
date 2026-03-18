@@ -1,6 +1,6 @@
 use crate::{
     execution::player::Identity,
-    network::tcp::{data::ConnectionId, NetworkConnection},
+    network::tcp::{ConnectionId, NetworkConnection},
 };
 use eyre::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

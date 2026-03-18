@@ -1,4 +1,4 @@
-use ampc_actor_utils::network::config::TlsConfig;
+use ampc_actor_utils::network::tcp::TlsConfig;
 use ampc_server_utils::config::{AwsConfig, ServiceConfig};
 use ampc_server_utils::ServerCoordinationConfig;
 use clap::Parser;

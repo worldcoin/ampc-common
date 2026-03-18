@@ -3,14 +3,14 @@ pub mod multiplexer;
 use crate::{
     execution::{player::Identity, session::SessionId},
     network::{
-        tcp::{
-            config::TcpConfig,
-            connection::ConnectionState,
-            data::{ConnectionId, InStream, OutStream, OutboundMsg, PeerConnections},
-            NetworkConnection,
+        mpc::{
+            handle::{
+                config::TcpConfig,
+                data::{InStream, OutStream, OutboundMsg, PeerConnections},
+            },
+            NetworkValue, Networking,
         },
-        value::NetworkValue,
-        Networking,
+        tcp::{ConnectionId, ConnectionState, NetworkConnection},
     },
 };
 use async_trait::async_trait;
