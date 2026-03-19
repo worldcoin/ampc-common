@@ -163,15 +163,10 @@ pub type WorkerId = u16;
 pub type JobId = u32;
 
 enum NetworkValue {
-    Request {
+    Job {
         job_id: JobId,
         worker_id: WorkerId,
-        payload: Vec<u8>,
-    },
-    Response {
-        job_id: JobId,
-        worker_id: WorkerId,
-        payload: Vec<u8>,
+        payload: Payload,
     },
     QueryJobState {
         worker_id: WorkerId,
@@ -190,7 +185,7 @@ enum NetworkValue {
 
 ### Wire Format
 
-#### Request/Response (Descriptor: 0x01/0x02)
+#### Job (Descriptor: 0x01)
 ```
 ┌──────────┬──────────┬───────────┬─────────────┬─────────┐
 │Descriptor│ job_id   │ worker_id │ payload_len │ payload │
@@ -210,15 +205,16 @@ Total: 3 bytes
 
 #### JobStateResponse (Descriptor: 0x04)
 ```
-┌──────────┬───────────┬─────────────────┬─────────────────┐
-│Descriptor│ worker_id │ last_received   │ last_responded  │
-│  1 byte  │  2 bytes  │ 1+4 bytes       │ 1+4 bytes       │
-└──────────┴───────────┴─────────────────┴─────────────────┘
-Total: 13 bytes
+┌──────────┬───────────┬──────────┬───────────────┬────────────────┐
+│Descriptor│ worker_id │ bitfield │ last_received │ last_responded │
+│  1 byte  │  2 bytes  │  1 byte  │   4 bytes     │    4 bytes     │
+└──────────┴───────────┴──────────┴───────────────┴────────────────┘
+Total: 12 bytes
 
-Option<JobId> encoding:
-  - First byte: 0 = None, 1 = Some
-  - Next 4 bytes: JobId value (if Some)
+Bitfield encoding:
+  - Bit 0 (0x01): last_received_job_id is Some (value in last_received field)
+  - Bit 1 (0x02): last_responded_job_id is Some (value in last_responded field)
+  - If bit is 0, corresponding field contains 0 and should be interpreted as None
 ```
 
 #### Cancel (Descriptor: 0x05)
@@ -278,7 +274,7 @@ send_to_workpool(job, worker_cmd_ch, job_tracker)
     ├─→ JobTracker::register_job(job_type, rsp) → job_id
     │
     └─→ For each worker:
-            worker_cmd_ch[i].send(NetworkValue::Request {
+            worker_cmd_ch[i].send(NetworkValue::Job {
                 job_id,
                 worker_id,
                 payload
@@ -305,7 +301,7 @@ send_to_workpool(job, worker_cmd_ch, job_tracker)
         handle_inbound_traffic (worker side)
             │
             ▼
-        convert_to_job(NetworkValue::Request)
+        convert_to_job(NetworkValue::Job)
             │
             ├─→ Update last_received_job_id
             │
@@ -330,7 +326,7 @@ User Code
 Job::send_result(payload)
     │
     ▼
-rsp_tx.send(NetworkValue::Response {
+rsp_tx.send(NetworkValue::Job {
     job_id,
     worker_id,
     payload
@@ -356,7 +352,7 @@ TCP/TLS Read
 handle_inbound_traffic (leader side)
     │
     ▼
-convert_to_worker_rsp(NetworkValue::Response)
+convert_to_worker_rsp(NetworkValue::Job)
     │
     ▼
 worker_rsp_tx.send(WorkerRsp {
@@ -665,8 +661,8 @@ last_responded_job_id: Option<u32>  // Last Response sent
 ```
 
 Updated during message processing:
-- `NetworkValue::Request` → update `last_received_job_id`
-- `NetworkValue::Response` → update `last_responded_job_id`
+- `NetworkValue::Job` (inbound) → update `last_received_job_id`
+- `NetworkValue::Job` (outbound) → update `last_responded_job_id`
 - `NetworkValue::QueryJobState` → send both values
 
 ### Connection Failure Handling

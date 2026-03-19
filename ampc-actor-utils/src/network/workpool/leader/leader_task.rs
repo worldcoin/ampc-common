@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
@@ -139,7 +140,7 @@ fn send_to_workpool(
             job_tracker.register_job(job_id, JobType::Broadcast { num_workers }, result_rsp);
 
             for (worker_id, cmd_tx) in worker_cmd_ch.iter().enumerate() {
-                let _ = cmd_tx.send(NetworkValue::new_request(
+                let _ = cmd_tx.send(NetworkValue::new_job(
                     job_id,
                     worker_id as WorkerId,
                     payload.clone(),
@@ -159,11 +160,7 @@ fn send_to_workpool(
                 let cmd_tx = worker_cmd_ch
                     .get(msg.worker_id as usize)
                     .expect("cmd_tx should exist");
-                let _ = cmd_tx.send(NetworkValue::new_request(
-                    job_id,
-                    msg.worker_id,
-                    msg.payload,
-                ));
+                let _ = cmd_tx.send(NetworkValue::new_job(job_id, msg.worker_id, msg.payload));
             }
         }
         Job::Cancel { job_id } => {
@@ -236,7 +233,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
 
         let evt = tokio::select! {
             r = handle_outbound_traffic(write_half, &mut cmd_rx, |msg| {
-                if let NetworkValue::Request { job_id, .. } = msg {
+                if let NetworkValue::Job { job_id, .. } = msg {
                     last_sent_job_id = Some(*job_id);
                 }
             }) => {
@@ -285,12 +282,12 @@ async fn get_last_rxd_job_id<T: NetworkConnection>(
     conn.write_all(&buf).await?;
     conn.flush().await?;
 
-    // Read JobStateResponse: fixed 11 bytes
-    // descriptor (1) + worker_id (2) + last_received (4) + last_responded (4)
-    let mut response_buf = [0u8; 11];
+    // Read JobStateResponse: fixed 12 bytes
+    // descriptor (1) + worker_id (2) + bitfield (1) + last_received (4) + last_responded (4)
+    let mut response_buf = [0u8; 12];
     conn.read_exact(&mut response_buf).await?;
 
-    let response = NetworkValue::deserialize(&response_buf)
+    let response = NetworkValue::deserialize(Bytes::copy_from_slice(&response_buf))
         .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
 
     if let NetworkValue::JobStateResponse {
@@ -309,7 +306,7 @@ fn convert_to_worker_rsp(
     tx: &UnboundedSender<WorkerRsp>,
 ) -> io::Result<()> {
     match network_value {
-        NetworkValue::Response {
+        NetworkValue::Job {
             job_id,
             worker_id,
             payload,
@@ -332,8 +329,8 @@ fn convert_to_worker_rsp(
             tracing::warn!("Unexpected Cancel from worker");
             Ok(())
         }
-        NetworkValue::Request { .. } | NetworkValue::QueryJobState { .. } => Err(io::Error::other(
-            "Unexpected Request/QueryJobState on leader connection",
+        NetworkValue::QueryJobState { .. } => Err(io::Error::other(
+            "Unexpected QueryJobState on leader connection",
         )),
     }
 }

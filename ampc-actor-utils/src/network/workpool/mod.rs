@@ -1,7 +1,6 @@
-use std::io;
-
 use crate::network::{tcp::NetworkConnection, workpool::value::NetworkValue};
 use bytes::BytesMut;
+use std::io;
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
@@ -9,10 +8,12 @@ use tokio::{
 };
 
 pub mod leader;
+mod payload;
 pub mod value;
 pub mod worker;
 
-pub type Payload = Vec<u8>;
+pub use payload::{Payload, ToBytes};
+
 pub type WorkerId = u16;
 pub type JobId = u32;
 
@@ -89,9 +90,12 @@ where
     F: FnMut(NetworkValue, &UnboundedSender<R>) -> io::Result<()>,
 {
     use value::DescriptorByte;
-    let mut buf = vec![0u8; 64 * 1024];
+    let mut buf = BytesMut::with_capacity(64 * 1024);
 
     loop {
+        buf.clear();
+        buf.resize(1, 0);
+
         // Read descriptor byte first
         reader.read_exact(&mut buf[..1]).await?;
         let descriptor: DescriptorByte = buf[0]
@@ -100,37 +104,40 @@ where
 
         // Read remaining bytes based on message type
         let total_len = match descriptor {
-            DescriptorByte::Request | DescriptorByte::Response => {
-                // Read: job_id (4) + partition_id (2) + payload_len (4)
+            DescriptorByte::Job => {
+                // Read: job_id (4) + worker_id (2) + payload_len (4)
+                buf.resize(11, 0);
                 reader.read_exact(&mut buf[1..11]).await?;
                 let payload_len = u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize;
 
                 // Read payload
-                if buf.len() < 11 + payload_len {
-                    buf.resize(11 + payload_len, 0);
-                }
+                buf.resize(11 + payload_len, 0);
                 reader.read_exact(&mut buf[11..11 + payload_len]).await?;
                 11 + payload_len
             }
             DescriptorByte::QueryJobState => {
                 // Read: worker_id (2)
+                buf.resize(3, 0);
                 reader.read_exact(&mut buf[1..3]).await?;
                 3
             }
             DescriptorByte::JobStateResponse => {
-                // Fixed length: worker_id (2) + last_received (4) + last_responded (4)
-                reader.read_exact(&mut buf[1..11]).await?;
-                11
+                // Fixed length: worker_id (2) + bitfield (1) + last_received (4) + last_responded (4)
+                buf.resize(12, 0);
+                reader.read_exact(&mut buf[1..12]).await?;
+                12
             }
             DescriptorByte::Cancel => {
                 // Read: job_id (4) + worker_id (2)
+                buf.resize(7, 0);
                 reader.read_exact(&mut buf[1..7]).await?;
                 7
             }
         };
 
-        // Deserialize the NetworkValue
-        match NetworkValue::deserialize(&buf[..total_len]) {
+        // Deserialize the NetworkValue (zero-copy via split/freeze)
+        let bytes = buf.split_to(total_len).freeze();
+        match NetworkValue::deserialize(bytes) {
             Ok(network_value) => {
                 convert_and_send(network_value, tx)?;
             }

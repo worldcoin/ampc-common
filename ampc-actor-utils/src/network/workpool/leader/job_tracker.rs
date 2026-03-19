@@ -169,7 +169,9 @@ impl Default for JobTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::workpool::payload::Payload;
     use crate::network::workpool::WorkpoolError;
+    use bytes::Bytes;
     use tracing_test::traced_test;
 
     #[test]
@@ -187,30 +189,34 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 0,
-                payload: Ok(vec![10]),
+                payload: Ok(vec![10].into()),
             })
             .unwrap();
         tracker
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 2,
-                payload: Ok(vec![30]),
+                payload: Ok(vec![30].into()),
             })
             .unwrap();
         tracker
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 1,
-                payload: Ok(vec![20]),
+                payload: Ok(vec![20].into()),
             })
             .unwrap();
 
-        // Check assembled result
+        // Check assembled result (order is not guaranteed)
         let values = rx.blocking_recv().unwrap().unwrap();
         assert_eq!(values.len(), 3);
-        assert_eq!(values[0].payload, Ok(vec![10]));
-        assert_eq!(values[1].payload, Ok(vec![20]));
-        assert_eq!(values[2].payload, Ok(vec![30]));
+        let results: HashMap<WorkerId, _> = values
+            .into_iter()
+            .map(|r| (r.worker_id, r.payload))
+            .collect();
+        assert!(matches!(&results[&0], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![10])));
+        assert!(matches!(&results[&1], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![20])));
+        assert!(matches!(&results[&2], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![30])));
     }
 
     #[test]
@@ -227,7 +233,7 @@ mod tests {
                 .record_response(WorkerRsp {
                     job_id,
                     worker_id,
-                    payload: Ok(vec![]),
+                    payload: Ok(Bytes::new().into()),
                 })
                 .unwrap();
         }
@@ -252,7 +258,7 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 0,
-                payload: Ok(vec![10]),
+                payload: Ok(vec![10].into()),
             })
             .unwrap();
         tracker
@@ -266,13 +272,19 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 2,
-                payload: Ok(vec![30]),
+                payload: Ok(vec![30].into()),
             })
             .unwrap();
 
+        // Check results by worker_id (order is not guaranteed)
         let result = rx.try_recv().unwrap().unwrap();
-        assert!(result[0].payload.is_ok());
-        assert!(result[1].payload.is_err());
+        let results: HashMap<WorkerId, _> = result
+            .into_iter()
+            .map(|r| (r.worker_id, r.payload))
+            .collect();
+        assert!(results[&0].is_ok());
+        assert!(results[&1].is_err());
+        assert!(results[&2].is_ok());
     }
 
     #[test]
@@ -288,7 +300,7 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 0,
-                payload: Ok(vec![10]),
+                payload: Ok(vec![10].into()),
             })
             .unwrap();
 
@@ -296,7 +308,7 @@ mod tests {
         let result = tracker.record_response(WorkerRsp {
             job_id,
             worker_id: 0,
-            payload: Ok(vec![20]),
+            payload: Ok(vec![20].into()),
         });
         assert!(result.is_err());
     }
@@ -314,7 +326,7 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 0,
-                payload: Ok(vec![10]),
+                payload: Ok(vec![10].into()),
             })
             .unwrap();
 
@@ -342,32 +354,33 @@ mod tests {
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 5,
-                payload: Ok(vec![50]),
+                payload: Ok(vec![50].into()),
             })
             .unwrap();
         tracker
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 0,
-                payload: Ok(vec![10]),
+                payload: Ok(vec![10].into()),
             })
             .unwrap();
         tracker
             .record_response(WorkerRsp {
                 job_id,
                 worker_id: 2,
-                payload: Ok(vec![30]),
+                payload: Ok(vec![30].into()),
             })
             .unwrap();
 
-        // Check results are sorted by worker_id
+        // Check results (order is not guaranteed)
         let result = rx.blocking_recv().unwrap().unwrap();
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].worker_id, 0);
-        assert_eq!(result[0].payload, Ok(vec![10]));
-        assert_eq!(result[1].worker_id, 2);
-        assert_eq!(result[1].payload, Ok(vec![30]));
-        assert_eq!(result[2].worker_id, 5);
-        assert_eq!(result[2].payload, Ok(vec![50]));
+        let results: HashMap<WorkerId, _> = result
+            .into_iter()
+            .map(|r| (r.worker_id, r.payload))
+            .collect();
+        assert!(matches!(&results[&0], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![10])));
+        assert!(matches!(&results[&2], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![30])));
+        assert!(matches!(&results[&5], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![50])));
     }
 }

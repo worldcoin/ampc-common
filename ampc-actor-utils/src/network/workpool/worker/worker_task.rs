@@ -99,7 +99,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
             r = handle_outbound_traffic(write_half, &mut rsp_rx, {
                 let last_responded = last_responded_job_id.clone();
                 move |msg| {
-                    if let NetworkValue::Response { job_id, .. } = msg {
+                    if let NetworkValue::Job { job_id, .. } = msg {
                         *last_responded.lock().unwrap() = Some(*job_id);
                     }
                 }
@@ -154,7 +154,7 @@ fn convert_to_job(
     last_responded_job_id: &Mutex<Option<JobId>>,
 ) -> io::Result<()> {
     match network_value {
-        NetworkValue::Request {
+        NetworkValue::Job {
             job_id,
             worker_id,
             payload,
@@ -193,8 +193,8 @@ fn convert_to_job(
             );
             Ok(())
         }
-        NetworkValue::Response { .. } | NetworkValue::JobStateResponse { .. } => Err(
-            io::Error::other("Unexpected Response/JobStateResponse on worker connection"),
-        ),
+        NetworkValue::JobStateResponse { .. } => Err(io::Error::other(
+            "Unexpected JobStateResponse on worker connection",
+        )),
     }
 }

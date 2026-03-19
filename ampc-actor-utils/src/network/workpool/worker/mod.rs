@@ -31,7 +31,7 @@ pub struct Job {
 
 impl Job {
     pub fn send_result(self, payload: Payload) {
-        let r = NetworkValue::Response {
+        let r = NetworkValue::Job {
             job_id: self.msg.job_id,
             worker_id: self.msg.worker_id,
             payload,

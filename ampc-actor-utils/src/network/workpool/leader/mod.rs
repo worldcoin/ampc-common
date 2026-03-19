@@ -116,16 +116,17 @@ impl Drop for LeaderHandle {
 impl LeaderHandle {
     /// Broadcast to all workers, returns a handle that can be awaited or cancelled
     ///
+    /// Accepts either `Bytes` or `Arc<dyn ToPacked>` via the `Payload` enum.
     /// Returns Err only for immediate failures (e.g., channel closed).
     /// Validation errors and worker failures are returned when awaiting the JobHandle.
-    pub fn broadcast(&self, payload: Payload) -> Result<JobHandle, WorkpoolError> {
+    pub fn broadcast(&self, payload: impl Into<Payload>) -> Result<JobHandle, WorkpoolError> {
         let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
         let (result_tx, result_rx) = oneshot::channel();
 
         self.ch
             .send(Job::Broadcast {
                 job_id,
-                payload,
+                payload: payload.into(),
                 result_rsp: result_tx,
             })
             .map_err(|_| WorkpoolError::SendFailed)?;
