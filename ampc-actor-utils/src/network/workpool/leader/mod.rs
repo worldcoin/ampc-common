@@ -116,7 +116,7 @@ impl Drop for LeaderHandle {
 impl LeaderHandle {
     /// Broadcast to all workers, returns a handle that can be awaited or cancelled
     ///
-    /// Accepts either `Bytes` or `Arc<dyn ToPacked>` via the `Payload` enum.
+    /// Accepts either `Bytes` or `Arc<dyn ToBytes>` via the `Payload` enum.
     /// Returns Err only for immediate failures (e.g., channel closed).
     /// Validation errors and worker failures are returned when awaiting the JobHandle.
     pub fn broadcast(&self, payload: impl Into<Payload>) -> Result<JobHandle, WorkpoolError> {
