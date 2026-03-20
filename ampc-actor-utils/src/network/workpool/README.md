@@ -98,8 +98,8 @@ Loop forever:
        - Detect lost jobs during disconnection
 
     3. Split connection into read/write halves
-       - Write half: handle_outbound_traffic (sends requests)
-       - Read half: handle_inbound_traffic (receives responses)
+       - Write half: serialize_and_write_outbound (sends requests)
+       - Read half: read_and_parse_inbound (receives responses)
 
     4. Run until connection closes or shutdown
        - Track last_sent_job_id for reconciliation
@@ -132,8 +132,8 @@ Loop forever:
        - Workers send responses via this channel
 
     3. Split connection into read/write halves
-       - Write half: handle_outbound_traffic (sends responses)
-       - Read half: handle_inbound_traffic (receives requests)
+       - Write half: serialize_and_write_outbound (sends responses)
+       - Read half: read_and_parse_inbound (receives requests)
 
     4. Track job state:
        - last_received_job_id: Last job received from leader
@@ -228,7 +228,7 @@ Total: 7 bytes
 
 ### Message Batching
 
-**Outbound Traffic Handler** (`handle_outbound_traffic`):
+**Outbound Traffic Handler** (`serialize_and_write_outbound`):
 - Receives messages from unbounded channel
 - Attempts to batch multiple messages into single write
 - Buffer capacity: 64 MB maximum
@@ -242,7 +242,7 @@ Total: 7 bytes
   6. Flush
   ```
 
-**Inbound Traffic Handler** (`handle_inbound_traffic`):
+**Inbound Traffic Handler** (`read_and_parse_inbound`):
 - Reads descriptor byte first
 - Determines message length based on descriptor
 - Reads remaining bytes in one or more reads
@@ -284,7 +284,7 @@ send_to_workpool(job, worker_cmd_ch, job_tracker)
         worker_mgr (per-worker task)
             │
             ▼
-        handle_outbound_traffic
+        serialize_and_write_outbound
             │
             ▼
         TCP/TLS Write
@@ -298,10 +298,10 @@ send_to_workpool(job, worker_cmd_ch, job_tracker)
         TCP/TLS Read
             │
             ▼
-        handle_inbound_traffic (worker side)
+        read_and_parse_inbound (worker side)
             │
             ▼
-        convert_to_job(NetworkValue::Job)
+        handle_inbound_msg(NetworkValue::Job)
             │
             ├─→ Update last_received_job_id
             │
@@ -333,7 +333,7 @@ rsp_tx.send(NetworkValue::Job {
 })
     │
     ▼
-handle_outbound_traffic (worker side)
+serialize_and_write_outbound (worker side)
     │
     ├─→ Update last_responded_job_id
     │
@@ -349,7 +349,7 @@ TCP/TLS Write
 TCP/TLS Read
     │
     ▼
-handle_inbound_traffic (leader side)
+read_and_parse_inbound (leader side)
     │
     ▼
 convert_to_worker_rsp(NetworkValue::Job)
@@ -692,8 +692,8 @@ loop {
 
     // 3. Run traffic handlers
     tokio::select! {
-        _ = handle_outbound_traffic(...) => { /* closed */ },
-        _ = handle_inbound_traffic(...) => { /* closed */ },
+        _ = serialize_and_write_outbound(...) => { /* closed */ },
+        _ = read_and_parse_inbound(...) => { /* closed */ },
         _ = shutdown_ct.cancelled() => { break; },
     }
 
@@ -724,8 +724,8 @@ loop {
 
     // 3. Run traffic handlers
     tokio::select! {
-        _ = handle_outbound_traffic(...) => { /* closed */ },
-        _ = handle_inbound_traffic(...) => { /* closed */ },
+        _ = serialize_and_write_outbound(...) => { /* closed */ },
+        _ = read_and_parse_inbound(...) => { /* closed */ },
         _ = shutdown_ct.cancelled() => { break; },
     }
 
