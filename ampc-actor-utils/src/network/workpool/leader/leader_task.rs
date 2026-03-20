@@ -157,16 +157,19 @@ fn send_to_workpool(
             job_tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, result_rsp);
 
             for msg in msgs.into_iter() {
-                let cmd_tx = worker_cmd_ch
-                    .get(msg.worker_id as usize)
-                    .expect("cmd_tx should exist");
+                let Some(cmd_tx) = worker_cmd_ch.get(msg.worker_id as usize) else {
+                    tracing::warn!("invalid worker id: {}", msg.worker_id);
+                    return;
+                };
                 let _ = cmd_tx.send(NetworkValue::new_job(job_id, msg.worker_id, msg.payload));
             }
         }
         Job::Cancel { job_id } => {
             // currently do nothing else when cancelling a job. The worker
             // doesn't have a way to skip the work yet.
-            let _ = job_tracker.cancel_job(job_id);
+            if job_tracker.cancel_job(job_id).is_err() {
+                tracing::warn!("failed to cancel job");
+            }
         }
     }
 }

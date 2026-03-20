@@ -133,11 +133,10 @@ impl JobTracker {
 
     /// validation should occur before this function is called.
     fn complete_job(&self, job_id: JobId) {
-        let (_, pending) = self
-            .pending_jobs
-            .remove(&job_id)
-            .ok_or_else(|| eyre!("Job {} not found", job_id))
-            .expect("fatal error in complete_job");
+        let Some((_, pending)) = self.pending_jobs.remove(&job_id) else {
+            tracing::warn!("job id not found: {}", job_id);
+            return;
+        };
 
         let results: Vec<_> = pending.results.into_values().collect();
         let _ = pending.response_tx.send(Ok(results));
