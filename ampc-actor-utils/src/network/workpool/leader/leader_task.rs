@@ -11,11 +11,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::network::workpool::LeaderError;
 use crate::network::workpool::{
-    handle_inbound_traffic, handle_outbound_traffic, value::NetworkValue, JobId, WorkerId,
-};
-use crate::network::workpool::{
     leader::job_tracker::{JobTracker, JobType},
     leader::{Job, WorkerRsp},
+};
+use crate::network::workpool::{
+    read_and_parse_inbound, serialize_and_write_outbound, value::NetworkValue, JobId, WorkerId,
 };
 use crate::{
     execution::player::Identity,
@@ -185,8 +185,6 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     worker_rsp_tx: UnboundedSender<WorkerRsp>,
     shutdown_ct: CancellationToken,
 ) {
-    let mut last_sent_job_id: Option<JobId> = None;
-
     loop {
         let connection_id = ConnectionId::new(0); // workers always connect with id 0
         let mut conn = match crate::network::tcp::connect(
@@ -232,17 +230,13 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
         }
 
         let evt = tokio::select! {
-            r = handle_outbound_traffic(write_half, &mut cmd_rx, |msg| {
-                if let NetworkValue::Job { job_id, .. } = msg {
-                    last_sent_job_id = Some(*job_id);
-                }
-            }) => {
+            r = serialize_and_write_outbound(write_half, &mut cmd_rx, |_| {}) => {
                 if let Err(e) = r {
                     tracing::warn!("Worker {} outbound traffic error: {:?}", worker_id, e);
                 }
                 Evt::OutboundClosed
             },
-            r = handle_inbound_traffic(reader, &worker_rsp_tx, convert_to_worker_rsp) => {
+            r = read_and_parse_inbound(reader, &worker_rsp_tx, convert_to_worker_rsp) => {
                 if let Err(e) = r {
                     tracing::warn!("Worker {} inbound traffic error: {:?}", worker_id, e);
                 }

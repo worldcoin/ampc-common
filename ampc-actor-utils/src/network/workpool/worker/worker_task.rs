@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Job, Msg};
 use crate::network::workpool::value::NetworkValue;
-use crate::network::workpool::{handle_inbound_traffic, handle_outbound_traffic, JobId};
+use crate::network::workpool::{read_and_parse_inbound, serialize_and_write_outbound, JobId};
 use crate::{
     execution::player::Identity,
     network::tcp::{
@@ -96,7 +96,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
         }
 
         let evt = tokio::select! {
-            r = handle_outbound_traffic(write_half, &mut rsp_rx, {
+            r = serialize_and_write_outbound(write_half, &mut rsp_rx, {
                 let last_responded = last_responded_job_id.clone();
                 move |msg| {
                     if let NetworkValue::Job { job_id, .. } = msg {
@@ -109,12 +109,12 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
                 }
                 Evt::OutboundClosed
             },
-            r = handle_inbound_traffic(reader, &job_tx, {
+            r = read_and_parse_inbound(reader, &job_tx, {
                 let last_received = last_received_job_id.clone();
                 let last_responded = last_responded_job_id.clone();
                 let rsp_tx_clone = rsp_tx.clone();
                 move |network_value, job_tx| {
-                    convert_to_job(
+                    handle_inbound_msg(
                         network_value,
                         job_tx,
                         rsp_tx_clone.clone(),
@@ -146,7 +146,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     }
 }
 
-fn convert_to_job(
+fn handle_inbound_msg(
     network_value: NetworkValue,
     tx: &UnboundedSender<Job>,
     rsp_tx: UnboundedSender<NetworkValue>,

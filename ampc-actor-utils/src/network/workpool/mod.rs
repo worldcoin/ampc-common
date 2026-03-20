@@ -50,10 +50,10 @@ pub(crate) enum LeaderError {
     IO(#[from] tokio::io::Error),
 }
 
-pub(crate) async fn handle_outbound_traffic<T: NetworkConnection, F>(
+pub(crate) async fn serialize_and_write_outbound<T: NetworkConnection, F>(
     mut stream: WriteHalf<T>,
     cmd_rx: &mut UnboundedReceiver<NetworkValue>,
-    mut on_send: F,
+    mut pre_send_hook: F,
 ) -> io::Result<()>
 where
     F: FnMut(&NetworkValue),
@@ -62,13 +62,13 @@ where
 
     let mut buf = BytesMut::with_capacity(1024 * 64);
     while let Some(msg) = cmd_rx.recv().await {
-        on_send(&msg);
+        pre_send_hook(&msg);
         buf.clear();
         msg.serialize(&mut buf);
 
         // Try to batch more messages
         while let Ok(msg) = cmd_rx.try_recv() {
-            on_send(&msg);
+            pre_send_hook(&msg);
             msg.serialize(&mut buf);
             if buf.len() >= BUFFER_CAPACITY {
                 break;
@@ -80,10 +80,10 @@ where
     Ok(())
 }
 
-pub(crate) async fn handle_inbound_traffic<T, R, F>(
+pub(crate) async fn read_and_parse_inbound<T, R, F>(
     mut reader: BufReader<ReadHalf<T>>,
     tx: &UnboundedSender<R>,
-    mut convert_and_send: F,
+    mut handle_inbound_msg: F,
 ) -> io::Result<()>
 where
     T: NetworkConnection,
@@ -139,7 +139,7 @@ where
         let bytes = buf.split_to(total_len).freeze();
         match NetworkValue::deserialize(bytes) {
             Ok(network_value) => {
-                convert_and_send(network_value, tx)?;
+                handle_inbound_msg(network_value, tx)?;
             }
             Err(e) => {
                 return Err(io::Error::other(format!("Failed to deserialize: {}", e)));
