@@ -234,9 +234,14 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
                 conn
             }
             Err(e) => {
-                tracing::error!("Failed to connect to worker {}: {:?}", worker_id, e);
-                sleep(Duration::from_secs(1)).await;
-                continue;
+                if connection_state.shutdown_ct().await.is_cancelled() {
+                    tracing::info!("Worker {} task shutting down", worker_id);
+                    break;
+                } else {
+                    tracing::error!("Failed to connect to worker {}: {:?}", worker_id, e);
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
             }
         };
 

@@ -61,14 +61,14 @@ impl TcpProxy {
         let shutdown = CancellationToken::new();
         let accept_shutdown = CancellationToken::new();
 
-        let accept_handle = Some(Self::spawn_accept_loop(
+        let accept_handle = Some(tokio::spawn(Self::run_accept_loop(
             listener.clone(),
             forward_addr,
             drop_leader_to_worker.clone(),
             drop_worker_to_leader.clone(),
             shutdown.clone(),
             accept_shutdown.clone(),
-        ));
+        )));
 
         Ok(Self {
             listen_addr,
@@ -131,37 +131,19 @@ impl TcpProxy {
 
         self.shutdown = CancellationToken::new();
         self.accept_shutdown = CancellationToken::new();
-        self.accept_handle = Some(Self::spawn_accept_loop(
+        self.accept_handle = Some(tokio::spawn(Self::run_accept_loop(
             self.listener.clone(),
             self.forward_addr,
             self.drop_leader_to_worker.clone(),
             self.drop_worker_to_leader.clone(),
             self.shutdown.clone(),
             self.accept_shutdown.clone(),
-        ));
+        )));
     }
 
     pub fn shutdown(&self) {
         self.accept_shutdown.cancel();
         self.shutdown.cancel();
-    }
-
-    fn spawn_accept_loop(
-        listener: Arc<TcpListener>,
-        forward_addr: SocketAddr,
-        drop_leader_to_worker: Arc<AtomicBool>,
-        drop_worker_to_leader: Arc<AtomicBool>,
-        shutdown: CancellationToken,
-        accept_shutdown: CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
-        tokio::spawn(Self::run_accept_loop(
-            listener,
-            forward_addr,
-            drop_leader_to_worker,
-            drop_worker_to_leader,
-            shutdown,
-            accept_shutdown,
-        ))
     }
 
     async fn run_accept_loop(
@@ -214,7 +196,6 @@ impl TcpProxy {
         drop_worker_to_leader: Arc<AtomicBool>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        // Connect to the actual server
         let mut server_stream = TcpStream::connect(forward_addr).await?;
         tracing::info!("Proxy: connected to server at {}", forward_addr);
 
@@ -289,6 +270,7 @@ async fn spawn_worker(
     // Echo worker - just returns whatever it receives
     tokio::spawn(async move {
         while let Some(mut job) = worker.recv().await {
+            sleep(Duration::from_secs(1)).await;
             let payload = job.take_payload();
             job.send_result(payload);
         }
@@ -385,13 +367,7 @@ async fn test_response_survives_disconnect() {
         .wait_for_all_connections(Some(Duration::from_secs(5)))
         .await
         .expect("workers should connect");
-
     tracing::info!("All workers connected");
-
-    // kills connection to worker 0
-    cluster.proxy.drop_both_directions();
-
-    sleep(Duration::from_millis(100)).await;
 
     let payload = Bytes::from("test-payload");
     let job_handle = cluster
@@ -402,9 +378,9 @@ async fn test_response_survives_disconnect() {
         }])
         .expect("scatter_gather should succeed");
 
-    // Allow proxy to work again so reconnection can happen
-    sleep(Duration::from_millis(500)).await;
-    cluster.proxy.restore_both_directions();
+    // give time for the message to arrive
+    sleep(Duration::from_millis(200)).await;
+    cluster.proxy.reconnect().await;
 
     // The job should complete successfully - response survives the disconnect
     let mut result = timeout(JOB_TIMEOUT, job_handle)

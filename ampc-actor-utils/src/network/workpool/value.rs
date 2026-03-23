@@ -84,7 +84,7 @@ impl NetworkValue {
     /// - PendingJobsRequest: descriptor (1) + worker_id (2)
     /// - PendingJobsReply: descriptor (1) + worker_id (2) + payload_len (4) + job_ids (4 each)
     /// - Cancel: descriptor (1) + job_id (4) + worker_id (2)
-    pub fn serialize(self, buf: &mut BytesMut) {
+    pub fn serialize(&self, buf: &mut BytesMut) {
         buf.extend_from_slice(&[self.get_descriptor_byte() as u8]);
 
         match self {
@@ -97,7 +97,7 @@ impl NetworkValue {
                 buf.extend_from_slice(&worker_id.to_le_bytes());
                 buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
                 match payload {
-                    Payload::Bytes(b) => buf.extend_from_slice(&b),
+                    Payload::Bytes(b) => buf.extend_from_slice(b),
                     Payload::Dyn(p) => p.to_bytes(buf),
                 }
             }

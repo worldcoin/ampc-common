@@ -85,9 +85,14 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
                 conn
             }
             Err(e) => {
-                tracing::error!("Failed to connect to leader: {:?}", e);
-                sleep(Duration::from_secs(1)).await;
-                continue;
+                if connection_state.shutdown_ct().await.is_cancelled() {
+                    tracing::info!("Worker {} task shutting down", my_id.0);
+                    break;
+                } else {
+                    tracing::error!("Failed to connect to leader: {:?}", e);
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
             }
         };
 

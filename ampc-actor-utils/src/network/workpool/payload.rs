@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 #[allow(clippy::len_without_is_empty)]
 pub trait ToBytes: std::fmt::Debug + Send + Sync + 'static {
-    fn to_bytes(self: Arc<Self>, buf: &mut BytesMut);
+    fn to_bytes(&self, buf: &mut BytesMut);
     fn len(&self) -> usize;
 }
 
