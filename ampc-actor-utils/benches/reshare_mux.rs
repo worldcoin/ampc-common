@@ -31,19 +31,24 @@ fn bench_select_distance(c: &mut Criterion) {
                     let sessions = rt
                         .block_on(LocalRuntime::mock_sessions_with_channel())
                         .unwrap();
-                    sessions.into_iter().enumerate().map(|(i, session)| {
-                        let s = shares.of_party(i).clone();
-                        let distances: Vec<DistancePair<u32>> = (0..n)
-                            .map(|j| {
-                                (
-                                    DistanceShare::new(s[j], s[n + j]),
-                                    DistanceShare::new(s[2 * n + j], s[3 * n + j]),
-                                )
-                            })
-                            .collect();
-                        let control_bits: Vec<Share<u32>> = (0..n).map(|j| s[4 * n + j]).collect();
-                        (session, distances, control_bits)
-                    }).collect::<Vec<_>>()
+                    sessions
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, session)| {
+                            let s = shares.of_party(i).clone();
+                            let distances: Vec<DistancePair<u32>> = (0..n)
+                                .map(|j| {
+                                    (
+                                        DistanceShare::new(s[j], s[n + j]),
+                                        DistanceShare::new(s[2 * n + j], s[3 * n + j]),
+                                    )
+                                })
+                                .collect();
+                            let control_bits: Vec<Share<u32>> =
+                                (0..n).map(|j| s[4 * n + j]).collect();
+                            (session, distances, control_bits)
+                        })
+                        .collect::<Vec<_>>()
                 },
                 |party_inputs| {
                     rt.block_on(async {
@@ -94,25 +99,27 @@ fn bench_swap_distances(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("e2e", num_pairs), |b| {
             b.iter_batched(
                 || {
-                    let sessions = rt.block_on(LocalRuntime::mock_sessions_with_channel())
+                    let sessions = rt
+                        .block_on(LocalRuntime::mock_sessions_with_channel())
                         .unwrap();
-                    sessions.into_iter().enumerate().map(|(i, session)| {
-                        let s = shares.of_party(i).clone();
-                        let distances: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
-                            .map(|j| {
-                                (
-                                    s[j],
-                                    DistanceShare::new(
-                                        s[list_size + j],
-                                        s[2 * list_size + j],
-                                    ),
-                                )
-                            })
-                            .collect();
-                        let bs = bit_shares.of_party(i).clone();
-                        let indices = indices.clone();
-                        (session, distances, bs, indices)
-                    }).collect::<Vec<_>>()
+                    sessions
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, session)| {
+                            let s = shares.of_party(i).clone();
+                            let distances: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
+                                .map(|j| {
+                                    (
+                                        s[j],
+                                        DistanceShare::new(s[list_size + j], s[2 * list_size + j]),
+                                    )
+                                })
+                                .collect();
+                            let bs = bit_shares.of_party(i).clone();
+                            let indices = indices.clone();
+                            (session, distances, bs, indices)
+                        })
+                        .collect::<Vec<_>>()
                 },
                 |party_inputs| {
                     rt.block_on(async {
