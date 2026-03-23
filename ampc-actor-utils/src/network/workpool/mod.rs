@@ -107,24 +107,27 @@ where
         buf.resize(header_len, 0);
         reader.read_exact(&mut buf[1..header_len]).await?;
 
-        // For Job messages, read the variable-length payload
         const MAX_PAYLOAD_SIZE: usize = 500 * 1024 * 1024; // 500MB
-        let total_len = if descriptor == DescriptorByte::Job {
-            let payload_len = u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize;
-            if payload_len > MAX_PAYLOAD_SIZE {
-                return Err(io::Error::other(format!(
-                    "Payload size {} exceeds maximum {}",
-                    payload_len, MAX_PAYLOAD_SIZE
-                )));
+        let payload_len = match descriptor {
+            DescriptorByte::Job => u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize,
+            DescriptorByte::PendingJobsReply => {
+                u32::from_le_bytes(buf[3..7].try_into().unwrap()) as usize
             }
-            buf.resize(header_len + payload_len, 0);
-            reader
-                .read_exact(&mut buf[header_len..header_len + payload_len])
-                .await?;
-            header_len + payload_len
-        } else {
-            header_len
+            _ => 0,
         };
+
+        if payload_len > MAX_PAYLOAD_SIZE {
+            return Err(io::Error::other(format!(
+                "Payload size {} exceeds maximum {}",
+                payload_len, MAX_PAYLOAD_SIZE
+            )));
+        }
+
+        let total_len = header_len + payload_len;
+        if payload_len > 0 {
+            buf.resize(total_len, 0);
+            reader.read_exact(&mut buf[header_len..total_len]).await?;
+        }
 
         // Deserialize the NetworkValue (zero-copy via split/freeze)
         let bytes = buf.split_to(total_len).freeze();
