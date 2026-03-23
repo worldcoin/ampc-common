@@ -60,7 +60,7 @@ pub(crate) async fn serialize_and_write_outbound<T: NetworkConnection, F>(
 where
     F: FnMut(&NetworkValue),
 {
-    const BUFFER_CAPACITY: usize = 64 * 1024 * 1024;
+    const MAX_TO_BATCH: usize = 64 * 1024 * 1024;
 
     let mut buf = BytesMut::with_capacity(1024 * 64);
     while let Some(msg) = cmd_rx.recv().await {
@@ -72,7 +72,7 @@ where
         while let Ok(msg) = cmd_rx.try_recv() {
             pre_send_hook(&msg);
             msg.serialize(&mut buf);
-            if buf.len() >= BUFFER_CAPACITY {
+            if buf.len() >= MAX_TO_BATCH {
                 break;
             }
         }
