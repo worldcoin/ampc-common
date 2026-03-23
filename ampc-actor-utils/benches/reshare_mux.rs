@@ -28,27 +28,30 @@ fn bench_select_distance(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("e2e", n), |b| {
             b.iter_batched(
                 || {
-                    rt.block_on(LocalRuntime::mock_sessions_with_channel())
-                        .unwrap()
+                    let sessions = rt
+                        .block_on(LocalRuntime::mock_sessions_with_channel())
+                        .unwrap();
+                    sessions.into_iter().enumerate().map(|(i, session)| {
+                        let s = shares.of_party(i).clone();
+                        let distances: Vec<DistancePair<u32>> = (0..n)
+                            .map(|j| {
+                                (
+                                    DistanceShare::new(s[j], s[n + j]),
+                                    DistanceShare::new(s[2 * n + j], s[3 * n + j]),
+                                )
+                            })
+                            .collect();
+                        let control_bits: Vec<Share<u32>> = (0..n).map(|j| s[4 * n + j]).collect();
+                        (session, distances, control_bits)
+                    }).collect::<Vec<_>>()
                 },
-                |sessions| {
+                |party_inputs| {
                     rt.block_on(async {
                         let mut jobs = JoinSet::new();
 
-                        for (i, session) in sessions.into_iter().enumerate() {
-                            let s = shares.of_party(i).clone();
+                        for (session, distances, control_bits) in party_inputs.into_iter() {
                             jobs.spawn(async move {
                                 let mut session = session.lock().await;
-                                let distances: Vec<DistancePair<u32>> = (0..n)
-                                    .map(|j| {
-                                        (
-                                            DistanceShare::new(s[j], s[n + j]),
-                                            DistanceShare::new(s[2 * n + j], s[3 * n + j]),
-                                        )
-                                    })
-                                    .collect();
-                                let control_bits: Vec<Share<u32>> =
-                                    (0..n).map(|j| s[4 * n + j]).collect();
 
                                 conditionally_select_distance(
                                     &mut session,
