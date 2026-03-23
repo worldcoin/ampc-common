@@ -94,32 +94,34 @@ fn bench_swap_distances(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new("e2e", num_pairs), |b| {
             b.iter_batched(
                 || {
-                    rt.block_on(LocalRuntime::mock_sessions_with_channel())
-                        .unwrap()
+                    let sessions = rt.block_on(LocalRuntime::mock_sessions_with_channel())
+                        .unwrap();
+                    sessions.into_iter().enumerate().map(|(i, session)| {
+                        let s = shares.of_party(i).clone();
+                        let distances: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
+                            .map(|j| {
+                                (
+                                    s[j],
+                                    DistanceShare::new(
+                                        s[list_size + j],
+                                        s[2 * list_size + j],
+                                    ),
+                                )
+                            })
+                            .collect();
+                        let bs = bit_shares.of_party(i).clone();
+                        let indices = indices.clone();
+                        (session, distances, bs, indices)
+                    }).collect::<Vec<_>>()
                 },
-                |sessions| {
+                |party_inputs| {
                     rt.block_on(async {
                         let mut jobs = JoinSet::new();
 
-                        for (i, session) in sessions.into_iter().enumerate() {
-                            let s = shares.of_party(i).clone();
-                            let bs = bit_shares.of_party(i).clone();
-                            let indices = indices.clone();
+                        for (session, distances, bs, indices) in party_inputs.into_iter() {
                             jobs.spawn(async move {
                                 let mut session = session.lock().await;
-                                let list: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
-                                    .map(|j| {
-                                        (
-                                            s[j],
-                                            DistanceShare::new(
-                                                s[list_size + j],
-                                                s[2 * list_size + j],
-                                            ),
-                                        )
-                                    })
-                                    .collect();
-
-                                conditionally_swap_distances(&mut session, bs, &list, &indices)
+                                conditionally_swap_distances(&mut session, bs, &distances, &indices)
                                     .await
                                     .unwrap()
                             });
