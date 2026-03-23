@@ -550,8 +550,15 @@ async fn test_dropped_job_detection() {
         .await
         .expect("job should complete");
 
-    let _b1 = Bytes::from("payload-1");
-    let _b2 = Bytes::from("payload-2");
+    let b1 = Bytes::from("payload-1");
+    let b2 = Bytes::from("payload-2");
+
+    fn match_payload(p: Payload, expected: &Bytes) {
+        match p {
+            Payload::Bytes(b) => assert_eq!(b, expected),
+            _ => panic!(),
+        }
+    }
 
     match result {
         Ok(responses) => {
@@ -565,8 +572,8 @@ async fn test_dropped_job_detection() {
                             job_id: 0
                         })
                     )),
-                    1 => assert!(matches!(rsp.payload, Ok(Payload::Bytes(_b1)))),
-                    2 => assert!(matches!(rsp.payload, Ok(Payload::Bytes(_b2)))),
+                    1 => match_payload(rsp.payload.expect("payload should be ok"), &b1),
+                    2 => match_payload(rsp.payload.expect("payload should be ok"), &b2),
                     other => panic!("Unexpected worker id: {}", other),
                 }
             }
