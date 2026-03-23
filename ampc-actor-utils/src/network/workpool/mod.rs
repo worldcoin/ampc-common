@@ -116,7 +116,7 @@ where
         buf.resize(header_len, 0);
         reader.read_exact(&mut buf[1..header_len]).await?;
 
-        const MAX_PAYLOAD_SIZE: usize = 500 * 1024 * 1024; // 500MB
+        const MAX_PAYLOAD_SIZE: usize = 50 * 1024 * 1024; // 50MB
         let payload_len = match descriptor {
             DescriptorByte::Job => u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize,
             DescriptorByte::PendingJobsReply => {
