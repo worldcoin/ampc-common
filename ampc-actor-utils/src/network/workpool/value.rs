@@ -35,7 +35,7 @@ pub enum DescriptorByte {
 impl DescriptorByte {
     /// Returns the fixed header length (including descriptor byte) for this message type.
     /// For Job messages, this excludes the variable-length payload.
-    pub const fn header_len(self) -> usize {
+    pub const fn header_len(&self) -> usize {
         match self {
             // descriptor (1) + job_id (4) + worker_id (2) + payload_len (4)
             DescriptorByte::Job => 11,
