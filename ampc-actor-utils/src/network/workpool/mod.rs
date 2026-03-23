@@ -27,7 +27,7 @@ pub enum WorkpoolError {
     SendFailed,
     #[error("input failed validation {0}")]
     InvalidInput(String),
-    #[error("cancellation token triggred shutdown")]
+    #[error("cancellation token triggered shutdown")]
     Cancelled,
     #[error("operation timed out")]
     Timeout,
@@ -50,6 +50,15 @@ pub(crate) enum LeaderError {
     IO(#[from] tokio::io::Error),
 }
 
+// note that in the event of a disconnect, pre_send_hook could
+// result in a message as being classified as "sent" when it wasn't,
+// and then the job reconciliation (PendingJobsRequest) would mark the
+// message as dropped.
+//
+// It is possible to re-enqueue messages which failed to send but this
+// makes the code much more complex. Given that disconnects are rare, it
+// seems acceptable to keep the code simple and let job reconciliation
+// handle the lost messages.
 pub(crate) async fn serialize_and_write_outbound<T: NetworkConnection, F>(
     mut stream: WriteHalf<T>,
     cmd_rx: &mut UnboundedReceiver<NetworkValue>,

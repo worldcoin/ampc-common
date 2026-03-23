@@ -5,7 +5,7 @@
 The WorkPool is a distributed computing system designed for coordinating work between a single leader node and multiple worker nodes. It provides two primary coordination patterns:
 
 - **Broadcast**: Send the same message to all workers and wait for acknowledgments
-- **Scatter-Gather**: Send different messages to different workers and collect results in order
+- **Scatter-Gather**: Send different messages to different workers and collect results (unordered)
 
 The system is designed for high throughput with support for pipelining, automatic reconnection, and job state reconciliation after network disruptions.
 
