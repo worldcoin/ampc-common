@@ -30,7 +30,7 @@ struct FakeIrises {
 const FAKE_IRISES_DESCRIPTOR: u8 = 0xAB;
 
 impl ToBytes for FakeIrises {
-    fn to_bytes(self: Arc<Self>, buf: &mut BytesMut) {
+    fn to_bytes(&self, buf: &mut BytesMut) {
         // Descriptor byte
         buf.extend_from_slice(&[FAKE_IRISES_DESCRIPTOR]);
 

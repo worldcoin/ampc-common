@@ -46,8 +46,6 @@ pub enum SetupError {
 
 #[derive(Error, Debug)]
 pub(crate) enum LeaderError {
-    #[error("bad response: {0}")]
-    BadResponse(String),
     #[error("io err")]
     IO(#[from] tokio::io::Error),
 }

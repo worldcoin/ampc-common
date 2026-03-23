@@ -242,7 +242,7 @@ impl TcpProxy {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NUM_WORKERS: usize = 3;
-const JOB_TIMEOUT: Duration = Duration::from_secs(15);
+const JOB_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Info needed to recreate a worker
 struct WorkerInfo {
@@ -270,7 +270,9 @@ async fn spawn_worker(
     // Echo worker - just returns whatever it receives
     tokio::spawn(async move {
         while let Some(mut job) = worker.recv().await {
+            tracing::info!("worker received job");
             sleep(Duration::from_secs(1)).await;
+            tracing::info!("worker processing job");
             let payload = job.take_payload();
             job.send_result(payload);
         }
@@ -379,8 +381,9 @@ async fn test_response_survives_disconnect() {
         .expect("scatter_gather should succeed");
 
     // give time for the message to arrive
-    sleep(Duration::from_millis(200)).await;
+    sleep(Duration::from_millis(500)).await;
     cluster.proxy.reconnect().await;
+    sleep(Duration::from_secs(5)).await;
 
     // The job should complete successfully - response survives the disconnect
     let mut result = timeout(JOB_TIMEOUT, job_handle)
@@ -394,6 +397,53 @@ async fn test_response_survives_disconnect() {
     let received = rsp.payload.expect("worker should succeed");
     assert_eq!(received.to_bytes(), payload);
     tracing::info!("Job response survived disconnect successfully");
+
+    cluster.proxy.shutdown();
+    cluster.global_shutdown.cancel();
+}
+
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_proxy_drop() {
+    let mut cluster = start_cluster_with_proxy()
+        .await
+        .expect("cluster should start");
+
+    cluster
+        .leader
+        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .await
+        .expect("workers should connect");
+    tracing::info!("All workers connected");
+
+    cluster.proxy.drop_both_directions();
+    sleep(Duration::from_millis(200)).await;
+
+    let payload = Bytes::from("test-payload");
+    let job_handle = cluster
+        .leader
+        .scatter_gather(vec![WorkerJob {
+            worker_id: 0,
+            payload: payload.clone().into(),
+        }])
+        .expect("scatter_gather should succeed");
+
+    sleep(Duration::from_millis(200)).await;
+    cluster.proxy.restore_both_directions();
+    // force an exchange of pending jobs
+    cluster.proxy.reconnect().await;
+    sleep(Duration::from_secs(5)).await;
+
+    let mut result = timeout(JOB_TIMEOUT, job_handle)
+        .await
+        .expect("job should complete")
+        .expect("job should succeed");
+
+    assert_eq!(result.len(), 1);
+    let rsp = result.pop().unwrap();
+    assert_eq!(rsp.worker_id, 0);
+    assert!(rsp.payload.is_err());
 
     cluster.proxy.shutdown();
     cluster.global_shutdown.cancel();
@@ -493,6 +543,7 @@ async fn test_dropped_job_detection() {
 
     cluster.proxy.restore_leader_to_worker();
     cluster.proxy.reconnect().await;
+    sleep(Duration::from_secs(5)).await;
 
     // The job should complete successfully after reconnect exchange
     let result = timeout(JOB_TIMEOUT, job_handle.as_mut())

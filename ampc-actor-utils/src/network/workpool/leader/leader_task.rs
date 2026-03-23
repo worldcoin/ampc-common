@@ -246,7 +246,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
         };
 
         let maybe_pending = tokio::select! {
-            r = get_pending_jobs(&mut conn, worker_id) => r,
+            r = get_pending_jobs(&mut conn, worker_id, &worker_rsp_tx) => r,
             _ = shutdown_ct.cancelled() => {
                 let _ = worker_conn_tx.send(false);
                 tracing::info!("Worker {} task shutting down", worker_id);
@@ -311,6 +311,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
 async fn get_pending_jobs<T: NetworkConnection>(
     conn: &mut T,
     worker_id: WorkerId,
+    worker_rsp_tx: &UnboundedSender<WorkerRsp>,
 ) -> Result<Vec<JobId>, LeaderError> {
     use crate::network::workpool::value::DescriptorByte;
     use bytes::BytesMut;
@@ -322,32 +323,67 @@ async fn get_pending_jobs<T: NetworkConnection>(
     conn.write_all(&buf).await?;
     conn.flush().await?;
 
-    // Read PendingJobsReply header first:
-    // descriptor (1) + worker_id (2) + payload_len (4) = 7 bytes
-    let header_len = DescriptorByte::PendingJobsReply.header_len();
-    let mut header_buf = vec![0u8; header_len];
-    conn.read_exact(&mut header_buf).await?;
+    // Loop reading messages until we get PendingJobsReply.
+    // Job responses queued before reconnect may arrive first.
+    const MAX_PAYLOAD_SIZE: usize = 500 * 1024 * 1024;
+    loop {
+        // Read descriptor byte
+        let mut header_buf = vec![0u8; 1];
+        conn.read_exact(&mut header_buf).await?;
+        let descriptor: DescriptorByte = header_buf[0]
+            .try_into()
+            .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", header_buf[0])))?;
 
-    // Parse payload length from header bytes [3..7]
-    let payload_len = u32::from_le_bytes(header_buf[3..7].try_into().unwrap()) as usize;
+        // Read remaining header bytes
+        let header_len = descriptor.header_len();
+        header_buf.resize(header_len, 0);
+        conn.read_exact(&mut header_buf[1..header_len]).await?;
 
-    // Read the variable-length payload (job_ids)
-    let mut payload_buf = vec![0u8; payload_len];
-    if payload_len > 0 {
-        conn.read_exact(&mut payload_buf).await?;
-    }
+        // For Job messages, read the variable-length payload
+        if descriptor == DescriptorByte::Job {
+            let payload_len = u32::from_le_bytes(header_buf[7..11].try_into().unwrap()) as usize;
+            if payload_len > MAX_PAYLOAD_SIZE {
+                return Err(LeaderError::IO(io::Error::other(format!(
+                    "Payload size {} exceeds maximum {}",
+                    payload_len, MAX_PAYLOAD_SIZE
+                ))));
+            }
+            header_buf.resize(header_len + payload_len, 0);
+            conn.read_exact(&mut header_buf[header_len..]).await?;
+        } else if descriptor == DescriptorByte::PendingJobsReply {
+            let payload_len = u32::from_le_bytes(header_buf[3..7].try_into().unwrap()) as usize;
+            if payload_len > 0 {
+                header_buf.resize(header_len + payload_len, 0);
+                conn.read_exact(&mut header_buf[header_len..]).await?;
+            }
+        }
 
-    // Combine header + payload for deserialization
-    let mut full_buf = header_buf;
-    full_buf.extend(payload_buf);
+        let network_value = NetworkValue::deserialize(Bytes::from(header_buf))
+            .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
 
-    let response = NetworkValue::deserialize(Bytes::from(full_buf))
-        .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
-
-    if let NetworkValue::PendingJobsReply { job_ids, .. } = response {
-        Ok(job_ids)
-    } else {
-        Err(LeaderError::BadResponse("Expected PendingJobsReply".into()))
+        match network_value {
+            NetworkValue::PendingJobsReply { job_ids, .. } => {
+                return Ok(job_ids);
+            }
+            NetworkValue::Job {
+                job_id,
+                worker_id: wid,
+                payload,
+            } => {
+                let msg = WorkerRsp {
+                    worker_id: wid,
+                    payload: Ok(payload),
+                    job_id,
+                };
+                let _ = worker_rsp_tx.send(msg);
+            }
+            other => {
+                tracing::warn!(
+                    "Unexpected message during pending jobs handshake: {:?}",
+                    other
+                );
+            }
+        }
     }
 }
 
