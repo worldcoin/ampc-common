@@ -19,12 +19,21 @@ use serial_test::serial;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Notify;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing_test::traced_test;
+
+/// Global signal for tests to control when workers complete their jobs.
+/// Used by serial tests to ensure deterministic timing.
+static WORKER_PROCEED: OnceLock<Notify> = OnceLock::new();
+
+fn worker_proceed_signal() -> &'static Notify {
+    WORKER_PROCEED.get_or_init(Notify::new)
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TCP Proxy Implementation
@@ -267,11 +276,12 @@ async fn spawn_worker(
 
     let mut worker = build_worker_handle(worker_args, shutdown_ct.clone()).await?;
 
-    // Echo worker - just returns whatever it receives
+    // Echo worker - waits for proceed signal then returns what it receives.
+    // Tests can control timing by signaling worker_proceed_signal().
     tokio::spawn(async move {
         while let Some(mut job) = worker.recv().await {
             tracing::info!("worker received job");
-            sleep(Duration::from_secs(1)).await;
+            worker_proceed_signal().notified().await;
             tracing::info!("worker processing job");
             let payload = job.take_payload();
             job.send_result(payload);
@@ -380,10 +390,13 @@ async fn test_response_survives_disconnect() {
         }])
         .expect("scatter_gather should succeed");
 
-    // give time for the message to arrive
+    // Give time for the job to arrive at worker
     sleep(Duration::from_millis(500)).await;
     cluster.proxy.reconnect().await;
+    // Wait for connection to fully close before signaling worker to proceed.
+    // This ensures the response is queued after the connection is down.
     sleep(Duration::from_secs(5)).await;
+    worker_proceed_signal().notify_waiters();
 
     // The job should complete successfully - response survives the disconnect
     let mut result = timeout(JOB_TIMEOUT, job_handle)
@@ -433,6 +446,8 @@ async fn test_proxy_drop() {
     cluster.proxy.restore_both_directions();
     // force an exchange of pending jobs
     cluster.proxy.reconnect().await;
+    sleep(Duration::from_millis(500)).await;
+    worker_proceed_signal().notify_waiters();
     sleep(Duration::from_secs(5)).await;
 
     let mut result = timeout(JOB_TIMEOUT, job_handle)
@@ -470,6 +485,8 @@ async fn test_broadcast_through_proxy() {
         .leader
         .broadcast(payload.clone())
         .expect("broadcast should succeed");
+    sleep(Duration::from_millis(500)).await;
+    worker_proceed_signal().notify_waiters();
 
     let result = timeout(JOB_TIMEOUT, job_handle)
         .await
@@ -543,6 +560,8 @@ async fn test_dropped_job_detection() {
 
     cluster.proxy.restore_leader_to_worker();
     cluster.proxy.reconnect().await;
+    sleep(Duration::from_millis(500)).await;
+    worker_proceed_signal().notify_waiters();
     sleep(Duration::from_secs(5)).await;
 
     // The job should complete successfully after reconnect exchange
