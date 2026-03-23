@@ -15,7 +15,7 @@ repository = "https://github.com/worldcoin/ampc-common"
 
 [workspace.dependencies]
 aws-config = { version = "1.5.10", features = ["behavior-version-latest"] }
-aws-sdk-s3 = { version = "1.65.0", default-features = false }
+aws-sdk-s3 = { version = "1.127.0", default-features = false }
 aws-sdk-secretsmanager = { version = "1.47.0", default-features = false }
 aws-sdk-sns = { version = "1.44.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-sqs = { version = "1.36.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
