@@ -24,6 +24,13 @@ struct PendingJob {
     response_tx: oneshot::Sender<WorkpoolRes>,
 }
 
+impl PendingJob {
+    fn send_results(self) {
+        let results: Vec<_> = self.results.into_values().collect();
+        let _ = self.response_tx.send(Ok(results));
+    }
+}
+
 /// Job tracker for scatter-gather and broadcast operations
 pub struct JobTracker {
     pending_jobs: DashMap<JobId, PendingJob>,
@@ -83,50 +90,33 @@ impl JobTracker {
         Ok(())
     }
 
-    /// Checks for dropped jobs and marks them as completed with errors.
-    ///
-    /// If a worker reports receiving job N, any pending job with ID < N is considered dropped.
-    /// If a worker reports receiving NO jobs (None), all pending jobs are considered dropped.
-    /// Dropped partitions are marked as completed with an error, and if all partitions for
-    /// a job are complete, the job result is sent.
-    pub fn check_for_dropped_jobs(&self, worker_id: WorkerId, last_rxd_job: Option<JobId>) {
-        // Collect dropped jobs to avoid holding iterator locks during mutation
+    /// Compares the worker's reported pending jobs against jobs the leader is expecting
+    /// a response from this specific worker. Jobs that were sent to this worker but are
+    /// not in the worker's pending set are considered lost (dropped in transit or worker
+    /// restarted and lost state).
+    pub fn validate_pending_jobs(&self, worker_id: WorkerId, pending_jobs: Vec<JobId>) {
+        let got_pending_jobs: HashSet<JobId> = pending_jobs.into_iter().collect();
         let dropped_jobs: Vec<JobId> = self
             .pending_jobs
             .iter()
-            .filter_map(|entry| {
-                let job_id = *entry.key();
-                let pending = entry.value();
-
-                // Job was dropped if:
-                // - It has a lower ID than the last received job (or no job was received)
-                // - This worker is still pending for this job (hasn't responded)
-                if last_rxd_job
-                    .map(|last_rxd| job_id < last_rxd)
-                    .unwrap_or(true)
-                    && pending.partitions_pending.contains(&worker_id)
-                {
-                    Some(job_id)
-                } else {
-                    None
-                }
+            .filter(|r| {
+                let pending = r.value();
+                // Job was sent to this worker AND worker doesn't have it
+                pending.partitions_pending.contains(&worker_id)
+                    && !got_pending_jobs.contains(r.key())
             })
+            .map(|r| *r.key())
             .collect();
 
-        // Record error responses for each dropped partition
         for job_id in dropped_jobs {
             let error_response = WorkerRsp {
                 job_id,
                 worker_id,
-                payload: Err(WorkpoolError::JobsLost {
-                    worker_id,
-                    expected: job_id,
-                    actual: last_rxd_job,
-                }),
+                payload: Err(WorkpoolError::JobsLost { worker_id, job_id }),
             };
 
             if let Err(e) = self.record_response(error_response) {
-                tracing::error!("Failed to record dropped job response: {}", e);
+                tracing::error!("record_response: {}", e);
             }
         }
     }
@@ -138,8 +128,7 @@ impl JobTracker {
             return;
         };
 
-        let results: Vec<_> = pending.results.into_values().collect();
-        let _ = pending.response_tx.send(Ok(results));
+        pending.send_results();
     }
 
     /// Cancel a job and return the list of workers which are still pending
@@ -238,8 +227,8 @@ mod tests {
         }
 
         // Check assembled result
-        let values = rx.blocking_recv().unwrap().unwrap();
-        assert_eq!(values.len(), 4);
+        let results = rx.blocking_recv().unwrap().unwrap();
+        assert_eq!(results.len(), 4);
     }
 
     #[test]

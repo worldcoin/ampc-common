@@ -12,13 +12,12 @@ pub enum NetworkValue {
         worker_id: WorkerId,
         payload: Payload,
     },
-    /// Query worker for last job state (reconciliation after reconnect)
-    QueryJobState { worker_id: WorkerId },
-    /// Worker's response to job state query
-    JobStateResponse {
+    /// ask the worker for all jobs that are in progress
+    PendingJobsRequest { worker_id: WorkerId },
+    /// worker response to PendingJobRequest
+    PendingJobsReply {
         worker_id: WorkerId,
-        last_received_job_id: Option<JobId>,
-        last_responded_job_id: Option<JobId>,
+        job_ids: Vec<JobId>,
     },
     /// Currently unused. Potentially useful in the future.
     Cancel { job_id: JobId, worker_id: WorkerId },
@@ -28,9 +27,26 @@ pub enum NetworkValue {
 #[derive(Clone, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, Debug)]
 pub enum DescriptorByte {
     Job = 0x01,
-    QueryJobState = 0x03,
-    JobStateResponse = 0x04,
+    PendingJobsRequest = 0x03,
+    PendingJobsReply = 0x04,
     Cancel = 0x05,
+}
+
+impl DescriptorByte {
+    /// Returns the fixed header length (including descriptor byte) for this message type.
+    /// For Job messages, this excludes the variable-length payload.
+    pub const fn header_len(self) -> usize {
+        match self {
+            // descriptor (1) + job_id (4) + worker_id (2) + payload_len (4)
+            DescriptorByte::Job => 11,
+            // descriptor (1) + worker_id (2)
+            DescriptorByte::PendingJobsRequest => 3,
+            // descriptor (1) + worker_id (2) + payload_len (4)
+            DescriptorByte::PendingJobsReply => 7,
+            // descriptor (1) + job_id (4) + worker_id (2)
+            DescriptorByte::Cancel => 7,
+        }
+    }
 }
 
 impl NetworkValue {
@@ -45,8 +61,8 @@ impl NetworkValue {
     fn get_descriptor_byte(&self) -> DescriptorByte {
         match self {
             NetworkValue::Job { .. } => DescriptorByte::Job,
-            NetworkValue::QueryJobState { .. } => DescriptorByte::QueryJobState,
-            NetworkValue::JobStateResponse { .. } => DescriptorByte::JobStateResponse,
+            NetworkValue::PendingJobsRequest { .. } => DescriptorByte::PendingJobsRequest,
+            NetworkValue::PendingJobsReply { .. } => DescriptorByte::PendingJobsReply,
             NetworkValue::Cancel { .. } => DescriptorByte::Cancel,
         }
     }
@@ -54,30 +70,19 @@ impl NetworkValue {
     /// Calculate total byte length when serialized
     pub fn byte_len(&self) -> usize {
         match self {
-            NetworkValue::Job { payload, .. } => {
-                // descriptor (1) + job_id (4) + worker_id (2) + payload_len (4) + payload
-                11 + payload.len()
+            NetworkValue::Job { payload, .. } => DescriptorByte::Job.header_len() + payload.len(),
+            NetworkValue::PendingJobsReply { job_ids, .. } => {
+                DescriptorByte::PendingJobsReply.header_len() + (job_ids.len() * size_of::<JobId>())
             }
-            NetworkValue::QueryJobState { .. } => {
-                // descriptor (1) + worker_id (2)
-                3
-            }
-            NetworkValue::JobStateResponse { .. } => {
-                // descriptor (1) + worker_id (2) + bitfield (1) + last_received (4) + last_responded (4)
-                12
-            }
-            NetworkValue::Cancel { .. } => {
-                // descriptor (1) + job_id (4) + worker_id (2)
-                7
-            }
+            _ => self.get_descriptor_byte().header_len(),
         }
     }
 
     /// Serialize to bytes
     /// Format:
     /// - Job: descriptor (1) + job_id (4) + worker_id (2) + payload_len (4) + payload
-    /// - QueryJobState: descriptor (1) + worker_id (2)
-    /// - JobStateResponse: descriptor (1) + worker_id (2) + bitfield (1) + optional values (0-8 bytes)
+    /// - PendingJobsRequest: descriptor (1) + worker_id (2)
+    /// - PendingJobsReply: descriptor (1) + worker_id (2) + payload_len (4) + job_ids (4 each)
     /// - Cancel: descriptor (1) + job_id (4) + worker_id (2)
     pub fn serialize(self, buf: &mut BytesMut) {
         buf.extend_from_slice(&[self.get_descriptor_byte() as u8]);
@@ -96,20 +101,15 @@ impl NetworkValue {
                     Payload::Dyn(p) => p.to_bytes(buf),
                 }
             }
-            NetworkValue::QueryJobState { worker_id } => {
+            NetworkValue::PendingJobsRequest { worker_id } => {
                 buf.extend_from_slice(&worker_id.to_le_bytes());
             }
-            NetworkValue::JobStateResponse {
-                worker_id,
-                last_received_job_id,
-                last_responded_job_id,
-            } => {
+            NetworkValue::PendingJobsReply { worker_id, job_ids } => {
                 buf.extend_from_slice(&worker_id.to_le_bytes());
-                let bitfield = last_received_job_id.map_or(0u8, |_| 0x01)
-                    | last_responded_job_id.map_or(0u8, |_| 0x02);
-                buf.extend_from_slice(&[bitfield]);
-                buf.extend_from_slice(&last_received_job_id.unwrap_or(0).to_le_bytes());
-                buf.extend_from_slice(&last_responded_job_id.unwrap_or(0).to_le_bytes());
+                buf.extend_from_slice(&((job_ids.len() * size_of::<JobId>()) as u32).to_le_bytes());
+                for job_id in job_ids {
+                    buf.extend_from_slice(&job_id.to_le_bytes());
+                }
             }
             NetworkValue::Cancel { job_id, worker_id } => {
                 buf.extend_from_slice(&job_id.to_le_bytes());
@@ -127,73 +127,71 @@ impl NetworkValue {
         let descriptor: DescriptorByte = bytes[0]
             .try_into()
             .map_err(|_| eyre::eyre!("Invalid descriptor byte: {}", bytes[0]))?;
+        let header_len = descriptor.header_len();
+
+        if bytes.len() < header_len {
+            bail!(
+                "Buffer too short for {:?}: {} bytes",
+                descriptor,
+                bytes.len()
+            );
+        }
 
         match descriptor {
             DescriptorByte::Job => {
-                if bytes.len() < 11 {
-                    bail!("Buffer too short for Job: {} bytes", bytes.len());
-                }
-
                 let job_id = u32::from_le_bytes(bytes[1..5].try_into()?);
                 let worker_id = u16::from_le_bytes(bytes[5..7].try_into()?);
                 let payload_len = u32::from_le_bytes(bytes[7..11].try_into()?) as usize;
 
-                if bytes.len() < 11 + payload_len {
+                if bytes.len() < header_len + payload_len {
                     bail!(
                         "Incomplete payload: expected {} bytes, got {}",
-                        11 + payload_len,
+                        header_len + payload_len,
                         bytes.len()
                     );
                 }
 
                 let payload = Payload::Bytes(bytes.slice(11..11 + payload_len));
-
                 Ok(NetworkValue::Job {
                     job_id,
                     worker_id,
                     payload,
                 })
             }
-            DescriptorByte::QueryJobState => {
-                if bytes.len() < 3 {
-                    bail!("Buffer too short for QueryJobState: {} bytes", bytes.len());
-                }
+            DescriptorByte::PendingJobsRequest => {
                 let worker_id = u16::from_le_bytes(bytes[1..3].try_into()?);
-                Ok(NetworkValue::QueryJobState { worker_id })
+                Ok(NetworkValue::PendingJobsRequest { worker_id })
             }
-            DescriptorByte::JobStateResponse => {
-                if bytes.len() < 12 {
+            DescriptorByte::PendingJobsReply => {
+                let worker_id = u16::from_le_bytes(bytes[1..3].try_into()?);
+                let payload_len = u32::from_le_bytes(bytes[3..header_len].try_into()?) as usize;
+
+                if bytes.len() < header_len + payload_len {
                     bail!(
-                        "Buffer too short for JobStateResponse: {} bytes",
+                        "Incomplete PendingJobsReply payload: expected {} bytes, got {}",
+                        header_len + payload_len,
                         bytes.len()
                     );
                 }
-                let worker_id = u16::from_le_bytes(bytes[1..3].try_into()?);
-                let bitfield = bytes[3];
-                let last_received_raw = u32::from_le_bytes(bytes[4..8].try_into()?);
-                let last_responded_raw = u32::from_le_bytes(bytes[8..12].try_into()?);
 
-                let last_received_job_id = if bitfield & 0x01 != 0 {
-                    Some(last_received_raw)
-                } else {
-                    None
-                };
-                let last_responded_job_id = if bitfield & 0x02 != 0 {
-                    Some(last_responded_raw)
-                } else {
-                    None
-                };
+                if !payload_len.is_multiple_of(4) {
+                    bail!(
+                        "Invalid PendingJobsReply payload_len {}: not divisible by JobId size ({})",
+                        payload_len,
+                        size_of::<JobId>()
+                    );
+                }
 
-                Ok(NetworkValue::JobStateResponse {
-                    worker_id,
-                    last_received_job_id,
-                    last_responded_job_id,
-                })
+                let num_jobs = payload_len / size_of::<JobId>();
+                let mut job_ids = Vec::with_capacity(num_jobs);
+                for idx in (header_len..header_len + payload_len).step_by(size_of::<JobId>()) {
+                    let job_id = u32::from_le_bytes(bytes[idx..idx + 4].try_into()?);
+                    job_ids.push(job_id);
+                }
+
+                Ok(NetworkValue::PendingJobsReply { worker_id, job_ids })
             }
             DescriptorByte::Cancel => {
-                if bytes.len() < 7 {
-                    bail!("Buffer too short for Cancel: {} bytes", bytes.len());
-                }
                 let job_id = u32::from_le_bytes(bytes[1..5].try_into()?);
                 let worker_id = u16::from_le_bytes(bytes[5..7].try_into()?);
                 Ok(NetworkValue::Cancel { job_id, worker_id })

@@ -204,7 +204,10 @@ async fn test_broadcast() {
     let (mut leader, shutdown) = start_cluster().await;
     assert_eq!(leader.num_workers(), NUM_WORKERS);
 
-    leader.wait_for_all_connections().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
     tracing::info!("all workers connected");
 
     let payload: Bytes = b"hello-broadcast".as_slice().into();
@@ -245,7 +248,10 @@ async fn test_broadcast() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_scatter_gather() {
     let (mut leader, shutdown) = start_cluster().await;
-    leader.wait_for_all_connections().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
 
     let expected_payloads: Vec<Vec<u8>> = (0..NUM_WORKERS)
         .map(|i| format!("data-for-worker-{i}").into_bytes())
@@ -293,7 +299,10 @@ async fn test_broadcast_big_job() {
     let (mut leader, shutdown) = start_cluster().await;
     assert_eq!(leader.num_workers(), NUM_WORKERS);
 
-    leader.wait_for_all_connections().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
     tracing::info!("all workers connected");
 
     let expected = FakeIrises {

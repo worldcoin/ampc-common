@@ -27,6 +27,7 @@ use std::{
         Arc,
     },
     task::{Context, Poll},
+    time::Duration,
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -91,7 +92,6 @@ impl Future for JobHandle {
     }
 }
 
-#[derive(Clone)]
 pub struct LeaderHandle {
     ct: CancellationToken,
     ch: UnboundedSender<Job>,
@@ -178,9 +178,28 @@ impl LeaderHandle {
 
     /// Waits until all workers have established their connections.
     /// Returns immediately if all are already connected.
-    pub async fn wait_for_all_connections(&mut self) {
-        for rx in &mut self.worker_connected {
-            let _ = rx.wait_for(|&v| v).await;
+    /// Returns an error if cancelled, timed out, or if a watch channel is closed.
+    pub async fn wait_for_all_connections(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<(), WorkpoolError> {
+        let wait_fut = async {
+            for rx in &mut self.worker_connected {
+                tokio::select! {
+                    _ = self.ct.cancelled() => return Err(WorkpoolError::Cancelled),
+                    result = rx.wait_for(|&v| v) => {
+                        result.map_err(|_| WorkpoolError::SendFailed)?;
+                    }
+                }
+            }
+            Ok(())
+        };
+
+        match timeout {
+            Some(duration) => tokio::time::timeout(duration, wait_fut)
+                .await
+                .map_err(|_| WorkpoolError::Timeout)?,
+            None => wait_fut.await,
         }
     }
 }

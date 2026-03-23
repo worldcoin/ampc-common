@@ -13,6 +13,7 @@ use crate::network::workpool::LeaderError;
 use crate::network::workpool::{
     leader::job_tracker::{JobTracker, JobType},
     leader::{Job, WorkerRsp},
+    WorkpoolError,
 };
 use crate::network::workpool::{
     read_and_parse_inbound, serialize_and_write_outbound, value::NetworkValue, JobId, WorkerId,
@@ -57,19 +58,19 @@ where
 
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();
-    let mut conn_rxs = Vec::with_capacity(workers.len());
+    let mut workers_connected = Vec::with_capacity(workers.len());
 
     for (idx, worker) in workers.iter().enumerate() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         worker_cmd_txs.push(cmd_tx);
-        let (conn_tx, conn_rx) = watch::channel(false);
-        conn_rxs.push(conn_rx);
+        let (worker_conn_tx, worker_conn_rx) = watch::channel(false);
+        workers_connected.push(worker_conn_rx);
         tokio::spawn(worker_mgr(
             idx as WorkerId,
             my_id.clone(),
             worker.clone(),
             job_tracker.clone(),
-            conn_tx,
+            worker_conn_tx,
             connector.clone(),
             connection_state.clone(),
             conn_cmd_tx.clone(),
@@ -85,10 +86,11 @@ where
         job_rx,
         worker_rsp_rx,
         worker_cmd_txs,
+        worker_rsp_tx,
         shutdown_ct,
     ));
 
-    (job_tx, conn_rxs)
+    (job_tx, workers_connected)
 }
 
 async fn leader_task(
@@ -96,6 +98,7 @@ async fn leader_task(
     mut job_rx: UnboundedReceiver<Job>,
     mut worker_rsp_rx: UnboundedReceiver<WorkerRsp>,
     worker_cmd_ch: Vec<UnboundedSender<NetworkValue>>,
+    worker_rsp_tx: UnboundedSender<WorkerRsp>,
     shutdown_ct: CancellationToken,
 ) {
     loop {
@@ -106,7 +109,7 @@ async fn leader_task(
             },
             job_opt = job_rx.recv() => {
                 if let Some(job) = job_opt {
-                    send_to_workpool(job, &worker_cmd_ch, &job_tracker);
+                    send_to_workpool(job, &worker_cmd_ch, &job_tracker, &worker_rsp_tx);
                 } else {
                     tracing::info!("Job channel closed, shutting down leader task");
                     break;
@@ -129,6 +132,7 @@ fn send_to_workpool(
     job: Job,
     worker_cmd_ch: &[UnboundedSender<NetworkValue>],
     job_tracker: &JobTracker,
+    worker_rsp_tx: &UnboundedSender<WorkerRsp>,
 ) {
     match job {
         Job::Broadcast {
@@ -140,11 +144,17 @@ fn send_to_workpool(
             job_tracker.register_job(job_id, JobType::Broadcast { num_workers }, result_rsp);
 
             for (worker_id, cmd_tx) in worker_cmd_ch.iter().enumerate() {
-                let _ = cmd_tx.send(NetworkValue::new_job(
-                    job_id,
-                    worker_id as WorkerId,
-                    payload.clone(),
-                ));
+                let worker_id = worker_id as WorkerId;
+                if cmd_tx
+                    .send(NetworkValue::new_job(job_id, worker_id, payload.clone()))
+                    .is_err()
+                {
+                    let _ = worker_rsp_tx.send(WorkerRsp {
+                        job_id,
+                        worker_id,
+                        payload: Err(WorkpoolError::SendFailed),
+                    });
+                }
             }
         }
         Job::ScatterGather {
@@ -152,16 +162,35 @@ fn send_to_workpool(
             msgs,
             result_rsp,
         } => {
+            // Validate all worker IDs before registering the job to avoid orphaned jobs
+            for msg in &msgs {
+                if worker_cmd_ch.get(msg.worker_id as usize).is_none() {
+                    tracing::warn!("invalid worker id: {}, not registering job", msg.worker_id);
+                    let _ = result_rsp.send(Err(WorkpoolError::InvalidInput(format!(
+                        "invalid worker id: {}",
+                        msg.worker_id
+                    ))));
+                    return;
+                }
+            }
+
             // Collect worker IDs (validation already done in LeaderHandle)
             let worker_ids: HashSet<WorkerId> = msgs.iter().map(|msg| msg.worker_id).collect();
             job_tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, result_rsp);
 
             for msg in msgs.into_iter() {
-                let Some(cmd_tx) = worker_cmd_ch.get(msg.worker_id as usize) else {
-                    tracing::warn!("invalid worker id: {}", msg.worker_id);
-                    return;
-                };
-                let _ = cmd_tx.send(NetworkValue::new_job(job_id, msg.worker_id, msg.payload));
+                // Safe to unwrap: we validated all worker_ids above
+                let cmd_tx = &worker_cmd_ch[msg.worker_id as usize];
+                if cmd_tx
+                    .send(NetworkValue::new_job(job_id, msg.worker_id, msg.payload))
+                    .is_err()
+                {
+                    let _ = worker_rsp_tx.send(WorkerRsp {
+                        job_id,
+                        worker_id: msg.worker_id,
+                        payload: Err(WorkpoolError::SendFailed),
+                    });
+                }
             }
         }
         Job::Cancel { job_id } => {
@@ -180,7 +209,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     my_id: Arc<Identity>,
     worker: Arc<Peer>,
     job_tracker: Arc<JobTracker>,
-    conn_tx: watch::Sender<bool>,
+    worker_conn_tx: watch::Sender<bool>,
     connector: C,
     connection_state: ConnectionState,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
@@ -211,13 +240,22 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
             }
         };
 
-        match get_last_rxd_job_id(&mut conn, worker_id).await {
-            Ok(opt) => {
-                job_tracker.check_for_dropped_jobs(worker_id, opt);
-                let _ = conn_tx.send(true);
+        let maybe_pending = tokio::select! {
+            r = get_pending_jobs(&mut conn, worker_id) => r,
+            _ = shutdown_ct.cancelled() => {
+                let _ = worker_conn_tx.send(false);
+                tracing::info!("Worker {} task shutting down", worker_id);
+                break;
+            }
+        };
+
+        match maybe_pending {
+            Ok(pending_jobs) => {
+                job_tracker.validate_pending_jobs(worker_id, pending_jobs);
+                let _ = worker_conn_tx.send(true);
             }
             Err(e) => {
-                tracing::error!("Failed to check for dropped jobs: {}", e);
+                tracing::error!("Failed to get pending jobs: {}", e);
                 sleep(Duration::from_secs(1)).await;
                 continue;
             }
@@ -252,12 +290,12 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
 
         match evt {
             Evt::OutboundClosed | Evt::InboundClosed => {
-                let _ = conn_tx.send(false);
+                let _ = worker_conn_tx.send(false);
                 tracing::info!("Worker {} connection closed, reconnecting...", worker_id);
                 sleep(Duration::from_secs(1)).await;
             }
             Evt::Shutdown => {
-                let _ = conn_tx.send(false);
+                let _ = worker_conn_tx.send(false);
                 tracing::info!("Worker {} task shutting down", worker_id);
                 break;
             }
@@ -265,36 +303,46 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     }
 }
 
-// returns the last received job id
-async fn get_last_rxd_job_id<T: NetworkConnection>(
+async fn get_pending_jobs<T: NetworkConnection>(
     conn: &mut T,
     worker_id: WorkerId,
-) -> Result<Option<JobId>, LeaderError> {
+) -> Result<Vec<JobId>, LeaderError> {
+    use crate::network::workpool::value::DescriptorByte;
     use bytes::BytesMut;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let query = NetworkValue::QueryJobState { worker_id };
+    let query = NetworkValue::PendingJobsRequest { worker_id };
     let mut buf = BytesMut::with_capacity(query.byte_len());
     query.serialize(&mut buf);
     conn.write_all(&buf).await?;
     conn.flush().await?;
 
-    // Read JobStateResponse: fixed 12 bytes
-    // descriptor (1) + worker_id (2) + bitfield (1) + last_received (4) + last_responded (4)
-    let mut response_buf = [0u8; 12];
-    conn.read_exact(&mut response_buf).await?;
+    // Read PendingJobsReply header first:
+    // descriptor (1) + worker_id (2) + payload_len (4) = 7 bytes
+    let header_len = DescriptorByte::PendingJobsReply.header_len();
+    let mut header_buf = vec![0u8; header_len];
+    conn.read_exact(&mut header_buf).await?;
 
-    let response = NetworkValue::deserialize(Bytes::copy_from_slice(&response_buf))
+    // Parse payload length from header bytes [3..7]
+    let payload_len = u32::from_le_bytes(header_buf[3..7].try_into().unwrap()) as usize;
+
+    // Read the variable-length payload (job_ids)
+    let mut payload_buf = vec![0u8; payload_len];
+    if payload_len > 0 {
+        conn.read_exact(&mut payload_buf).await?;
+    }
+
+    // Combine header + payload for deserialization
+    let mut full_buf = header_buf;
+    full_buf.extend(payload_buf);
+
+    let response = NetworkValue::deserialize(Bytes::from(full_buf))
         .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
 
-    if let NetworkValue::JobStateResponse {
-        last_received_job_id,
-        ..
-    } = response
-    {
-        Ok(last_received_job_id)
+    if let NetworkValue::PendingJobsReply { job_ids, .. } = response {
+        Ok(job_ids)
     } else {
-        Err(LeaderError::BadResponse("Expected JobStateResponse".into()))
+        Err(LeaderError::BadResponse("Expected PendingJobsReply".into()))
     }
 }
 
@@ -316,7 +364,7 @@ fn convert_to_worker_rsp(
             tx.send(msg)
                 .map_err(|_| io::Error::other("Failed to send worker response"))
         }
-        NetworkValue::JobStateResponse { .. } => {
+        NetworkValue::PendingJobsReply { .. } => {
             // Should not receive during normal traffic (only during reconciliation)
             tracing::warn!("Unexpected JobStateResponse during normal traffic");
             Ok(())
@@ -326,7 +374,7 @@ fn convert_to_worker_rsp(
             tracing::warn!("Unexpected Cancel from worker");
             Ok(())
         }
-        NetworkValue::QueryJobState { .. } => Err(io::Error::other(
+        NetworkValue::PendingJobsRequest { .. } => Err(io::Error::other(
             "Unexpected QueryJobState on leader connection",
         )),
     }

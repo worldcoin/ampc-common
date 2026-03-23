@@ -19,16 +19,18 @@ pub type JobId = u32;
 
 #[derive(Error, Debug, Clone, PartialEq)]
 pub enum WorkpoolError {
-    #[error("worker {worker_id} lost jobs: expected last received job_id {expected}, but worker reports {actual:?}")]
-    JobsLost {
-        worker_id: WorkerId,
-        expected: JobId,
-        actual: Option<JobId>,
-    },
+    #[error("worker {worker_id} lost job {job_id}")]
+    JobsLost { worker_id: WorkerId, job_id: JobId },
+    #[error("worker {worker_id} response for job {job_id} was lost in transit")]
+    ResponseLost { worker_id: WorkerId, job_id: JobId },
     #[error("lost connection to worker tasks")]
     SendFailed,
-    #[error("Input failed validation {0}")]
+    #[error("input failed validation {0}")]
     InvalidInput(String),
+    #[error("cancellation token triggred shutdown")]
+    Cancelled,
+    #[error("operation timed out")]
+    Timeout,
 }
 
 // used when constructing a worker or leader handle
@@ -102,37 +104,28 @@ where
             .try_into()
             .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", buf[0])))?;
 
-        // Read remaining bytes based on message type
-        let total_len = match descriptor {
-            DescriptorByte::Job => {
-                // Read: job_id (4) + worker_id (2) + payload_len (4)
-                buf.resize(11, 0);
-                reader.read_exact(&mut buf[1..11]).await?;
-                let payload_len = u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize;
+        // Read remaining header bytes based on message type
+        let header_len = descriptor.header_len();
+        buf.resize(header_len, 0);
+        reader.read_exact(&mut buf[1..header_len]).await?;
 
-                // Read payload
-                buf.resize(11 + payload_len, 0);
-                reader.read_exact(&mut buf[11..11 + payload_len]).await?;
-                11 + payload_len
+        // For Job messages, read the variable-length payload
+        const MAX_PAYLOAD_SIZE: usize = 500 * 1024 * 1024; // 500MB
+        let total_len = if descriptor == DescriptorByte::Job {
+            let payload_len = u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize;
+            if payload_len > MAX_PAYLOAD_SIZE {
+                return Err(io::Error::other(format!(
+                    "Payload size {} exceeds maximum {}",
+                    payload_len, MAX_PAYLOAD_SIZE
+                )));
             }
-            DescriptorByte::QueryJobState => {
-                // Read: worker_id (2)
-                buf.resize(3, 0);
-                reader.read_exact(&mut buf[1..3]).await?;
-                3
-            }
-            DescriptorByte::JobStateResponse => {
-                // Fixed length: worker_id (2) + bitfield (1) + last_received (4) + last_responded (4)
-                buf.resize(12, 0);
-                reader.read_exact(&mut buf[1..12]).await?;
-                12
-            }
-            DescriptorByte::Cancel => {
-                // Read: job_id (4) + worker_id (2)
-                buf.resize(7, 0);
-                reader.read_exact(&mut buf[1..7]).await?;
-                7
-            }
+            buf.resize(header_len + payload_len, 0);
+            reader
+                .read_exact(&mut buf[header_len..header_len + payload_len])
+                .await?;
+            header_len + payload_len
+        } else {
+            header_len
         };
 
         // Deserialize the NetworkValue (zero-copy via split/freeze)
