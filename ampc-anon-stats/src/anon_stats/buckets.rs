@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fmt::{Display, Formatter};
 
+/// Round a bucket boundary to 12 significant decimal digits to eliminate
+/// IEEE 754 floating-point noise (e.g. `0.17300000000000001` → `0.173`).
+pub fn round_boundary(value: f64) -> f64 {
+    (value * 1e12).round() / 1e12
+}
+
 // 1D anonymized statistics types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketResult {
@@ -128,8 +134,8 @@ impl BucketStatistics {
 
         let step = match_threshold_ratio / (self.n_buckets as f64);
         for i in 0..buckets_array.len() {
-            let previous_threshold = step * (i as f64);
-            let threshold = step * ((i + 1) as f64);
+            let previous_threshold = round_boundary(step * (i as f64));
+            let threshold = round_boundary(step * ((i + 1) as f64));
 
             // The difference between buckets[i] and buckets[i - 1], except when i=0
             let previous_count = if i == 0 { 0 } else { buckets_array[i - 1] };
@@ -337,8 +343,14 @@ impl BucketStatistics2D {
                 cell = 0;
             }
 
-            let left_range = [step * (i as f64), step * ((i + 1) as f64)];
-            let right_range = [step * (j as f64), step * ((j + 1) as f64)];
+            let left_range = [
+                round_boundary(step * (i as f64)),
+                round_boundary(step * ((i + 1) as f64)),
+            ];
+            let right_range = [
+                round_boundary(step * (j as f64)),
+                round_boundary(step * ((j + 1) as f64)),
+            ];
 
             // Only add the bucket if the count is greater than 0
             // This is because our end goal is to create a 2D histogram, and buckets with 0 count are not meaningful.
@@ -357,5 +369,129 @@ impl BucketStatistics2D {
             self.start_time_utc_timestamp = start_timestamp;
         }
         self.next_start_time_utc_timestamp = Some(now_timestamp);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AnonStatsResultSource, DistanceFunction, Eye};
+
+    #[test]
+    fn test_round_boundary_eliminates_fp_noise() {
+        // 0.375 / 375 * 173 would produce 0.17300000000000001 without rounding
+        let step = 0.375 / 375.0;
+        assert_eq!(round_boundary(step * 173.0), 0.173);
+    }
+
+    #[test]
+    fn test_round_boundary_preserves_exact_values() {
+        assert_eq!(round_boundary(0.0), 0.0);
+        assert_eq!(round_boundary(0.25), 0.25);
+        assert_eq!(round_boundary(0.375), 0.375);
+        assert_eq!(round_boundary(1.0), 1.0);
+    }
+
+    #[test]
+    fn test_round_boundary_repeating_fractions() {
+        let val = round_boundary(1.0 / 3.0);
+        assert_eq!(val, 0.333333333333);
+    }
+
+    #[test]
+    fn test_1d_fill_buckets_boundaries_are_clean() {
+        let n_buckets = 375;
+        let ratio = 0.375;
+        let mut stats = BucketStatistics::new(
+            128,
+            n_buckets,
+            0,
+            Some(Eye::Left),
+            DistanceFunction::FHD,
+            AnonStatsResultSource::Legacy,
+            None,
+        );
+
+        let cumulative: Vec<u32> = (1..=n_buckets as u32).collect();
+        stats.fill_buckets(&cumulative, ratio, None);
+
+        for bucket in &stats.buckets {
+            let lo = bucket.hamming_distance_bucket[0];
+            let hi = bucket.hamming_distance_bucket[1];
+            assert_eq!(lo, round_boundary(lo), "lower bound has fp noise: {lo}");
+            assert_eq!(hi, round_boundary(hi), "upper bound has fp noise: {hi}");
+        }
+
+        let step = ratio / n_buckets as f64;
+        assert_eq!(
+            stats.buckets[173].hamming_distance_bucket[0],
+            round_boundary(step * 173.0)
+        );
+        assert_eq!(
+            stats.buckets[173].hamming_distance_bucket[1],
+            round_boundary(step * 174.0)
+        );
+    }
+
+    #[test]
+    fn test_2d_fill_buckets_boundaries_are_clean() {
+        let n = 10;
+        let ratio = 0.375;
+        let mut stats = BucketStatistics2D::new(
+            128,
+            n,
+            0,
+            DistanceFunction::FHD,
+            AnonStatsResultSource::Legacy,
+            None,
+        );
+
+        let nn = n * n;
+        let mut cumulative = vec![0u32; nn];
+        for i in 0..n {
+            for j in 0..n {
+                cumulative[i * n + j] = ((i + 1) * (j + 1)) as u32;
+            }
+        }
+        stats.fill_buckets(&cumulative, ratio, None);
+
+        for bucket in &stats.buckets {
+            let l0 = bucket.left_hamming_distance_bucket[0];
+            let l1 = bucket.left_hamming_distance_bucket[1];
+            let r0 = bucket.right_hamming_distance_bucket[0];
+            let r1 = bucket.right_hamming_distance_bucket[1];
+            assert_eq!(l0, round_boundary(l0), "left lower has fp noise: {l0}");
+            assert_eq!(l1, round_boundary(l1), "left upper has fp noise: {l1}");
+            assert_eq!(r0, round_boundary(r0), "right lower has fp noise: {r0}");
+            assert_eq!(r1, round_boundary(r1), "right upper has fp noise: {r1}");
+        }
+    }
+
+    #[test]
+    fn test_1d_fill_buckets_boundaries_json_clean() {
+        let n_buckets = 375;
+        let ratio = 0.375;
+        let mut stats = BucketStatistics::new(
+            128,
+            n_buckets,
+            0,
+            Some(Eye::Left),
+            DistanceFunction::FHD,
+            AnonStatsResultSource::Legacy,
+            None,
+        );
+
+        let cumulative: Vec<u32> = (1..=n_buckets as u32).collect();
+        stats.fill_buckets(&cumulative, ratio, None);
+
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(
+            !json.contains("00000000001"),
+            "JSON still contains fp noise: found '00000000001'"
+        );
+        assert!(
+            !json.contains("99999999999"),
+            "JSON still contains fp noise: found '99999999999'"
+        );
     }
 }
