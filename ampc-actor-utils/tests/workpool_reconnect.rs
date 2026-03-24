@@ -23,6 +23,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing_test::traced_test;
@@ -41,12 +42,10 @@ fn worker_proceed_signal() -> &'static Notify {
 
 /// A TCP proxy that sits between leader and worker, allowing message interception.
 pub struct TcpProxy {
-    /// Address the proxy listens on for the "client" side (e.g., leader connects here)
-    listen_addr: SocketAddr,
-    /// Address the proxy forwards traffic to (e.g., worker listens here)
-    forward_addr: SocketAddr,
-    /// Listener used by the accept loop
-    listener: Arc<TcpListener>,
+    worker_addr: SocketAddr,
+    leader_addr: SocketAddr,
+    leader_to_worker: Arc<TcpListener>,
+    worker_to_leader: Arc<TcpListener>,
     /// When true, drop traffic from leader to worker
     drop_leader_to_worker: Arc<AtomicBool>,
     /// When true, drop traffic from worker to leader
@@ -55,24 +54,36 @@ pub struct TcpProxy {
     shutdown: CancellationToken,
     /// Shutdown signal for the accept loop
     accept_shutdown: CancellationToken,
-    /// Join handle for the accept loop task
-    accept_handle: Option<tokio::task::JoinHandle<()>>,
+    leader_to_worker_handle: Option<JoinHandle<()>>,
+    worker_to_leader_handle: Option<JoinHandle<()>>,
 }
 
 impl TcpProxy {
-    pub async fn new(forward_addr: SocketAddr) -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0").await?;
-        let listen_addr = listener.local_addr()?;
-        let listener = Arc::new(listener);
+    pub async fn new(
+        leader_addr: SocketAddr,
+        worker_addr: SocketAddr,
+        leader_to_worker_addr: SocketAddr,
+        worker_to_leader_addr: SocketAddr,
+    ) -> Result<Self> {
+        let leader_to_worker = Arc::new(TcpListener::bind(leader_to_worker_addr).await?);
+        let worker_to_leader = Arc::new(TcpListener::bind(worker_to_leader_addr).await?);
 
         let drop_leader_to_worker = Arc::new(AtomicBool::new(false));
         let drop_worker_to_leader = Arc::new(AtomicBool::new(false));
         let shutdown = CancellationToken::new();
         let accept_shutdown = CancellationToken::new();
 
-        let accept_handle = Some(tokio::spawn(Self::run_accept_loop(
-            listener.clone(),
-            forward_addr,
+        let leader_to_worker_handle = Some(tokio::spawn(Self::leader_to_worker_accept_loop(
+            worker_addr,
+            leader_to_worker.clone(),
+            drop_leader_to_worker.clone(),
+            drop_worker_to_leader.clone(),
+            shutdown.clone(),
+            accept_shutdown.clone(),
+        )));
+        let worker_to_leader_handle = Some(tokio::spawn(Self::worker_to_leader_accept_loop(
+            leader_addr,
+            worker_to_leader.clone(),
             drop_leader_to_worker.clone(),
             drop_worker_to_leader.clone(),
             shutdown.clone(),
@@ -80,20 +91,17 @@ impl TcpProxy {
         )));
 
         Ok(Self {
-            listen_addr,
-            forward_addr,
-            listener,
+            leader_addr,
+            worker_addr,
+            leader_to_worker,
+            worker_to_leader,
             drop_leader_to_worker,
             drop_worker_to_leader,
             shutdown,
             accept_shutdown,
-            accept_handle,
+            leader_to_worker_handle,
+            worker_to_leader_handle,
         })
-    }
-
-    /// Address that clients should connect to
-    pub fn listen_addr(&self) -> SocketAddr {
-        self.listen_addr
     }
 
     pub fn drop_leader_to_worker(&self) {
@@ -130,19 +138,29 @@ impl TcpProxy {
 
     pub async fn reconnect(&mut self) {
         tracing::info!("Proxy: reconnect requested");
+        self.shutdown();
 
-        self.accept_shutdown.cancel();
-        if let Some(handle) = self.accept_handle.take() {
+        if let Some(handle) = self.leader_to_worker_handle.take() {
             let _ = handle.await;
         }
 
-        self.shutdown.cancel();
+        if let Some(handle) = self.worker_to_leader_handle.take() {
+            let _ = handle.await;
+        }
 
         self.shutdown = CancellationToken::new();
         self.accept_shutdown = CancellationToken::new();
-        self.accept_handle = Some(tokio::spawn(Self::run_accept_loop(
-            self.listener.clone(),
-            self.forward_addr,
+        self.leader_to_worker_handle = Some(tokio::spawn(Self::leader_to_worker_accept_loop(
+            self.worker_addr,
+            self.leader_to_worker.clone(),
+            self.drop_leader_to_worker.clone(),
+            self.drop_worker_to_leader.clone(),
+            self.shutdown.clone(),
+            self.accept_shutdown.clone(),
+        )));
+        self.worker_to_leader_handle = Some(tokio::spawn(Self::worker_to_leader_accept_loop(
+            self.leader_addr,
+            self.worker_to_leader.clone(),
             self.drop_leader_to_worker.clone(),
             self.drop_worker_to_leader.clone(),
             self.shutdown.clone(),
@@ -155,9 +173,9 @@ impl TcpProxy {
         self.shutdown.cancel();
     }
 
-    async fn run_accept_loop(
-        listener: Arc<TcpListener>,
-        forward_addr: SocketAddr,
+    async fn leader_to_worker_accept_loop(
+        worker_addr: SocketAddr,
+        leader_to_worker_listener: Arc<TcpListener>,
         drop_leader_to_worker: Arc<AtomicBool>,
         drop_worker_to_leader: Arc<AtomicBool>,
         shutdown: CancellationToken,
@@ -169,18 +187,18 @@ impl TcpProxy {
                     tracing::info!("Proxy accept loop shutting down");
                     break;
                 }
-                accept_result = listener.accept() => {
+                accept_result = leader_to_worker_listener.accept() => {
                     match accept_result {
-                        Ok((client_stream, client_addr)) => {
-                            tracing::info!("Proxy: accepted connection from {}", client_addr);
+                        Ok((leader_stream, leader_addr)) => {
+                            tracing::info!("Proxy: accepted connection from leader {}", leader_addr);
 
                             let drop_leader_to_worker = drop_leader_to_worker.clone();
                             let drop_worker_to_leader = drop_worker_to_leader.clone();
                             let shutdown = shutdown.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = Self::handle_connection(
-                                    client_stream,
-                                    forward_addr,
+                                if let Err(e) = Self::handle_leader_to_worker(
+                                    leader_stream,
+                                    worker_addr,
                                     drop_leader_to_worker,
                                     drop_worker_to_leader,
                                     shutdown,
@@ -198,29 +216,107 @@ impl TcpProxy {
         }
     }
 
-    async fn handle_connection(
-        mut client_stream: TcpStream,
-        forward_addr: SocketAddr,
+    async fn worker_to_leader_accept_loop(
+        leader_addr: SocketAddr,
+        worker_to_leader_listener: Arc<TcpListener>,
+        drop_leader_to_worker: Arc<AtomicBool>,
+        drop_worker_to_leader: Arc<AtomicBool>,
+        shutdown: CancellationToken,
+        accept_shutdown: CancellationToken,
+    ) {
+        loop {
+            tokio::select! {
+                _ = accept_shutdown.cancelled() => {
+                    tracing::info!("Proxy accept loop shutting down");
+                    break;
+                }
+                accept_result = worker_to_leader_listener.accept() => {
+                    match accept_result {
+                        Ok((worker_stream, worker_addr)) => {
+                            tracing::info!("Proxy: accepted connection from worker: {}", worker_addr );
+
+                            let drop_leader_to_worker = drop_leader_to_worker.clone();
+                            let drop_worker_to_leader = drop_worker_to_leader.clone();
+                            let shutdown = shutdown.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = Self::handle_worker_to_leader(
+                                    worker_stream,
+                                    leader_addr,
+                                    drop_leader_to_worker,
+                                    drop_worker_to_leader,
+                                    shutdown,
+                                ).await {
+                                    tracing::debug!("Proxy connection ended: {}", e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            tracing::error!("Proxy accept error: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_leader_to_worker(
+        leader_stream: TcpStream,
+        worker_addr: SocketAddr,
         drop_leader_to_worker: Arc<AtomicBool>,
         drop_worker_to_leader: Arc<AtomicBool>,
         shutdown: CancellationToken,
     ) -> io::Result<()> {
-        let mut server_stream = TcpStream::connect(forward_addr).await?;
-        tracing::info!("Proxy: connected to server at {}", forward_addr);
+        let worker_stream = TcpStream::connect(worker_addr).await?;
+        tracing::info!("Proxy: connected to worker at {}", worker_addr);
+        Self::manage_streams(
+            worker_stream,
+            leader_stream,
+            drop_leader_to_worker,
+            drop_worker_to_leader,
+            shutdown,
+        )
+        .await
+    }
 
-        let (mut client_read, mut client_write) = client_stream.split();
-        let (mut server_read, mut server_write) = server_stream.split();
+    async fn handle_worker_to_leader(
+        worker_stream: TcpStream,
+        leader_addr: SocketAddr,
+        drop_leader_to_worker: Arc<AtomicBool>,
+        drop_worker_to_leader: Arc<AtomicBool>,
+        shutdown: CancellationToken,
+    ) -> io::Result<()> {
+        let leader_stream = TcpStream::connect(leader_addr).await?;
+        tracing::info!("Proxy: connected to leader at {}", leader_addr);
+        Self::manage_streams(
+            worker_stream,
+            leader_stream,
+            drop_leader_to_worker,
+            drop_worker_to_leader,
+            shutdown,
+        )
+        .await
+    }
+
+    async fn manage_streams(
+        mut worker_stream: TcpStream,
+        mut leader_stream: TcpStream,
+        drop_leader_to_worker: Arc<AtomicBool>,
+        drop_worker_to_leader: Arc<AtomicBool>,
+        shutdown: CancellationToken,
+    ) -> io::Result<()> {
+        let (mut leader_read, mut leader_write) = leader_stream.split();
+        let (mut worker_read, mut worker_write) = worker_stream.split();
 
         // Bidirectional forwarding with drop check
         let worker_to_leader = async {
             let mut buf = vec![0u8; 8192];
             loop {
-                let n = client_read.read(&mut buf).await?;
+                let n = worker_read.read(&mut buf).await?;
                 if n == 0 {
                     return Ok(());
                 }
                 if !drop_worker_to_leader.load(Ordering::SeqCst) {
-                    server_write.write_all(&buf[..n]).await?;
+                    leader_write.write_all(&buf[..n]).await?;
                 }
             }
         };
@@ -228,12 +324,12 @@ impl TcpProxy {
         let leader_to_worker = async {
             let mut buf = vec![0u8; 8192];
             loop {
-                let n = server_read.read(&mut buf).await?;
+                let n = leader_read.read(&mut buf).await?;
                 if n == 0 {
                     return Ok(());
                 }
                 if !drop_leader_to_worker.load(Ordering::SeqCst) {
-                    client_write.write_all(&buf[..n]).await?;
+                    worker_write.write_all(&buf[..n]).await?;
                 }
             }
         };
@@ -305,24 +401,41 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let worker_listeners: Vec<TcpListener> =
         try_join_all((0..NUM_WORKERS).map(|_| TcpListener::bind("127.0.0.1:0"))).await?;
 
+    let proxy_listeners: Vec<TcpListener> =
+        try_join_all((0..2).map(|_| TcpListener::bind("127.0.0.1:0"))).await?;
+
     let worker_addrs: Vec<SocketAddr> = worker_listeners
         .iter()
         .map(|l| l.local_addr().unwrap())
         .collect();
+
+    let proxy_addrs: Vec<SocketAddr> = proxy_listeners
+        .iter()
+        .map(|l| l.local_addr().unwrap())
+        .collect();
+
+    let proxy_leader_to_worker_addr = proxy_addrs[0];
+    let proxy_worker_to_leader_addr = proxy_addrs[1];
+    drop(proxy_listeners);
 
     let leader_listener = TcpListener::bind("127.0.0.1:0").await?;
     let leader_addr = leader_listener.local_addr()?;
     drop(leader_listener); // Release so leader can bind
 
     // Create proxy for worker 0 -> leader traffic
-    let proxy = TcpProxy::new(leader_addr).await?;
-    let proxy_addr = proxy.listen_addr();
+    let proxy = TcpProxy::new(
+        leader_addr,
+        worker_addrs[0],
+        proxy_leader_to_worker_addr,
+        proxy_worker_to_leader_addr,
+    )
+    .await?;
 
-    // Leader uses real worker addresses (proxy is only on worker->leader path)
     let mut leader_worker_addrs: Vec<String> = Vec::new();
     for addr in worker_addrs.iter() {
         leader_worker_addrs.push(addr.to_string());
     }
+    leader_worker_addrs[0] = proxy_leader_to_worker_addr.to_string();
 
     let leader_id = Identity("leader".to_string());
     for (idx, listener) in worker_listeners.into_iter().enumerate() {
@@ -331,7 +444,11 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
 
         // Worker ID must match what leader expects: "{leader_id}-w-{idx}"
         let worker_id = Identity(format!("{}-w-{}", leader_id.0, idx));
-        let leader_addr_for_worker = if idx == 0 { proxy_addr } else { leader_addr };
+        let leader_addr_for_worker = if idx == 0 {
+            proxy_worker_to_leader_addr
+        } else {
+            leader_addr
+        };
 
         let info = WorkerInfo {
             worker_id,
