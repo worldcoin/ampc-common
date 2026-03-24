@@ -51,3 +51,8 @@ path = "benches/bit_inject.rs"
 name = "reshare_mux"
 harness = false
 path = "benches/reshare_mux.rs"
+
+[[bench]]
+name = "vectored_write"
+harness = false
+path = "benches/vectored_write.rs"
