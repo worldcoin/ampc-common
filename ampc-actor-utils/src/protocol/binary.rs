@@ -1346,8 +1346,7 @@ mod tests {
         assert_eq!(res[1], res[2]);
 
         let mut result_bits = Vec::with_capacity(len);
-        for i in 0..len {
-            let bit = res[0][i];
+        for (i, bit) in res[0].iter().enumerate().take(len) {
             if bit.is_one() {
                 result_bits.push(true.into());
             } else if bit.is_zero() {
@@ -1487,8 +1486,7 @@ mod tests {
         assert_eq!(res[1], res[2]);
 
         let mut result_bits = Vec::with_capacity(len);
-        for i in 0..len {
-            let bit = res[0][i];
+        for bit in res[0].iter().take(len) {
             if bit.is_one() {
                 result_bits.push(true.into());
             } else {
