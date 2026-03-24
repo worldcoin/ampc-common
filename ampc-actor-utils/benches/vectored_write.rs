@@ -149,21 +149,22 @@ const CONFIGS: [(usize, usize); 9] = [
     (4, 1 << 20),
 ];
 
-fn bench_vectored_write(c: &mut Criterion) {
+fn bench_tcp_write(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut group = c.benchmark_group("vectored_write");
+    let mut group = c.benchmark_group("bench_tcp_write");
     let mut temp = vec![0u8; 1 << 20];
 
     for (num_messages, message_size) in CONFIGS {
         let test_data = TestData::new(num_messages, message_size);
         let label = format!("{}x{}B", num_messages, message_size);
-        let (mut stream, batch_tx) = rt.block_on(setup_connection());
 
+        // Vectored write
+        let (mut stream_v, batch_tx_v) = rt.block_on(setup_connection());
         group.bench_function(BenchmarkId::new("vectored", &label), |b| {
             b.iter_batched(
                 || {
                     let (done_tx, done_rx) = oneshot::channel();
-                    batch_tx
+                    batch_tx_v
                         .send(BatchNotify {
                             num_messages: test_data.buffers.len(),
                             done: done_tx,
@@ -172,34 +173,30 @@ fn bench_vectored_write(c: &mut Criterion) {
                     done_rx
                 },
                 |done_rx| {
-                    // simulate serialization by one sender
+                    // simulate serialization by one sender, to make the test fair.
+                    // it is unfair to make the write_all case serialize everything
+                    // when the write_vectored case requries the senders perform
+                    // serialiazation before sending.
                     temp.clear();
                     temp.extend_from_slice(&test_data.buffers[0]);
                     let _ = std::hint::black_box(&temp);
-                    rt.block_on(do_write_vectored(&mut stream, done_rx, &test_data.buffers));
+                    rt.block_on(do_write_vectored(
+                        &mut stream_v,
+                        done_rx,
+                        &test_data.buffers,
+                    ));
                 },
                 criterion::BatchSize::SmallInput,
             );
         });
-    }
 
-    group.finish();
-}
-
-fn bench_single_write(c: &mut Criterion) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut group = c.benchmark_group("single_write");
-
-    for (num_messages, message_size) in CONFIGS {
-        let test_data = TestData::new(num_messages, message_size);
-        let label = format!("{}x{}B", num_messages, message_size);
-        let (mut stream, batch_tx) = rt.block_on(setup_connection());
-
+        // Single write
+        let (mut stream_s, batch_tx_s) = rt.block_on(setup_connection());
         group.bench_function(BenchmarkId::new("single", &label), |b| {
             b.iter_batched(
                 || {
                     let (done_tx, done_rx) = oneshot::channel();
-                    batch_tx
+                    batch_tx_s
                         .send(BatchNotify {
                             num_messages: test_data.buffers.len(),
                             done: done_tx,
@@ -208,7 +205,7 @@ fn bench_single_write(c: &mut Criterion) {
                     done_rx
                 },
                 |done_rx| {
-                    rt.block_on(do_write_single(&mut stream, done_rx, &test_data.buffers));
+                    rt.block_on(do_write_single(&mut stream_s, done_rx, &test_data.buffers));
                 },
                 criterion::BatchSize::SmallInput,
             );
@@ -218,5 +215,5 @@ fn bench_single_write(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_vectored_write, bench_single_write);
+criterion_group!(benches, bench_tcp_write);
 criterion_main!(benches);
