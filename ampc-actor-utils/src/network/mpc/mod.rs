@@ -9,7 +9,7 @@ mod value;
 // Re-export commonly used types for convenience
 pub use handle::{build_network_handle, NetworkHandle, NetworkHandleArgs};
 pub use local::LocalNetworkingStore;
-pub use value::{NetworkInt, NetworkValue};
+pub use value::{NetworkInt, NetworkValue, StateChecksum};
 
 /// Requirements for networking.
 #[async_trait]
