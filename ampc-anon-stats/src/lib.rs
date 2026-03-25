@@ -14,7 +14,7 @@ pub use types::{
 };
 
 pub use crate::anon_stats::buckets::{
-    Bucket2DResult, BucketResult, BucketStatistics, BucketStatistics2D,
+    round_boundary, Bucket2DResult, BucketResult, BucketStatistics, BucketStatistics2D,
 };
 pub use crate::anon_stats::iris_1d::{
     lift_bundles_1d, process_1d_anon_stats_job, process_1d_lifted_anon_stats_job, DistanceBundle1D,
