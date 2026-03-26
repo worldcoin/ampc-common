@@ -194,6 +194,11 @@ mod tests {
         let job_id = 0;
         tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
 
+        // Transition workers to pending
+        for id in 0..3 {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
+
         // Record responses
         tracker
             .record_response(WorkerRsp {
@@ -237,6 +242,11 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         tracker.register_job(job_id, JobType::Broadcast { num_workers: 4 }, tx);
 
+        // Transition workers to pending
+        for id in 0..4 {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
+
         // Record acks from all workers
         for worker_id in 0..4 {
             tracker
@@ -262,6 +272,11 @@ mod tests {
         let worker_ids = [0, 1, 2].into_iter().collect();
         let job_id = 0;
         tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
+
+        // Transition workers to pending
+        for id in 0..3 {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
 
         // One partition fails
         tracker
@@ -306,6 +321,10 @@ mod tests {
         let job_id = 0;
         tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
 
+        // Transition workers to pending
+        tracker.set_to_pending(job_id, 0).unwrap();
+        tracker.set_to_pending(job_id, 1).unwrap();
+
         tracker
             .record_response(WorkerRsp {
                 job_id,
@@ -331,6 +350,11 @@ mod tests {
         let worker_ids = [0, 1, 2].into_iter().collect();
         let job_id = 0;
         tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
+
+        // Transition workers to pending
+        for id in 0..3 {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
 
         tracker
             .record_response(WorkerRsp {
@@ -358,6 +382,11 @@ mod tests {
         let worker_ids = [0, 2, 5].into_iter().collect();
         let job_id = 0;
         tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
+
+        // Transition workers to pending
+        for id in [0, 2, 5] {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
 
         // Record responses
         tracker

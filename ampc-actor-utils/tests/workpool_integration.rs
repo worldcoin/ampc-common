@@ -217,6 +217,7 @@ async fn test_broadcast() {
         JOB_TIMEOUT,
         leader
             .broadcast(payload.clone())
+            .await
             .expect("failed to submit broadcast"),
     )
     .await
@@ -257,18 +258,21 @@ async fn test_scatter_gather() {
         .map(|i| format!("data-for-worker-{i}").into_bytes())
         .collect();
 
-    let job_handles: Vec<_> = (1..=NUM_WORKERS)
-        .map(|workers_to_use| {
-            let msgs: Vec<WorkerJob> = (0..workers_to_use)
-                .map(|i| WorkerJob {
-                    worker_id: i as u16,
-                    payload: format!("data-for-worker-{i}").into_bytes().into(),
-                })
-                .collect();
+    let mut job_handles = vec![];
+    for workers_to_use in 1..=NUM_WORKERS {
+        let msgs: Vec<WorkerJob> = (0..workers_to_use)
+            .map(|i| WorkerJob {
+                worker_id: i as u16,
+                payload: format!("data-for-worker-{i}").into_bytes().into(),
+            })
+            .collect();
 
-            leader.scatter_gather(msgs).expect("scatter_gather failed")
-        })
-        .collect();
+        let handle = leader
+            .scatter_gather(msgs)
+            .await
+            .expect("scatter_gather failed");
+        job_handles.push(handle);
+    }
 
     let jobs = timeout(JOB_TIMEOUT, join_all(job_handles))
         .await
@@ -317,6 +321,7 @@ async fn test_broadcast_big_job() {
         JOB_TIMEOUT,
         leader
             .broadcast(payload)
+            .await
             .expect("failed to submit broadcast"),
     )
     .await

@@ -505,6 +505,7 @@ async fn test_response_survives_disconnect() {
             worker_id: 0,
             payload: payload.clone().into(),
         }])
+        .await
         .expect("scatter_gather should succeed");
 
     // Give time for the job to arrive at worker
@@ -557,6 +558,7 @@ async fn test_proxy_drop() {
             worker_id: 0,
             payload: payload.clone().into(),
         }])
+        .await
         .expect("scatter_gather should succeed");
 
     sleep(Duration::from_millis(200)).await;
@@ -601,6 +603,7 @@ async fn test_broadcast_through_proxy() {
     let job_handle = cluster
         .leader
         .broadcast(payload.clone())
+        .await
         .expect("broadcast should succeed");
     sleep(Duration::from_millis(500)).await;
     worker_proceed_signal().notify_waiters();
@@ -663,6 +666,7 @@ async fn test_dropped_job_detection() {
                 payload: Bytes::from("payload-2").into(),
             },
         ])
+        .await
         .expect("scatter_gather should succeed");
 
     let mut job_handle = Box::pin(job_handle);
