@@ -122,7 +122,8 @@ where
             DescriptorByte::PendingJobsReply => {
                 u32::from_le_bytes(buf[3..7].try_into().unwrap()) as usize
             }
-            _ => 0,
+            DescriptorByte::PendingJobsRequest => 0,
+            DescriptorByte::Cancel => 0,
         };
 
         if payload_len > MAX_PAYLOAD_SIZE {

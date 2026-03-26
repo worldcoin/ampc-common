@@ -29,7 +29,7 @@ use std::{
     task::{Context, Poll},
     time::Duration,
 };
-use tokio::sync::{mpsc::UnboundedSender, oneshot, watch};
+use tokio::sync::{mpsc::Sender, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 pub struct WorkerRsp {
@@ -64,7 +64,7 @@ pub(crate) enum Job {
 /// Handle to a submitted job that can be awaited or cancelled
 pub struct JobHandle {
     result_rx: oneshot::Receiver<WorkpoolRes>,
-    cancel_tx: UnboundedSender<Job>,
+    cancel_tx: Sender<Job>,
     job_id: JobId,
 }
 
@@ -73,11 +73,12 @@ impl JobHandle {
         self.job_id
     }
 
-    pub fn cancel(self) -> Result<(), WorkpoolError> {
+    pub async fn cancel(self) -> Result<(), WorkpoolError> {
         self.cancel_tx
             .send(Job::Cancel {
                 job_id: self.job_id,
             })
+            .await
             .map_err(|_| WorkpoolError::SendFailed)
     }
 }
@@ -94,7 +95,7 @@ impl Future for JobHandle {
 
 pub struct LeaderHandle {
     ct: CancellationToken,
-    ch: UnboundedSender<Job>,
+    ch: Sender<Job>,
     next_job_id: Arc<AtomicU32>,
     num_workers: usize,
     worker_connected: Vec<watch::Receiver<bool>>,
@@ -119,7 +120,7 @@ impl LeaderHandle {
     /// Accepts either `Bytes` or `Arc<dyn ToBytes>` via the `Payload` enum.
     /// Returns Err only for immediate failures (e.g., channel closed).
     /// Validation errors and worker failures are returned when awaiting the JobHandle.
-    pub fn broadcast(&self, payload: impl Into<Payload>) -> Result<JobHandle, WorkpoolError> {
+    pub async fn broadcast(&self, payload: impl Into<Payload>) -> Result<JobHandle, WorkpoolError> {
         let job_id = self.next_job_id.fetch_add(1, Ordering::SeqCst);
         let (result_tx, result_rx) = oneshot::channel();
 
@@ -129,6 +130,7 @@ impl LeaderHandle {
                 payload: payload.into(),
                 result_rsp: result_tx,
             })
+            .await
             .map_err(|_| WorkpoolError::SendFailed)?;
 
         Ok(JobHandle {
@@ -142,7 +144,7 @@ impl LeaderHandle {
     ///
     /// Returns Err for validation failures or immediate failures (e.g., channel closed).
     /// Worker failures are returned when awaiting the JobHandle.
-    pub fn scatter_gather(&self, msgs: Vec<WorkerJob>) -> Result<JobHandle, WorkpoolError> {
+    pub async fn scatter_gather(&self, msgs: Vec<WorkerJob>) -> Result<JobHandle, WorkpoolError> {
         // Validate inputs
         let mut worker_ids = HashSet::new();
         for msg in &msgs {
@@ -163,6 +165,7 @@ impl LeaderHandle {
                 msgs,
                 result_rsp: result_tx,
             })
+            .await
             .map_err(|_| WorkpoolError::SendFailed)?;
 
         Ok(JobHandle {
@@ -222,11 +225,6 @@ pub async fn build_leader(
         tracing::info!("Building WorkPool Leader with TLS");
 
         let root_certs = tls.clone().root_certs;
-        if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(SetupError::BadConfig(
-                "TLS private key and leaf cert required".to_string(),
-            ));
-        }
         let private_key = tls
             .private_key
             .as_ref()

@@ -74,7 +74,7 @@ impl NetworkValue {
             NetworkValue::PendingJobsReply { job_ids, .. } => {
                 DescriptorByte::PendingJobsReply.header_len() + (job_ids.len() * size_of::<JobId>())
             }
-            NetworkValue::PendingJobsRequest { .. } | NetworkValue::Cancel => {
+            NetworkValue::PendingJobsRequest { .. } | NetworkValue::Cancel { .. } => {
                 self.get_descriptor_byte().header_len()
             }
         }

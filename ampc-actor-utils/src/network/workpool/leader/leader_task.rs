@@ -4,7 +4,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::BufReader;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
 use tokio::sync::watch;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
@@ -37,7 +37,7 @@ pub fn spawn<T, C, I, S>(
     connector: C,
     listener: S,
     shutdown_ct: CancellationToken,
-) -> (UnboundedSender<Job>, Vec<watch::Receiver<bool>>)
+) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
     C: Client<Output = T> + 'static,
@@ -80,7 +80,7 @@ where
         ));
     }
 
-    let (job_tx, job_rx) = mpsc::unbounded_channel();
+    let (job_tx, job_rx) = mpsc::channel(1024);
     tokio::spawn(leader_task(
         job_tracker,
         job_rx,
@@ -95,7 +95,7 @@ where
 
 async fn leader_task(
     job_tracker: Arc<JobTracker>,
-    mut job_rx: UnboundedReceiver<Job>,
+    mut job_rx: Receiver<Job>,
     mut worker_rsp_rx: UnboundedReceiver<WorkerRsp>,
     worker_cmd_ch: Vec<UnboundedSender<NetworkValue>>,
     worker_rsp_tx: UnboundedSender<WorkerRsp>,
@@ -121,7 +121,8 @@ async fn leader_task(
                         tracing::warn!("handle_worker_response: {}", e);
                     }
                 } else {
-                    tracing::debug!("Worker event channel closed");
+                    // the leader holds worker_rsp_tx as well
+                    unreachable!("channel should not return None while leade is alive");
                 }
             },
         };
@@ -174,7 +175,7 @@ fn send_to_workpool(
                 }
             }
 
-            // Collect worker IDs (validation already done in LeaderHandle)
+            // Collect worker IDs (validation already done in LeaderHandle and in the above loop)
             let worker_ids: HashSet<WorkerId> = msgs.iter().map(|msg| msg.worker_id).collect();
             job_tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, result_rsp);
 
