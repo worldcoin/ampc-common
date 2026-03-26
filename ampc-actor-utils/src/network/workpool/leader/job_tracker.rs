@@ -182,6 +182,7 @@ mod tests {
     use crate::network::workpool::payload::Payload;
     use crate::network::workpool::WorkpoolError;
     use bytes::Bytes;
+    use tokio::sync::oneshot::error::RecvError;
     use tracing_test::traced_test;
 
     #[test]
@@ -308,7 +309,7 @@ mod tests {
             .map(|r| (r.worker_id, r.payload))
             .collect();
         assert!(results[&0].is_ok());
-        assert!(results[&1].is_err());
+        assert!(matches!(results[&1], Err(WorkpoolError::SendFailed)));
         assert!(results[&2].is_ok());
     }
 
@@ -339,7 +340,10 @@ mod tests {
             worker_id: 0,
             payload: Ok(vec![20].into()),
         });
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("was not pending or already completed"));
     }
 
     #[test]
@@ -370,7 +374,7 @@ mod tests {
 
         // Should receive error (channel dropped)
         let result = rx.blocking_recv();
-        assert!(result.is_err());
+        assert!(matches!(result, Err(RecvError { .. })));
     }
 
     #[test]
@@ -421,5 +425,56 @@ mod tests {
         assert!(matches!(&results[&0], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![10])));
         assert!(matches!(&results[&2], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![30])));
         assert!(matches!(&results[&5], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![50])));
+    }
+
+    #[test]
+    fn test_validate_pending_jobs_lost() {
+        let tracker = JobTracker::new();
+
+        let (tx, rx) = oneshot::channel();
+        let worker_ids = [0, 1, 2].into_iter().collect();
+        let job_id = 42;
+        tracker.register_job(job_id, JobType::ScatterGather { worker_ids }, tx);
+
+        // Transition all workers to pending
+        for id in 0..3 {
+            tracker.set_to_pending(job_id, id).unwrap();
+        }
+
+        // Worker 1 reports it has no pending jobs (simulating lost job)
+        tracker.validate_pending_jobs(1, vec![]);
+
+        // Record responses from remaining workers
+        tracker
+            .record_response(WorkerRsp {
+                job_id,
+                worker_id: 0,
+                payload: Ok(vec![10].into()),
+            })
+            .unwrap();
+        tracker
+            .record_response(WorkerRsp {
+                job_id,
+                worker_id: 2,
+                payload: Ok(vec![30].into()),
+            })
+            .unwrap();
+
+        // Check results - worker 1 should have JobsLost error
+        let result = rx.blocking_recv().unwrap().unwrap();
+        let results: HashMap<WorkerId, _> = result
+            .into_iter()
+            .map(|r| (r.worker_id, r.payload))
+            .collect();
+
+        assert!(results[&0].is_ok());
+        assert!(results[&2].is_ok());
+        assert!(matches!(
+            &results[&1],
+            Err(WorkpoolError::JobsLost {
+                worker_id: 1,
+                job_id: 42
+            })
+        ));
     }
 }
