@@ -315,6 +315,7 @@ async fn get_pending_jobs<T: NetworkConnection>(
     worker_rsp_tx: &UnboundedSender<WorkerRsp>,
 ) -> Result<Vec<JobId>, LeaderError> {
     use crate::network::workpool::value::DescriptorByte;
+    use crate::network::workpool::MAX_PAYLOAD_SIZE;
     use bytes::BytesMut;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -326,7 +327,6 @@ async fn get_pending_jobs<T: NetworkConnection>(
 
     // Loop reading messages until we get PendingJobsReply.
     // Job responses queued before reconnect may arrive first.
-    const MAX_PAYLOAD_SIZE: usize = 500 * 1024 * 1024;
     loop {
         // Read descriptor byte
         let mut header_buf = vec![0u8; 1];

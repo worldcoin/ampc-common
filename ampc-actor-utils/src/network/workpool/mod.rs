@@ -17,6 +17,8 @@ pub use payload::{Payload, ToBytes};
 pub type WorkerId = u16;
 pub type JobId = u32;
 
+pub(crate) const MAX_PAYLOAD_SIZE: usize = 50 * 1024 * 1024; // 50MB
+
 #[derive(Error, Debug, Clone, PartialEq)]
 pub enum WorkpoolError {
     #[error("worker {worker_id} lost job {job_id}")]
@@ -116,7 +118,6 @@ where
         buf.resize(header_len, 0);
         reader.read_exact(&mut buf[1..header_len]).await?;
 
-        const MAX_PAYLOAD_SIZE: usize = 50 * 1024 * 1024; // 50MB
         let payload_len = match descriptor {
             DescriptorByte::Job => u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize,
             DescriptorByte::PendingJobsReply => {
