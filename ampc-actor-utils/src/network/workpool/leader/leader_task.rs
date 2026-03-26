@@ -58,6 +58,7 @@ where
 
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();
+    let (job_sent_tx, job_sent_rx) = mpsc::unbounded_channel();
     let mut workers_connected = Vec::with_capacity(workers.len());
 
     for (idx, worker) in workers.iter().enumerate() {
@@ -75,6 +76,7 @@ where
             connection_state.clone(),
             conn_cmd_tx.clone(),
             cmd_rx,
+            job_sent_tx.clone(),
             worker_rsp_tx.clone(),
             shutdown_ct.clone(),
         ));
@@ -85,6 +87,7 @@ where
         job_tracker,
         job_rx,
         worker_rsp_rx,
+        job_sent_rx,
         worker_cmd_txs,
         worker_rsp_tx,
         shutdown_ct,
@@ -97,6 +100,7 @@ async fn leader_task(
     job_tracker: Arc<JobTracker>,
     mut job_rx: Receiver<Job>,
     mut worker_rsp_rx: UnboundedReceiver<WorkerRsp>,
+    mut job_sent_rx: UnboundedReceiver<(JobId, WorkerId)>,
     worker_cmd_ch: Vec<UnboundedSender<NetworkValue>>,
     worker_rsp_tx: UnboundedSender<WorkerRsp>,
     shutdown_ct: CancellationToken,
@@ -115,14 +119,24 @@ async fn leader_task(
                     break;
                 }
             },
+            job_opt = job_sent_rx.recv() => {
+                if let Some((job_id, worker_id)) = job_opt {
+                    if let Err(e) = job_tracker.set_to_pending(job_id, worker_id) {
+                        tracing::warn!("set_to_pending: {}", e);
+                    }
+                } else {
+                    tracing::warn!("job_sent_rx was closed. stopping leader_task");
+                    break;
+                }
+            },
             rsp_opt = worker_rsp_rx.recv() => {
                 if let Some(rsp) = rsp_opt {
                     if let Err(e) = job_tracker.record_response(rsp) {
-                        tracing::warn!("handle_worker_response: {}", e);
+                        tracing::warn!("record_response: {}", e);
                     }
                 } else {
                     // the leader holds worker_rsp_tx as well
-                    unreachable!("channel should not return None while leade is alive");
+                    unreachable!("channel should not return None while leader is alive");
                 }
             },
         };
@@ -215,6 +229,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     connection_state: ConnectionState,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     mut cmd_rx: UnboundedReceiver<NetworkValue>,
+    job_sent_tx: UnboundedSender<(JobId, WorkerId)>,
     worker_rsp_tx: UnboundedSender<WorkerRsp>,
     shutdown_ct: CancellationToken,
 ) {
@@ -276,8 +291,15 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
             Shutdown,
         }
 
+        // if the job tracker marks something as sent but then the connection is interrupted before
+        // serialize_and_write_outbound actually sends the job, the job tracker will report a job
+        // as lost.
         let evt = tokio::select! {
-            r = serialize_and_write_outbound(write_half, &mut cmd_rx, |_| {}) => {
+            r = serialize_and_write_outbound(write_half, &mut cmd_rx, |nv| {
+                if let NetworkValue::Job { job_id, worker_id, ..} = &nv {
+                    let _ = job_sent_tx.send((*job_id, *worker_id));
+                }
+            }) => {
                 if let Err(e) = r {
                     tracing::warn!("Worker {} outbound traffic error: {:?}", worker_id, e);
                 }

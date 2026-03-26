@@ -19,7 +19,10 @@ pub enum JobType {
 
 /// Internal state for a pending job
 struct PendingJob {
-    partitions_pending: HashSet<WorkerId>,
+    // registered means the job was requested but not sent to the workers yet
+    registered: HashSet<WorkerId>,
+    // pending means it was sent to the workers but no response has been received
+    pending: HashSet<WorkerId>,
     results: HashMap<WorkerId, WorkerRsp>,
     response_tx: oneshot::Sender<WorkpoolRes>,
 }
@@ -33,13 +36,13 @@ impl PendingJob {
 
 /// Job tracker for scatter-gather and broadcast operations
 pub struct JobTracker {
-    pending_jobs: DashMap<JobId, PendingJob>,
+    jobs: DashMap<JobId, PendingJob>,
 }
 
 impl JobTracker {
     pub fn new() -> Self {
         Self {
-            pending_jobs: DashMap::new(),
+            jobs: DashMap::new(),
         }
     }
 
@@ -49,18 +52,38 @@ impl JobTracker {
         job_type: JobType,
         response_tx: oneshot::Sender<WorkpoolRes>,
     ) {
-        let partitions_pending = match job_type {
+        let partitions_registered = match job_type {
             JobType::ScatterGather { worker_ids } => worker_ids,
             JobType::Broadcast { num_workers } => (0..num_workers).collect(),
         };
 
         let pending = PendingJob {
-            partitions_pending,
+            registered: partitions_registered,
+            pending: HashSet::new(),
             results: HashMap::new(),
             response_tx,
         };
 
-        self.pending_jobs.insert(job_id, pending);
+        self.jobs.insert(job_id, pending);
+    }
+
+    pub fn set_to_pending(&self, job_id: JobId, worker_id: WorkerId) -> Result<()> {
+        let mut entry = self
+            .jobs
+            .get_mut(&job_id)
+            .ok_or_else(|| eyre!("Job {} not found", job_id))?;
+        let jobs = entry.value_mut();
+
+        if !jobs.registered.remove(&worker_id) {
+            return Err(eyre!(
+                "Worker {} for job {} was not registered",
+                worker_id,
+                job_id
+            ));
+        }
+
+        jobs.pending.insert(worker_id);
+        Ok(())
     }
 
     pub fn record_response(&self, response: WorkerRsp) -> Result<()> {
@@ -68,12 +91,12 @@ impl JobTracker {
         let worker_id = response.worker_id;
 
         let mut entry = self
-            .pending_jobs
+            .jobs
             .get_mut(&job_id)
             .ok_or_else(|| eyre!("Job {} not found", job_id))?;
-        let pending = entry.value_mut();
+        let jobs = entry.value_mut();
 
-        if !pending.partitions_pending.remove(&worker_id) {
+        if !jobs.pending.remove(&worker_id) {
             return Err(eyre!(
                 "Worker {} for job {} was not pending or already completed",
                 worker_id,
@@ -81,9 +104,9 @@ impl JobTracker {
             ));
         }
 
-        pending.results.insert(worker_id, response);
+        jobs.results.insert(worker_id, response);
 
-        if pending.partitions_pending.is_empty() {
+        if jobs.pending.is_empty() {
             drop(entry);
             self.complete_job(job_id);
         }
@@ -97,13 +120,12 @@ impl JobTracker {
     pub fn validate_pending_jobs(&self, worker_id: WorkerId, pending_jobs: Vec<JobId>) {
         let got_pending_jobs: HashSet<JobId> = pending_jobs.into_iter().collect();
         let dropped_jobs: Vec<JobId> = self
-            .pending_jobs
+            .jobs
             .iter()
             .filter(|r| {
                 let pending = r.value();
                 // Job was sent to this worker AND worker doesn't have it
-                pending.partitions_pending.contains(&worker_id)
-                    && !got_pending_jobs.contains(r.key())
+                pending.pending.contains(&worker_id) && !got_pending_jobs.contains(r.key())
             })
             .map(|r| *r.key())
             .collect();
@@ -123,28 +145,28 @@ impl JobTracker {
 
     /// validation should occur before this function is called.
     fn complete_job(&self, job_id: JobId) {
-        let Some((_, pending)) = self.pending_jobs.remove(&job_id) else {
+        let Some((_, job)) = self.jobs.remove(&job_id) else {
             tracing::warn!("job id not found: {}", job_id);
             return;
         };
 
-        pending.send_results();
+        job.send_results();
     }
 
     /// Cancel a job and return the list of workers which are still pending
     pub fn cancel_job(&self, job_id: JobId) -> Result<Vec<WorkerId>> {
-        let (_, pending) = self
-            .pending_jobs
+        let (_, job) = self
+            .jobs
             .remove(&job_id)
             .ok_or_else(|| eyre!("Job {} not found", job_id))?;
 
-        let mut worker_ids: Vec<WorkerId> = pending.partitions_pending.iter().copied().collect();
+        let mut worker_ids: Vec<WorkerId> = job.pending.iter().copied().collect();
         worker_ids.sort();
         Ok(worker_ids)
     }
 
     pub fn pending_count(&self) -> usize {
-        self.pending_jobs.len()
+        self.jobs.len()
     }
 }
 
