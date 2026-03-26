@@ -41,7 +41,7 @@ impl DescriptorByte {
             DescriptorByte::Job => 11,
             // descriptor (1) + worker_id (2)
             DescriptorByte::PendingJobsRequest => 3,
-            // descriptor (1) + worker_id (2) + payload_len (4)
+            // descriptor (1) + worker_id (2) + job_ids_len (4)
             DescriptorByte::PendingJobsReply => 7,
             // descriptor (1) + job_id (4) + worker_id (2)
             DescriptorByte::Cancel => 7,
@@ -74,7 +74,9 @@ impl NetworkValue {
             NetworkValue::PendingJobsReply { job_ids, .. } => {
                 DescriptorByte::PendingJobsReply.header_len() + (job_ids.len() * size_of::<JobId>())
             }
-            _ => self.get_descriptor_byte().header_len(),
+            NetworkValue::PendingJobsRequest { .. } | NetworkValue::Cancel => {
+                self.get_descriptor_byte().header_len()
+            }
         }
     }
 
@@ -82,7 +84,7 @@ impl NetworkValue {
     /// Format:
     /// - Job: descriptor (1) + job_id (4) + worker_id (2) + payload_len (4) + payload
     /// - PendingJobsRequest: descriptor (1) + worker_id (2)
-    /// - PendingJobsReply: descriptor (1) + worker_id (2) + payload_len (4) + job_ids (4 each)
+    /// - PendingJobsReply: descriptor (1) + worker_id (2) + job_ids_len (4) + job_ids (4 each)
     /// - Cancel: descriptor (1) + job_id (4) + worker_id (2)
     pub fn serialize(&self, buf: &mut BytesMut) {
         buf.extend_from_slice(&[self.get_descriptor_byte() as u8]);
@@ -174,7 +176,7 @@ impl NetworkValue {
                     );
                 }
 
-                if !payload_len.is_multiple_of(4) {
+                if !payload_len.is_multiple_of(size_of::<JobId>()) {
                     bail!(
                         "Invalid PendingJobsReply payload_len {}: not divisible by JobId size ({})",
                         payload_len,
@@ -185,7 +187,8 @@ impl NetworkValue {
                 let num_jobs = payload_len / size_of::<JobId>();
                 let mut job_ids = Vec::with_capacity(num_jobs);
                 for idx in (header_len..header_len + payload_len).step_by(size_of::<JobId>()) {
-                    let job_id = u32::from_le_bytes(bytes[idx..idx + 4].try_into()?);
+                    let job_id =
+                        u32::from_le_bytes(bytes[idx..idx + size_of::<JobId>()].try_into()?);
                     job_ids.push(job_id);
                 }
 
