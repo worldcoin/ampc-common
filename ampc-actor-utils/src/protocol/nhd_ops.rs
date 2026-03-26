@@ -174,17 +174,6 @@ pub fn nhd_plaintext_is_match(hd: u16, md: u16, threshold_ratio: f64) -> bool {
     md * (100 * hd - 45 * md) + a_plain * md + 737_280 * hd < 0
 }
 
-/// Normalized Hamming Distance operations using 48-bit arithmetic.
-/// Computes the NHD numerator for plaintext comparison.
-///
-/// `nmr(hd, ml) = ml * (ml - NHD_LINEAR_COEFF*hd) - NHD_CORRECTION * hd`
-///
-/// Uses the same constants as the MPC protocol.
-pub fn nhd_comparison_nmr(hd: u16, ml: u16) -> i64 {
-    let (hd, ml) = (hd as i64, ml as i64);
-    ml * (ml - NHD_LINEAR_COEFF as i64 * hd) - NHD_CORRECTION as i64 * hd
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
