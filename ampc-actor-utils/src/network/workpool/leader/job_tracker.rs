@@ -260,8 +260,15 @@ mod tests {
         }
 
         // Check assembled result
-        let results = rx.blocking_recv().unwrap().unwrap();
+        let mut results = rx.blocking_recv().unwrap().unwrap();
         assert_eq!(results.len(), 4);
+        results.sort_by_key(|r| r.worker_id);
+        for (i, result) in results.into_iter().enumerate() {
+            assert_eq!(result.job_id, job_id);
+            assert_eq!(result.worker_id, i as WorkerId);
+            let payload = result.payload.unwrap();
+            assert!(matches!(payload, Payload::Bytes(b) if b == Bytes::new()));
+        }
     }
 
     #[test]
