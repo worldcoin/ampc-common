@@ -1,14 +1,15 @@
+use bytes::{Bytes, BytesMut};
 use std::collections::HashSet;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::BufReader;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use super::{Job, Msg};
-use crate::network::workpool::value::NetworkValue;
+use crate::network::workpool::value::{DescriptorByte, NetworkValue};
 use crate::network::workpool::{read_and_parse_inbound, serialize_and_write_outbound, JobId};
 use crate::{
     execution::player::Identity,
@@ -70,7 +71,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
 
     loop {
         let connection_id = ConnectionId::new(0); // Worker only has one connection
-        let conn = match crate::network::tcp::connect(
+        let mut conn = match crate::network::tcp::connect(
             connection_id,
             my_id.clone(),
             leader.clone(),
@@ -96,6 +97,24 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
             }
         };
 
+        // Complete handshake before flushing any queued responses.
+        // This ensures the leader gets an accurate view of pending jobs before
+        // we start sending responses that would remove jobs from pending_jobs.
+        let res = tokio::select! {
+            r = complete_handshake(&mut conn, &pending_jobs) => r,
+            _ = shutdown_ct.cancelled() => {
+                tracing::info!("Worker {} task shutting down during handshake", my_id.0);
+                break;
+            }
+        };
+
+        if let Err(e) = res {
+            tracing::warn!("Worker {} handshake failed: {:?}", my_id.0, e);
+            sleep(Duration::from_secs(1)).await;
+            continue;
+        };
+
+        // Proceed with normal traffic
         let (read_half, write_half) = tokio::io::split(conn);
         let reader = BufReader::new(read_half);
 
@@ -154,6 +173,62 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     }
 }
 
+/// Wait for PendingJobsRequest and send PendingJobsReply before starting normal traffic.
+/// This ensures the leader gets an accurate snapshot of pending jobs before we start
+/// sending queued responses (which would remove jobs from pending_jobs).
+async fn complete_handshake<T: NetworkConnection>(
+    conn: &mut T,
+    pending_jobs: &Mutex<HashSet<JobId>>,
+) -> io::Result<()> {
+    // Read until we get PendingJobsRequest
+    loop {
+        // Read descriptor byte
+        let mut header_buf = vec![0u8; 1];
+        conn.read_exact(&mut header_buf).await?;
+        let descriptor: DescriptorByte = header_buf[0]
+            .try_into()
+            .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", header_buf[0])))?;
+
+        // Read remaining header bytes
+        let header_len = descriptor.header_len();
+        header_buf.resize(header_len, 0);
+        conn.read_exact(&mut header_buf[1..header_len]).await?;
+
+        // For Job messages, read the variable-length payload
+        if descriptor == DescriptorByte::Job {
+            let payload_len = u32::from_le_bytes(header_buf[7..11].try_into().unwrap()) as usize;
+            header_buf.resize(header_len + payload_len, 0);
+            conn.read_exact(&mut header_buf[header_len..]).await?;
+        }
+
+        let network_value = NetworkValue::deserialize(Bytes::from(header_buf))
+            .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
+
+        match network_value {
+            NetworkValue::PendingJobsRequest { worker_id } => {
+                // Take snapshot of pending jobs and send reply
+                let pending: Vec<JobId> = pending_jobs.lock().unwrap().iter().cloned().collect();
+                let reply = NetworkValue::PendingJobsReply {
+                    worker_id,
+                    job_ids: pending,
+                };
+                let mut buf = BytesMut::with_capacity(reply.byte_len());
+                reply.serialize(&mut buf);
+                conn.write_all(&buf).await?;
+                conn.flush().await?;
+                return Ok(());
+            }
+            NetworkValue::Job { .. } => {
+                // Leader shouldn't send jobs before handshake completes
+                return Err(io::Error::other("Received Job before handshake completed"));
+            }
+            other => {
+                tracing::warn!("Unexpected message during handshake: {:?}", other);
+            }
+        }
+    }
+}
+
 fn handle_inbound_msg(
     network_value: NetworkValue,
     tx: &UnboundedSender<Job>,
@@ -179,6 +254,13 @@ fn handle_inbound_msg(
             Ok(())
         }
         NetworkValue::PendingJobsRequest { worker_id } => {
+            // PendingJobsRequest should only be received during handshake phase.
+            // If we get it here, either the leader sent a duplicate request or
+            // there's a protocol mismatch. Respond anyway to be resilient.
+            tracing::warn!(
+                "Received PendingJobsRequest for worker {} during normal traffic (expected only during handshake)",
+                worker_id
+            );
             let pending = pending_jobs.lock().unwrap().iter().cloned().collect();
             let response = NetworkValue::PendingJobsReply {
                 worker_id,

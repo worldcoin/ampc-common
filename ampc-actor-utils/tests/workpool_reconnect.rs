@@ -136,6 +136,19 @@ impl TcpProxy {
         self.drop_worker_to_leader.store(false, Ordering::SeqCst);
     }
 
+    pub async fn disconnect(&mut self) {
+        tracing::info!("Proxy: disconnect requested");
+        self.shutdown();
+
+        if let Some(handle) = self.leader_to_worker_handle.take() {
+            let _ = handle.await;
+        }
+
+        if let Some(handle) = self.worker_to_leader_handle.take() {
+            let _ = handle.await;
+        }
+    }
+
     pub async fn reconnect(&mut self) {
         tracing::info!("Proxy: reconnect requested");
         self.shutdown();
@@ -712,6 +725,99 @@ async fn test_dropped_job_detection() {
                             job_id: 0
                         })
                     )),
+                    1 => match_payload(rsp.payload.expect("payload should be ok"), &b1),
+                    2 => match_payload(rsp.payload.expect("payload should be ok"), &b2),
+                    other => panic!("Unexpected worker id: {}", other),
+                }
+            }
+        }
+        Err(e) => panic!("Job failed unexpectedly: {:?}", e),
+    }
+
+    cluster.proxy.shutdown();
+    cluster.global_shutdown.cancel();
+}
+
+// test what happens when PendingJobsReply comes after other job responses.
+// this is accomplished by sending a job, taking down the proxy, notifying
+// the worker, then bringing the proxy back up. the completed job would
+// be sent first, followed by get_pending_jobs. No jobs should be lost
+// and the job should complete.
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_ordering_pending_jobs_reply() {
+    let mut cluster = start_cluster_with_proxy()
+        .await
+        .expect("cluster should start");
+
+    cluster
+        .leader
+        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .await
+        .expect("workers should connect");
+
+    tracing::info!("All workers connected");
+
+    let job_handle = cluster
+        .leader
+        .scatter_gather(vec![
+            WorkerJob {
+                worker_id: 0,
+                payload: Bytes::from("payload-0").into(),
+            },
+            WorkerJob {
+                worker_id: 1,
+                payload: Bytes::from("payload-1").into(),
+            },
+            WorkerJob {
+                worker_id: 2,
+                payload: Bytes::from("payload-2").into(),
+            },
+        ])
+        .await
+        .expect("scatter_gather should succeed");
+
+    let mut job_handle = Box::pin(job_handle);
+    tokio::select! {
+        _ = sleep(Duration::from_millis(200)) => {
+            tracing::info!("job should have propagated");
+        },
+        _result = job_handle.as_mut() => {
+            panic!("Job completed unexpectedly");
+        }
+    }
+
+    cluster.proxy.disconnect().await;
+    sleep(Duration::from_secs(1)).await;
+    worker_proceed_signal().notify_waiters();
+    sleep(Duration::from_millis(200)).await;
+    tracing::info!("workers should be trying to send their responses by now");
+
+    cluster.proxy.reconnect().await;
+
+    // The job should complete successfully after reconnect exchange
+    let result = timeout(Duration::from_secs(10), job_handle.as_mut())
+        .await
+        .expect("job should complete");
+
+    let b0 = Bytes::from("payload-0");
+    let b1 = Bytes::from("payload-1");
+    let b2 = Bytes::from("payload-2");
+
+    fn match_payload(p: Payload, expected: &Bytes) {
+        match p {
+            Payload::Bytes(b) => assert_eq!(b, expected),
+            _ => panic!(),
+        }
+    }
+
+    match result {
+        Ok(responses) => {
+            assert_eq!(responses.len(), 3);
+            for rsp in responses {
+                match rsp.worker_id {
+                    0 => match_payload(rsp.payload.expect("payload should be ok"), &b0),
                     1 => match_payload(rsp.payload.expect("payload should be ok"), &b1),
                     2 => match_payload(rsp.payload.expect("payload should be ok"), &b2),
                     other => panic!("Unexpected worker id: {}", other),

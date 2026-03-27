@@ -398,6 +398,7 @@ async fn get_pending_jobs<T: NetworkConnection>(
                     payload: Ok(payload),
                     job_id,
                 };
+                tracing::warn!("Leader received Job completion during handshake");
                 let _ = worker_rsp_tx.send(msg);
             }
             other => {

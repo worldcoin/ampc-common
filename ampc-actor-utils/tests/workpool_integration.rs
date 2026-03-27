@@ -499,10 +499,10 @@ async fn test_invalid_worker_ids() {
     let invalid_id = NUM_WORKERS as u16; // One past valid range
     let msgs = vec![WorkerJob {
         worker_id: invalid_id,
-        payload: b"test".as_slice().into(),
+        payload: b"test".to_vec().into(),
     }];
 
-    let result = leader.scatter_gather(msgs).await;
+    let result = leader.scatter_gather(msgs).await.map(|_| ());
     assert!(
         matches!(result, Err(WorkpoolError::InvalidInput(_))),
         "expected InvalidInput error for out-of-range worker ID, got {:?}",
@@ -513,15 +513,15 @@ async fn test_invalid_worker_ids() {
     let msgs = vec![
         WorkerJob {
             worker_id: 0,
-            payload: b"test1".as_slice().into(),
+            payload: b"test1".to_vec().into(),
         },
         WorkerJob {
             worker_id: 0,
-            payload: b"test2".as_slice().into(),
+            payload: b"test2".to_vec().into(),
         },
     ];
 
-    let result = leader.scatter_gather(msgs).await;
+    let result = leader.scatter_gather(msgs).await.map(|_| ());
     assert!(
         matches!(result, Err(WorkpoolError::InvalidInput(_))),
         "expected InvalidInput error for duplicate worker ID, got {:?}",
