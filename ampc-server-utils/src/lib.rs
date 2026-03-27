@@ -12,9 +12,6 @@ pub mod sqs;
 pub mod startup_sync;
 pub mod task_monitor;
 
-#[cfg(feature = "runtime_config")]
-pub mod runtime_config;
-
 pub use batch_sync::{
     get_batch_sync_entries, get_batch_sync_states, BatchSyncEntries, BatchSyncEntriesResult,
     BatchSyncResult, BatchSyncSharedState, BatchSyncState,
@@ -34,17 +31,3 @@ pub use sqs::{
 };
 pub use startup_sync::{StartupSyncResult, StartupSyncState};
 pub use task_monitor::TaskMonitor;
-
-/// Returns the current fixed batch size override, if set.
-///
-/// When the `runtime_config` feature is disabled, this always returns `None`.
-pub fn get_fixed_batch_size() -> Option<usize> {
-    #[cfg(feature = "runtime_config")]
-    {
-        runtime_config::get_fixed_batch_size()
-    }
-    #[cfg(not(feature = "runtime_config"))]
-    {
-        None
-    }
-}
