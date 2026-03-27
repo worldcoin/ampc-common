@@ -77,13 +77,6 @@ pub async fn build_worker_handle(
 
     let job_rx = if let Some(tls) = args.tls.as_ref() {
         tracing::info!("Building WorkPool Worker with TLS");
-
-        let root_certs = tls.clone().root_certs;
-        if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(SetupError::BadConfig(
-                "TLS private key and leaf cert required".to_string(),
-            ));
-        }
         let private_key = tls
             .private_key
             .as_ref()
