@@ -145,6 +145,10 @@ impl LeaderHandle {
     /// Returns Err for validation failures or immediate failures (e.g., channel closed).
     /// Worker failures are returned when awaiting the JobHandle.
     pub async fn scatter_gather(&self, msgs: Vec<WorkerJob>) -> Result<JobHandle, WorkpoolError> {
+        if msgs.is_empty() {
+            return Err(WorkpoolError::InvalidInput("empty".into()));
+        }
+
         // Validate inputs
         let mut worker_ids = HashSet::new();
         for msg in &msgs {

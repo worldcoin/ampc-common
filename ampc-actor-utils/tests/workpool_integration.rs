@@ -10,7 +10,7 @@ use ampc_actor_utils::{
     network::workpool::{
         leader::{build_leader, LeaderArgs, WorkerJob},
         worker::{build_worker_handle, WorkerArgs},
-        Payload, ToBytes,
+        Payload, ToBytes, WorkpoolError,
     },
 };
 use bytes::{Bytes, BytesMut};
@@ -344,5 +344,203 @@ async fn test_broadcast_big_job() {
         );
     }
 
+    shutdown.cancel();
+}
+
+/// Sequential job submission: submit jobs one after another and verify all complete
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sequential_job_submission() {
+    let (mut leader, shutdown) = start_cluster().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
+
+    // Submit multiple jobs sequentially
+    for i in 0..5 {
+        let payload: Bytes = format!("sequential-job-{i}").into_bytes().into();
+        let responses = timeout(
+            JOB_TIMEOUT,
+            leader
+                .broadcast(payload.clone())
+                .await
+                .expect("failed to submit broadcast"),
+        )
+        .await
+        .expect("broadcast timed out")
+        .expect("broadcast job failed");
+
+        assert_eq!(responses.len(), NUM_WORKERS);
+        for rsp in responses {
+            assert_eq!(
+                rsp.payload.expect("worker error").to_bytes(),
+                payload,
+                "job {i} payload mismatch"
+            );
+        }
+    }
+
+    shutdown.cancel();
+}
+
+/// Concurrent job submission: submit multiple jobs in parallel and verify all complete
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_concurrent_job_submission() {
+    let (mut leader, shutdown) = start_cluster().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
+
+    // Submit multiple jobs concurrently
+    let num_concurrent_jobs = 10;
+    let mut handles = Vec::with_capacity(num_concurrent_jobs);
+
+    for i in 0..num_concurrent_jobs {
+        let payload: Bytes = format!("concurrent-job-{i}").into_bytes().into();
+        let handle = leader
+            .broadcast(payload)
+            .await
+            .expect("failed to submit broadcast");
+        handles.push((i, handle));
+    }
+
+    // Await all jobs
+    let results = timeout(
+        JOB_TIMEOUT,
+        join_all(
+            handles
+                .into_iter()
+                .map(|(i, h)| async move { (i, h.await) }),
+        ),
+    )
+    .await
+    .expect("concurrent jobs timed out");
+
+    for (i, result) in results {
+        let responses = result.expect("job failed");
+        let expected: Bytes = format!("concurrent-job-{i}").into_bytes().into();
+        assert_eq!(responses.len(), NUM_WORKERS, "job {i} wrong response count");
+        for rsp in responses {
+            assert_eq!(
+                rsp.payload.expect("worker error").to_bytes(),
+                expected,
+                "job {i} payload mismatch"
+            );
+        }
+    }
+
+    shutdown.cancel();
+}
+
+/// Cancel a job: submit multiple jobs, cancel one, verify others still complete
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cancel_job() {
+    let (mut leader, shutdown) = start_cluster().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
+
+    // Submit 3 jobs
+    let handle1 = leader
+        .broadcast(Bytes::from_static(b"job-1"))
+        .await
+        .expect("failed to submit job 1");
+    let handle2 = leader
+        .broadcast(Bytes::from_static(b"job-2"))
+        .await
+        .expect("failed to submit job 2");
+    let handle3 = leader
+        .broadcast(Bytes::from_static(b"job-3"))
+        .await
+        .expect("failed to submit job 3");
+
+    let cancelled_job_id = handle2.job_id();
+    tracing::info!(job_id = cancelled_job_id, "cancelling job 2");
+
+    // Cancel job 2
+    handle2.cancel().await.expect("cancel failed");
+
+    // Jobs 1 and 3 should still complete successfully
+    let responses1 = timeout(JOB_TIMEOUT, handle1)
+        .await
+        .expect("job 1 timed out")
+        .expect("job 1 failed");
+    assert_eq!(responses1.len(), NUM_WORKERS);
+
+    let responses3 = timeout(JOB_TIMEOUT, handle3)
+        .await
+        .expect("job 3 timed out")
+        .expect("job 3 failed");
+    assert_eq!(responses3.len(), NUM_WORKERS);
+
+    shutdown.cancel();
+}
+
+/// Invalid worker IDs in scatter_gather should return an error
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_invalid_worker_ids() {
+    let (mut leader, shutdown) = start_cluster().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
+
+    // Test worker ID out of range
+    let invalid_id = NUM_WORKERS as u16; // One past valid range
+    let msgs = vec![WorkerJob {
+        worker_id: invalid_id,
+        payload: b"test".as_slice().into(),
+    }];
+
+    let result = leader.scatter_gather(msgs).await;
+    assert!(
+        matches!(result, Err(WorkpoolError::InvalidInput(_))),
+        "expected InvalidInput error for out-of-range worker ID, got {:?}",
+        result
+    );
+
+    // Test duplicate worker IDs
+    let msgs = vec![
+        WorkerJob {
+            worker_id: 0,
+            payload: b"test1".as_slice().into(),
+        },
+        WorkerJob {
+            worker_id: 0,
+            payload: b"test2".as_slice().into(),
+        },
+    ];
+
+    let result = leader.scatter_gather(msgs).await;
+    assert!(
+        matches!(result, Err(WorkpoolError::InvalidInput(_))),
+        "expected InvalidInput error for duplicate worker ID, got {:?}",
+        result
+    );
+
+    shutdown.cancel();
+}
+
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_empty_scatter_gather() {
+    let (mut leader, shutdown) = start_cluster().await;
+    leader
+        .wait_for_all_connections(Some(Duration::from_secs(10)))
+        .await
+        .unwrap();
+    let rsp = leader.scatter_gather(vec![]).await;
+    assert!(matches!(rsp, Err(WorkpoolError::InvalidInput(_))));
     shutdown.cancel();
 }
