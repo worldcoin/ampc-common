@@ -1,6 +1,7 @@
+use crate::network::workpool::DeserializeError;
+
 use super::{JobId, Payload, WorkerId};
 use bytes::{Bytes, BytesMut};
-use eyre::{bail, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// Network message envelope for worker pool communication
@@ -121,22 +122,22 @@ impl NetworkValue {
     }
 
     /// Deserialize from bytes
-    pub fn deserialize(bytes: Bytes) -> Result<Self> {
+    pub fn deserialize(bytes: Bytes) -> Result<Self, DeserializeError> {
         if bytes.is_empty() {
-            bail!("Empty buffer");
+            return Err(DeserializeError::InvalidInput("Empty buffer".into()));
         }
 
         let descriptor: DescriptorByte = bytes[0]
             .try_into()
-            .map_err(|_| eyre::eyre!("Invalid descriptor byte: {}", bytes[0]))?;
+            .map_err(|_| DeserializeError::InvalidDescriptorByte(bytes[0]))?;
         let header_len = descriptor.header_len();
 
         if bytes.len() < header_len {
-            bail!(
+            return Err(DeserializeError::InvalidInput(format!(
                 "Buffer too short for {:?}: {} bytes",
                 descriptor,
                 bytes.len()
-            );
+            )));
         }
 
         match descriptor {
@@ -146,11 +147,11 @@ impl NetworkValue {
                 let payload_len = u32::from_le_bytes(bytes[7..11].try_into()?) as usize;
 
                 if bytes.len() < header_len + payload_len {
-                    bail!(
+                    return Err(DeserializeError::InvalidInput(format!(
                         "Incomplete payload: expected {} bytes, got {}",
                         header_len + payload_len,
                         bytes.len()
-                    );
+                    )));
                 }
 
                 let payload = Payload::Bytes(bytes.slice(11..11 + payload_len));
@@ -169,19 +170,19 @@ impl NetworkValue {
                 let payload_len = u32::from_le_bytes(bytes[3..header_len].try_into()?) as usize;
 
                 if bytes.len() < header_len + payload_len {
-                    bail!(
+                    return Err(DeserializeError::InvalidInput(format!(
                         "Incomplete PendingJobsReply payload: expected {} bytes, got {}",
                         header_len + payload_len,
                         bytes.len()
-                    );
+                    )));
                 }
 
                 if !payload_len.is_multiple_of(size_of::<JobId>()) {
-                    bail!(
-                        "Invalid PendingJobsReply payload_len {}: not divisible by JobId size ({})",
+                    return Err(DeserializeError::InvalidInput(format!(
+                        "PendingJobsReply payload_len {}: not divisible by JobId size ({})",
                         payload_len,
                         size_of::<JobId>()
-                    );
+                    )));
                 }
 
                 let num_jobs = payload_len / size_of::<JobId>();

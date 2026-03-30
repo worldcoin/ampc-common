@@ -1,6 +1,6 @@
 use crate::network::{tcp::NetworkConnection, workpool::value::NetworkValue};
 use bytes::BytesMut;
-use std::io;
+use std::array::TryFromSliceError;
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf},
@@ -47,9 +47,29 @@ pub enum SetupError {
 }
 
 #[derive(Error, Debug)]
-pub(crate) enum LeaderError {
+pub enum DeserializeError {
     #[error("io err")]
     IO(#[from] tokio::io::Error),
+    #[error("invalid descriptor byte {0}")]
+    InvalidDescriptorByte(u8),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("parsing failed: {0}")]
+    ParseFailed(#[from] TryFromSliceError),
+}
+
+#[derive(Error, Debug)]
+pub(crate) enum Error {
+    #[error("io err")]
+    IO(#[from] tokio::io::Error),
+    #[error("handshake failed. got {0}")]
+    HandshakeFailed(String),
+    #[error("deserialize failed: {0}")]
+    Deserialize(#[from] DeserializeError),
+    #[error("send failed")]
+    SendFailed,
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 // note that in the event of a disconnect, pre_send_hook could
@@ -65,7 +85,7 @@ pub(crate) async fn serialize_and_write_outbound<T: NetworkConnection, F>(
     mut stream: WriteHalf<T>,
     cmd_rx: &mut UnboundedReceiver<NetworkValue>,
     mut pre_send_hook: F,
-) -> io::Result<()>
+) -> Result<(), Error>
 where
     F: FnMut(&NetworkValue),
 {
@@ -95,60 +115,54 @@ pub(crate) async fn read_and_parse_inbound<T, R, F>(
     mut reader: BufReader<ReadHalf<T>>,
     tx: &UnboundedSender<R>,
     mut handle_inbound_msg: F,
-) -> io::Result<()>
+) -> Result<(), Error>
 where
     T: NetworkConnection,
-    F: FnMut(NetworkValue, &UnboundedSender<R>) -> io::Result<()>,
+    F: FnMut(NetworkValue, &UnboundedSender<R>) -> Result<(), Error>,
 {
-    use value::DescriptorByte;
-    let mut buf = BytesMut::with_capacity(64 * 1024);
-
     loop {
-        buf.clear();
-        buf.resize(1, 0);
-
-        // Read descriptor byte first
-        reader.read_exact(&mut buf[..1]).await?;
-        let descriptor: DescriptorByte = buf[0]
-            .try_into()
-            .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", buf[0])))?;
-
-        // Read remaining header bytes based on message type
-        let header_len = descriptor.header_len();
-        buf.resize(header_len, 0);
-        reader.read_exact(&mut buf[1..header_len]).await?;
-
-        let payload_len = match descriptor {
-            DescriptorByte::Job => u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize,
-            DescriptorByte::PendingJobsReply => {
-                u32::from_le_bytes(buf[3..7].try_into().unwrap()) as usize
-            }
-            DescriptorByte::PendingJobsRequest => 0,
-            DescriptorByte::Cancel => 0,
-        };
-
-        if payload_len > MAX_PAYLOAD_SIZE {
-            return Err(io::Error::other(format!(
-                "Payload size {} exceeds maximum {}",
-                payload_len, MAX_PAYLOAD_SIZE
-            )));
-        }
-
-        let total_len = header_len + payload_len;
-        if payload_len > 0 {
-            buf.resize(total_len, 0);
-            reader.read_exact(&mut buf[header_len..total_len]).await?;
-        }
-
-        // Deserialize the NetworkValue (zero-copy via split/freeze)
-        let bytes = buf.split_to(total_len).freeze();
-        match NetworkValue::deserialize(bytes) {
-            Ok(network_value) => {
-                handle_inbound_msg(network_value, tx)?;
-            }
-            Err(e) => {
-                return Err(io::Error::other(format!("Failed to deserialize: {}", e)));
-            }
-        }
+        let network_value = read_single_message(&mut reader).await?;
+        handle_inbound_msg(network_value, tx)?;
     }
+}
+
+/// Read and parse a single network message from a reader.
+/// Used by handshake functions and the main read loop.
+pub(crate) async fn read_single_message<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+) -> Result<NetworkValue, DeserializeError> {
+    use bytes::Bytes;
+    use value::DescriptorByte;
+
+    let mut buf = vec![0u8; 1];
+    reader.read_exact(&mut buf).await?;
+    let descriptor: DescriptorByte = buf[0]
+        .try_into()
+        .map_err(|_| DeserializeError::InvalidDescriptorByte(buf[0]))?;
+
+    let header_len = descriptor.header_len();
+    buf.resize(header_len, 0);
+    reader.read_exact(&mut buf[1..header_len]).await?;
+
+    let payload_len = match descriptor {
+        DescriptorByte::Job => u32::from_le_bytes(buf[7..11].try_into().unwrap()) as usize,
+        DescriptorByte::PendingJobsReply => {
+            u32::from_le_bytes(buf[3..7].try_into().unwrap()) as usize
+        }
+        DescriptorByte::PendingJobsRequest | DescriptorByte::Cancel => 0,
+    };
+
+    if payload_len > MAX_PAYLOAD_SIZE {
+        return Err(DeserializeError::InvalidInput(format!(
+            "Payload size {} exceeds maximum {}",
+            payload_len, MAX_PAYLOAD_SIZE
+        )));
+    }
+
+    if payload_len > 0 {
+        buf.resize(header_len + payload_len, 0);
+        reader.read_exact(&mut buf[header_len..]).await?;
+    }
+
+    NetworkValue::deserialize(Bytes::from(buf))
 }

@@ -1,6 +1,4 @@
-use bytes::Bytes;
 use std::collections::HashSet;
-use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::BufReader;
@@ -9,7 +7,7 @@ use tokio::sync::watch;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::network::workpool::LeaderError;
+use crate::network::workpool::Error;
 use crate::network::workpool::{
     leader::job_tracker::{JobTracker, JobType},
     leader::{Job, WorkerRsp},
@@ -233,6 +231,8 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     worker_rsp_tx: UnboundedSender<WorkerRsp>,
     shutdown_ct: CancellationToken,
 ) {
+    // note that sleeping before continuing this loop is redundant.
+    // tcp::connect() already does that
     loop {
         let connection_id = ConnectionId::new(0); // workers always connect with id 0
         let mut conn = match crate::network::tcp::connect(
@@ -251,21 +251,20 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
             }
             Err(e) => {
                 if connection_state.shutdown_ct().await.is_cancelled() {
-                    tracing::info!("Worker {} task shutting down", worker_id);
+                    tracing::info!("manager task for worker {} is shutting down", worker_id);
                     break;
                 } else {
                     tracing::error!("Failed to connect to worker {}: {:?}", worker_id, e);
-                    sleep(Duration::from_secs(1)).await;
                     continue;
                 }
             }
         };
 
         let maybe_pending = tokio::select! {
-            r = get_pending_jobs(&mut conn, worker_id, &worker_rsp_tx) => r,
+            r = leader_handshake(&mut conn, worker_id) => r,
             _ = shutdown_ct.cancelled() => {
                 let _ = worker_conn_tx.send(false);
-                tracing::info!("Worker {} task shutting down", worker_id);
+                tracing::info!("manager task for worker {} is shutting down", worker_id);
                 break;
             }
         };
@@ -276,8 +275,11 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
                 let _ = worker_conn_tx.send(true);
             }
             Err(e) => {
-                tracing::error!("Failed to get pending jobs: {}", e);
-                sleep(Duration::from_secs(1)).await;
+                tracing::error!(
+                    "Failed to get pending jobs from worker {}: {}",
+                    worker_id,
+                    e
+                );
                 continue;
             }
         }
@@ -305,7 +307,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
                 }
                 Evt::OutboundClosed
             },
-            r = read_and_parse_inbound(reader, &worker_rsp_tx, convert_to_worker_rsp) => {
+            r = read_and_parse_inbound(reader, &worker_rsp_tx, leader_forward_inbound_msg) => {
                 if let Err(e) = r {
                     tracing::warn!("Worker {} inbound traffic error: {:?}", worker_id, e);
                 }
@@ -324,22 +326,22 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
             }
             Evt::Shutdown => {
                 let _ = worker_conn_tx.send(false);
-                tracing::info!("Worker {} task shutting down", worker_id);
+                tracing::info!("manager task for worker {} is shutting down", worker_id);
                 break;
             }
         }
     }
 }
 
-async fn get_pending_jobs<T: NetworkConnection>(
+// returns a list of job ids which the worker has received but has
+// not finished processing yet. also known as pending jobs
+async fn leader_handshake<T: NetworkConnection>(
     conn: &mut T,
     worker_id: WorkerId,
-    worker_rsp_tx: &UnboundedSender<WorkerRsp>,
-) -> Result<Vec<JobId>, LeaderError> {
-    use crate::network::workpool::value::DescriptorByte;
-    use crate::network::workpool::MAX_PAYLOAD_SIZE;
+) -> Result<Vec<JobId>, Error> {
+    use crate::network::workpool::read_single_message;
     use bytes::BytesMut;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     let query = NetworkValue::PendingJobsRequest { worker_id };
     let mut buf = BytesMut::with_capacity(query.byte_len());
@@ -347,74 +349,19 @@ async fn get_pending_jobs<T: NetworkConnection>(
     conn.write_all(&buf).await?;
     conn.flush().await?;
 
-    // Loop reading messages until we get PendingJobsReply.
-    // Job responses queued before reconnect may arrive first.
-    loop {
-        // Read descriptor byte
-        let mut header_buf = vec![0u8; 1];
-        conn.read_exact(&mut header_buf).await?;
-        let descriptor: DescriptorByte = header_buf[0]
-            .try_into()
-            .map_err(|_| io::Error::other(format!("Invalid descriptor byte: {}", header_buf[0])))?;
-
-        // Read remaining header bytes
-        let header_len = descriptor.header_len();
-        header_buf.resize(header_len, 0);
-        conn.read_exact(&mut header_buf[1..header_len]).await?;
-
-        // For Job messages, read the variable-length payload
-        if descriptor == DescriptorByte::Job {
-            let payload_len = u32::from_le_bytes(header_buf[7..11].try_into().unwrap()) as usize;
-            if payload_len > MAX_PAYLOAD_SIZE {
-                return Err(LeaderError::IO(io::Error::other(format!(
-                    "Payload size {} exceeds maximum {}",
-                    payload_len, MAX_PAYLOAD_SIZE
-                ))));
-            }
-            header_buf.resize(header_len + payload_len, 0);
-            conn.read_exact(&mut header_buf[header_len..]).await?;
-        } else if descriptor == DescriptorByte::PendingJobsReply {
-            let payload_len = u32::from_le_bytes(header_buf[3..7].try_into().unwrap()) as usize;
-            if payload_len > 0 {
-                header_buf.resize(header_len + payload_len, 0);
-                conn.read_exact(&mut header_buf[header_len..]).await?;
-            }
-        }
-
-        let network_value = NetworkValue::deserialize(Bytes::from(header_buf))
-            .map_err(|e| io::Error::other(format!("Deserialize error: {}", e)))?;
-
-        match network_value {
-            NetworkValue::PendingJobsReply { job_ids, .. } => {
-                return Ok(job_ids);
-            }
-            NetworkValue::Job {
-                job_id,
-                worker_id: wid,
-                payload,
-            } => {
-                let msg = WorkerRsp {
-                    worker_id: wid,
-                    payload: Ok(payload),
-                    job_id,
-                };
-                tracing::warn!("Leader received Job completion during handshake");
-                let _ = worker_rsp_tx.send(msg);
-            }
-            other => {
-                tracing::warn!(
-                    "Unexpected message during pending jobs handshake: {:?}",
-                    other
-                );
-            }
-        }
+    match read_single_message(conn).await? {
+        NetworkValue::PendingJobsReply { job_ids, .. } => Ok(job_ids),
+        other => Err(Error::HandshakeFailed(format!(
+            "expected PendingJobsReply, got {:?}",
+            other
+        ))),
     }
 }
 
-fn convert_to_worker_rsp(
+fn leader_forward_inbound_msg(
     network_value: NetworkValue,
     tx: &UnboundedSender<WorkerRsp>,
-) -> io::Result<()> {
+) -> Result<(), Error> {
     match network_value {
         NetworkValue::Job {
             job_id,
@@ -426,21 +373,18 @@ fn convert_to_worker_rsp(
                 payload: Ok(payload),
                 job_id,
             };
-            tx.send(msg)
-                .map_err(|_| io::Error::other("Failed to send worker response"))
+            tx.send(msg).map_err(|_| Error::SendFailed)
         }
         NetworkValue::PendingJobsReply { .. } => {
-            // Should not receive during normal traffic (only during reconciliation)
-            tracing::warn!("Unexpected JobStateResponse during normal traffic");
+            tracing::warn!("received PendingJobsReply after handshake");
             Ok(())
         }
         NetworkValue::Cancel { .. } => {
-            // Should not receive Cancel from worker
-            tracing::warn!("Unexpected Cancel from worker");
+            tracing::warn!("received cancel from worker");
             Ok(())
         }
-        NetworkValue::PendingJobsRequest { .. } => Err(io::Error::other(
-            "Unexpected QueryJobState on leader connection",
+        NetworkValue::PendingJobsRequest { .. } => Err(Error::InvalidInput(
+            "received PendingJobsRequest from worker".into(),
         )),
     }
 }
