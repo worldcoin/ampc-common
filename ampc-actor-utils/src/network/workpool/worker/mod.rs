@@ -91,7 +91,7 @@ pub async fn build_worker_handle(
         let listener = TlsServer::new(worker_addr, private_key, leaf_cert, &root_certs)
             .await
             .map_err(|e| SetupError::ListenFailed(format!("Failed to create TLS server: {}", e)))?;
-        let connector = TlsClient::new_with_ca_certs(&root_certs)
+        let connector = TlsClient::new(private_key, leaf_cert, &root_certs)
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 

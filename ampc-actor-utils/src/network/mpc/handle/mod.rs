@@ -117,7 +117,7 @@ pub async fn build_network_handle(
             .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
 
         let listener = TlsServer::new(my_addr, private_key, leaf_cert, &root_certs).await?;
-        let connector = TlsClient::new_with_ca_certs(&root_certs).await?;
+        let connector = TlsClient::new(private_key, leaf_cert, &root_certs).await?;
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(

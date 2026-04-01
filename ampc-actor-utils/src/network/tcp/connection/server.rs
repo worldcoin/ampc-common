@@ -37,7 +37,6 @@ impl TlsServer {
 
         let client_verifier =
             WebPkiClientVerifier::builder(<Arc<RootCertStore>>::from(root_cert_store))
-                .allow_unauthenticated()
                 .build()
                 .map_err(|e| eyre!(e))?;
 

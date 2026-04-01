@@ -6,7 +6,7 @@ use eyre::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const HANDSHAKE_OK: &[u8] = b"2ok";
-const MAX_PEER_ID_LENGTH: usize = 128;
+const MAX_PEER_ID_LENGTH: u32 = 128;
 
 pub async fn outbound<T: NetworkConnection>(
     stream: &mut T,
