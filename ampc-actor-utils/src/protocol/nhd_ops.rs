@@ -75,6 +75,7 @@ pub async fn nhd_cross_mul(
 }
 
 /// For every pair of NHD distance shares (d1, d2), computes d1 < d2 and opens it.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
@@ -85,6 +86,7 @@ pub async fn nhd_cross_compare(
 }
 
 /// For every pair of NHD distance shares (d1, d2), computes the secret-shared bit d1 < d2.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_oblivious_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
@@ -95,6 +97,7 @@ pub async fn nhd_oblivious_cross_compare(
 
 /// For every pair of NHD distance shares (d1, d2), computes the secret-shared bit d1 < d2
 /// and lifts it to Ring48 shares.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
@@ -106,6 +109,7 @@ pub async fn nhd_oblivious_cross_compare_lifted(
 }
 
 /// For every pair of NHD distance shares (d1, d2), returns the minimum distance.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_min_of_pair_batch(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
@@ -115,6 +119,7 @@ pub async fn nhd_min_of_pair_batch(
 }
 
 /// Lifts `u16` distance shares to `Ring48` and chunks them into `DistanceShare<Ring48>`.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_lift_distances(
     session: &mut Session,
     pre_lift: Vec<Share<u16>>,
@@ -133,6 +138,7 @@ pub async fn nhd_lift_distances(
 ///   already lifted to 48 bits if they are originally 16-bit.
 /// - Compares `md * (50 * cd - 5 * md) - A * md + 368_640 * cd < 0`.
 /// - This corresponds to "distance > threshold", that is NOT match.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_greater_than_threshold(
     session: &mut Session,
     distances: &[DistanceShare<Ring48>],
