@@ -6,7 +6,7 @@ use eyre::{eyre, Result};
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::{
-    pki_types::{pem::PemObject, CertificateDer, ServerName},
+    pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer, ServerName},
     ClientConfig, RootCertStore,
 };
 use tokio_rustls::{TlsConnector, TlsStream};
@@ -20,8 +20,8 @@ pub struct TlsClient {
 pub struct TcpClient {}
 
 impl TlsClient {
-    /// Create a client that trusts the given CAs
-    pub async fn new_with_ca_certs(root_certs: &[String]) -> Result<Self> {
+    /// Create a client that trusts the given CAs and authenticates with its own cert
+    pub async fn new(key_file: &str, cert_file: &str, root_certs: &[String]) -> Result<Self> {
         let mut roots = RootCertStore::empty();
         for root_cert in root_certs {
             for cert in CertificateDer::pem_file_iter(root_cert)? {
@@ -29,9 +29,12 @@ impl TlsClient {
             }
         }
 
+        let certs = CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
+        let key = PrivateKeyDer::from_pem_file(key_file)?;
+
         let client_config = ClientConfig::builder()
             .with_root_certificates(roots)
-            .with_no_client_auth();
+            .with_client_auth_cert(certs, key)?;
 
         let tls_connector = TlsConnector::from(Arc::new(client_config));
         Ok(Self { tls_connector })

@@ -6,6 +6,7 @@ use eyre::{bail, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const HANDSHAKE_OK: &[u8] = b"2ok";
+const MAX_PEER_ID_LENGTH: u32 = 128;
 
 pub async fn outbound<T: NetworkConnection>(
     stream: &mut T,
@@ -56,6 +57,9 @@ pub async fn inbound<T: NetworkConnection>(stream: &mut T) -> Result<(Identity, 
             bail!("Failed to read peer_id length: {:?}", e);
         }
     };
+    if peer_id_length > MAX_PEER_ID_LENGTH {
+        bail!("invalid peer_id_length. too long: {}", peer_id_length);
+    }
     let mut peer_id_bytes = vec![0u8; peer_id_length as usize];
     if let Err(e) = stream.read_exact(&mut peer_id_bytes).await {
         bail!("Failed to read peer_id bytes: {:?}", e);
