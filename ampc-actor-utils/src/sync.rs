@@ -52,6 +52,39 @@ pub async fn sync_on_job_hash(
     }
 }
 
+pub async fn exchange_checkpoint_id(
+    session: &mut Session,
+    value: usize,
+) -> eyre::Result<Vec<usize>> {
+    let local = NetworkValue::Bytes(value.to_le_bytes().to_vec());
+
+    session.network_session.send_next(local.clone()).await?;
+    session.network_session.send_prev(local.clone()).await?;
+
+    let from_next = session.network_session.receive_next().await?;
+    let from_prev = session.network_session.receive_prev().await?;
+
+    let all = match session.network_session.own_role.index() {
+        0 => [local, from_next, from_prev],
+        1 => [from_prev, local, from_next],
+        2 => [from_next, from_prev, local],
+        _ => bail!("Invalid party id"),
+    };
+
+    all.iter()
+        .map(|nv| match nv {
+            NetworkValue::Bytes(b) if b.len() == size_of::<usize>() => {
+                let mut arr = [0u8; 8];
+                arr.copy_from_slice(&b[..8]);
+                Ok(usize::from_le_bytes(arr))
+            }
+            _ => Err(eyre::eyre!(
+                "Unexpected network value in job hash sync (expected {JOB_HASH_LEN} bytes)"
+            )),
+        })
+        .collect::<eyre::Result<_>>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
