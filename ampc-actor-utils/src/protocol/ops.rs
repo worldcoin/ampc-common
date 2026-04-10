@@ -4,7 +4,8 @@
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::value::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{
-    bit_inject, extract_msb_batch, extract_msb_u16_batch_fss, lift, open_bin, open_bin_fss,
+    bit_inject, extract_msb_batch, extract_msb_u16_batch_fss, extract_msb_u16_batch_fss_tees, lift,
+    open_bin, open_bin_fss,
 };
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
@@ -119,6 +120,16 @@ pub async fn lte_threshold_and_open_u16_fss(
     distances: &[Share<u16>],
 ) -> Result<Vec<bool>> {
     let bits = extract_msb_u16_batch_fss(session, distances).await?;
+    open_bin_fss(session, &bits)
+        .await
+        .map(|v| v.into_iter().map(|x| x.convert()).collect())
+}
+
+pub async fn lte_threshold_and_open_u16_fss_tees(
+    session: &mut Session,
+    distances: &[Share<u16>],
+) -> Result<Vec<bool>> {
+    let bits = extract_msb_u16_batch_fss_tees(session, distances).await?;
     open_bin_fss(session, &bits)
         .await
         .map(|v| v.into_iter().map(|x| x.convert()).collect())
