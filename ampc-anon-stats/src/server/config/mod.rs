@@ -72,6 +72,10 @@ pub struct AnonStatsServerConfig {
     /// Minimum job size for RECOVERY 1D anon stats computation.
     pub min_1d_job_size_recovery: usize,
 
+    #[serde(default = "default_min_1d_job_size_mirror")]
+    /// Minimum job size for MIRROR 1D anon stats computation.
+    pub min_1d_job_size_mirror: usize,
+
     #[serde(default = "default_min_2d_job_size")]
     /// Minimum job size for 2D anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
@@ -89,6 +93,10 @@ pub struct AnonStatsServerConfig {
     #[serde(default = "default_min_2d_job_size_recovery")]
     /// Minimum job size for RECOVERY 2D anon stats computation.
     pub min_2d_job_size_recovery: usize,
+
+    #[serde(default = "default_min_2d_job_size_mirror")]
+    /// Minimum job size for MIRROR 2D anon stats computation.
+    pub min_2d_job_size_mirror: usize,
 
     #[serde(default = "default_max_rows_per_job_1d")]
     /// Maximum number of rows (bundles) to fetch from DB for a single 1D anon stats job.
@@ -178,11 +186,19 @@ fn default_min_1d_job_size_recovery() -> usize {
     default_min_1d_job_size()
 }
 
+fn default_min_1d_job_size_mirror() -> usize {
+    default_min_1d_job_size()
+}
+
 fn default_min_2d_job_size_reauth() -> usize {
     default_min_2d_job_size()
 }
 
 fn default_min_2d_job_size_recovery() -> usize {
+    default_min_2d_job_size()
+}
+
+fn default_min_2d_job_size_mirror() -> usize {
     default_min_2d_job_size()
 }
 
@@ -227,9 +243,11 @@ impl AnonStatsServerConfig {
             min_1d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_1d_job_size_recovery: 0,
+            min_1d_job_size_mirror: 0,
             min_2d_job_size: 0,
             min_2d_job_size_reauth: 0,
             min_2d_job_size_recovery: 0,
+            min_2d_job_size_mirror: 0,
             min_face_job_size: 0,
             max_rows_per_job_1d: 0,
             max_rows_per_job_2d: 0,
@@ -288,27 +306,31 @@ impl AnonStatsServerConfig {
         if self.max_rows_per_job_1d < self.min_1d_job_size
             || self.max_rows_per_job_1d < self.min_1d_job_size_reauth
             || self.max_rows_per_job_1d < self.min_1d_job_size_recovery
+            || self.max_rows_per_job_1d < self.min_1d_job_size_mirror
             || self.max_rows_per_job_1d < self.min_face_job_size
         {
             bail!(
-                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {})",
+                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {}, {})",
                 self.max_rows_per_job_1d,
                 self.min_1d_job_size,
                 self.min_1d_job_size_reauth,
                 self.min_1d_job_size_recovery,
+                self.min_1d_job_size_mirror,
                 self.min_face_job_size
             );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
             || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
             || self.max_rows_per_job_2d < self.min_2d_job_size_recovery
+            || self.max_rows_per_job_2d < self.min_2d_job_size_mirror
         {
             bail!(
-                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {})",
+                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {})",
                 self.max_rows_per_job_2d,
                 self.min_2d_job_size,
                 self.min_2d_job_size_reauth,
-                self.min_2d_job_size_recovery
+                self.min_2d_job_size_recovery,
+                self.min_2d_job_size_mirror
             );
         }
         Ok(())
