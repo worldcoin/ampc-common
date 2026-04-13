@@ -58,11 +58,9 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
             ConnectionState::new(self.shutdown_ct.clone(), session_err_ct.clone());
 
         // wait for all peers to establish all connections
-        let mut connections = self
+        let connections = self
             .make_peer_connections(self.config.num_connections, connection_state.clone())
             .await?;
-
-        connections.sync(connection_state.clone()).await?;
 
         // calls multiplexer::run() on each TCP/TLS stream
         let mut tcp_sessions = super::session::make_sessions(
@@ -92,6 +90,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         let sessions_per_conn = (0..self.config.num_connections)
             .map(|idx| self.config.get_sessions_for_connection(idx))
             .collect_vec();
+
         tracing::info!(
             "make_sessions succeeded. starting id: {} sessions per connection: {:?}",
             self.next_session_id,
@@ -138,7 +137,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
                 .await
                 .map_err(|e| eyre!("make_peer_connections failed: {}", e))?;
             connections
-                .sync(connection_state)
+                .sync(connection_state.shutdown_ct())
                 .await
                 .map_err(|_| eyre!("sync connections failed"))?;
             Ok(())

@@ -1,14 +1,12 @@
 use crate::{
     execution::{player::Identity, session::SessionId},
-    network::{
-        mpc::NetworkValue,
-        tcp::{ConnectionState, NetworkConnection},
-    },
+    network::{mpc::NetworkValue, tcp::NetworkConnection},
 };
 use eyre::{bail, Result};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 // Re-export shared tcp types
 pub use crate::network::tcp::Peer;
@@ -29,13 +27,10 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
-    pub async fn sync(&mut self, connection_state: ConnectionState) -> Result<()> {
+    pub async fn sync(&mut self, shutdown_ct: CancellationToken) -> Result<()> {
         let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
-        let err_ct = connection_state.err_ct();
-        let shutdown_ct = connection_state.shutdown_ct();
         tokio::select! {
-            _ = err_ct.cancelled() => bail!("connection cancelled"),
-            _ = shutdown_ct.cancelled() => bail!("shutdown_triggered"),
+            _ = shutdown_ct.cancelled() => bail!("shutdown triggered"),
             r = futures::future::join_all(all_conns.map(send_and_receive)) => r
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>().map(|_| ())
