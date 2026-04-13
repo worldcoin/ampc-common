@@ -250,7 +250,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
                 conn
             }
             Err(e) => {
-                if connection_state.shutdown_ct().await.is_cancelled() {
+                if connection_state.shutdown_ct().is_cancelled() {
                     tracing::info!("manager task for worker {} is shutting down", worker_id);
                     break;
                 } else {

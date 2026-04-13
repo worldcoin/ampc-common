@@ -89,7 +89,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
                 conn
             }
             Err(e) => {
-                if connection_state.shutdown_ct().await.is_cancelled() {
+                if connection_state.shutdown_ct().is_cancelled() {
                     tracing::info!("Worker {} task is shutting down", my_id.0);
                     break;
                 } else {

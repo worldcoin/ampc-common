@@ -1,6 +1,9 @@
 use crate::{
     execution::{player::Identity, session::SessionId},
-    network::{mpc::NetworkValue, tcp::NetworkConnection},
+    network::{
+        mpc::NetworkValue,
+        tcp::{ConnectionState, NetworkConnection},
+    },
 };
 use eyre::{bail, Result};
 use std::sync::Arc;
@@ -26,13 +29,17 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
-    pub async fn sync(&mut self) -> Result<()> {
+    pub async fn sync(&mut self, connection_state: ConnectionState) -> Result<()> {
         let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
-        let _replies = futures::future::join_all(all_conns.map(send_and_receive))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(())
+        let err_ct = connection_state.err_ct();
+        let shutdown_ct = connection_state.shutdown_ct();
+        tokio::select! {
+            _ = err_ct.cancelled() => bail!("connection cancelled"),
+            _ = shutdown_ct.cancelled() => bail!("shutdown_triggered"),
+            r = futures::future::join_all(all_conns.map(send_and_receive)) => r
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>().map(|_| ())
+        }
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {

@@ -98,8 +98,8 @@ impl<T: NetworkConnection, C: Client<Output = T>> Connector<T, C> {
     }
 
     async fn run(&self) -> Option<T> {
-        let err_ct = self.connection_state.err_ct().await;
-        let shutdown_ct = self.connection_state.shutdown_ct().await;
+        let err_ct = self.connection_state.err_ct();
+        let shutdown_ct = self.connection_state.shutdown_ct();
 
         tokio::select! {
             r = self.connect_loop() => {
