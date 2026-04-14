@@ -19,10 +19,10 @@ pub use batch_sync::{
 pub use config::{AwsConfig, MetricsConfig, ServerCoordinationConfig, ServiceConfig};
 pub use decryption::{decrypt_share, SharesDecodingError, SharesEncryptionKeyPairs};
 pub use server_coordination::{
-    get_check_addresses, get_others_sync_state, init_heartbeat_task, set_node_ready,
-    start_coordination_server, start_coordination_server_with_extra_routes,
-    try_get_endpoint_other_nodes, wait_for_others_ready, wait_for_others_unready,
-    ReadyProbeResponse,
+    get_check_addresses, get_others_graph_hashes, get_others_sync_state, init_heartbeat_task,
+    set_node_ready, start_coordination_server, start_coordination_server_with_extra_routes,
+    try_get_endpoint_other_nodes, wait_for_others_ready, wait_for_others_unready, Blake3Hash,
+    GraphCheckpointHashes, ReadyProbeResponse,
 };
 pub use shutdown_handler::{ShutdownError, ShutdownHandler};
 pub use sqs::{

@@ -21,6 +21,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
 
+pub type Blake3Hash = [u8; 32];
+pub type GraphCheckpointHashes = [Blake3Hash; 10];
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReadyProbeResponse {
     pub image_name: String,
@@ -54,6 +57,7 @@ pub async fn start_coordination_server<T>(
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
     my_state: &T,
+    graph_checkpoints: GraphCheckpointHashes,
     batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
 ) -> (Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>, String)
 where
@@ -64,6 +68,7 @@ where
         task_monitor,
         shutdown_handler,
         my_state,
+        graph_checkpoints,
         batch_sync_shared_state,
         None,
     )
@@ -78,6 +83,7 @@ pub async fn start_coordination_server_with_extra_routes<T>(
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
     my_state: &T,
+    graph_checkpoints: GraphCheckpointHashes,
     batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
     extra_routes: Option<Router>,
 ) -> (Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>, String)
@@ -151,6 +157,10 @@ where
                         let my_state = my_state.clone();
                         async move { serde_json::to_string(&my_state).unwrap() }
                     }),
+                )
+                .route(
+                    "/graph-checkpoint",
+                    get(move || async move { serde_json::to_string(&graph_checkpoints).unwrap() }),
                 );
 
             // Add batch sync routes if state is provided
@@ -401,6 +411,22 @@ where
     let sync_states: Vec<State> = try_join_all(response_texts_futs).await?;
 
     Ok(sync_states)
+}
+
+pub async fn get_others_graph_hashes(
+    config: &ServerCoordinationConfig,
+) -> Result<Vec<GraphCheckpointHashes>> {
+    tracing::info!("⚓️ ANCHOR: Syncing latest graph checkpoints");
+
+    let connected_and_ready = try_get_endpoint_other_nodes(config, "graph-checkpoint").await?;
+
+    let response_texts_futs: Vec<_> = connected_and_ready
+        .into_iter()
+        .map(|resp| resp.json())
+        .collect();
+    let graph_checkpoints: Vec<GraphCheckpointHashes> = try_join_all(response_texts_futs).await?;
+
+    Ok(graph_checkpoints)
 }
 
 /// Toggle `is_ready_flag` to `true` to signal to other nodes that this node
