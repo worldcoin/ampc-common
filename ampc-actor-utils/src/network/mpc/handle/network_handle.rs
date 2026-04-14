@@ -54,6 +54,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
 {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
         let session_err_ct = CancellationToken::new();
+        let drop_guard = session_err_ct.clone().drop_guard();
         let connection_state =
             ConnectionState::new(self.shutdown_ct.clone(), session_err_ct.clone());
 
@@ -71,7 +72,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         )
         .await;
 
-        let _r = tokio::select! {
+        tokio::select! {
             r = self.validate_sessions(&mut tcp_sessions) =>  r,
             _ = self.shutdown_ct.cancelled() => Err(eyre!("shutdown_ct triggered")),
             _ = session_err_ct.cancelled() => Err(eyre!("session_err_ct triggered")),
@@ -103,11 +104,13 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
             self.next_session_id = 0;
         }
 
+        drop_guard.disarm();
         Ok((network_sessions, session_err_ct))
     }
 
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)> {
         let (network_sessions, ct) = self.make_network_sessions().await?;
+        let drop_guard = ct.clone().drop_guard();
 
         let mut session_futures = vec![];
         for mut network_session in network_sessions.into_iter() {
@@ -123,27 +126,26 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         }
 
         let r = parallelize(session_futures.into_iter()).await?;
+        drop_guard.disarm();
         Ok((r, ct))
     }
 
     async fn sync_peers(&mut self) -> Result<()> {
-        let sync_err_ct = CancellationToken::new();
-        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), sync_err_ct.clone());
+        let err_ct = CancellationToken::new();
+        let _drop_guard = err_ct.clone().drop_guard();
+        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct.clone());
 
-        let r = async {
-            let mut connections = self
-                .make_peer_connections(1, connection_state.clone())
-                .await
-                .map_err(|e| eyre!("make_peer_connections failed: {}", e))?;
-            connections
+        let res = self
+            .make_peer_connections(1, connection_state.clone())
+            .await
+            .map_err(|e| eyre!("make_peer_connections failed: {}", e));
+        match res {
+            Ok(mut connections) => connections
                 .sync(connection_state.shutdown_ct())
                 .await
-                .map_err(|_| eyre!("sync connections failed"))?;
-            Ok(())
+                .map_err(|e| eyre!("sync connections failed: {}", e)),
+            Err(e) => Err(e),
         }
-        .await;
-        sync_err_ct.cancel();
-        r
     }
 }
 
