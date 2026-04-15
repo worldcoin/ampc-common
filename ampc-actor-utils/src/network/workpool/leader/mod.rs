@@ -9,10 +9,10 @@ use crate::{
         tcp::{
             self,
             connection::{
-                client::{BoxTcpClient, TcpClient, TlsClient},
+                client::{BoxTcpClient, TlsClient},
                 server::{BoxTcpServer, TcpServer, TlsServer},
             },
-            TlsConfig,
+            DynStreamConn, TlsConfig, TlsStreamConn,
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
     },
@@ -242,31 +242,29 @@ pub async fn build_leader(
         let listener = TlsServer::new(leader_addr, private_key, leaf_cert, &root_certs)
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
-        let connector = TlsClient::new(private_key, leaf_cert, &root_certs)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 
-        Result::<_, SetupError>::Ok(leader_task::spawn(
-            args.leader_id,
-            worker_urls,
-            connector,
-            listener,
-            shutdown_ct.clone(),
-        ))
+        Result::<_, SetupError>::Ok(
+            leader_task::spawn::<TlsStreamConn, TlsClient, TlsServer, _>(
+                args.leader_id,
+                worker_urls,
+                listener,
+                shutdown_ct.clone(),
+            ),
+        )
     } else {
         tracing::info!("Building WorkPool Leader without TLS");
 
         let listener = BoxTcpServer(TcpServer::new(leader_addr).await.map_err(|e| {
             SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
         })?);
-        let connector = BoxTcpClient(TcpClient::default());
 
-        Result::<_, SetupError>::Ok(leader_task::spawn(
-            args.leader_id,
-            worker_urls,
-            connector,
-            listener,
-            shutdown_ct.clone(),
+        Result::<_, SetupError>::Ok(leader_task::spawn::<
+            DynStreamConn,
+            BoxTcpClient,
+            BoxTcpServer,
+            _,
+        >(
+            args.leader_id, worker_urls, listener, shutdown_ct.clone()
         ))
     }?;
 

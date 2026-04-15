@@ -7,14 +7,10 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         self,
-        connection::{
-            client::{BoxTcpClient, TcpClient, TlsClient},
-            server::{BoxTcpServer, TcpServer, TlsServer},
-        },
+        connection::client::{BoxTcpClient, TcpClient, TlsClient},
         TlsConfig,
     },
 };
-use std::net::SocketAddr;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tokio_util::sync::CancellationToken;
 
@@ -57,7 +53,6 @@ impl WorkerHandle {
 
 pub struct WorkerArgs {
     pub worker_id: Identity,
-    pub worker_address: String,
     pub leader_id: Identity,
     pub leader_address: String,
     pub tls: Option<TlsConfig>,
@@ -70,10 +65,7 @@ pub async fn build_worker_handle(
     tcp::init_rustls_crypto_provider();
 
     let shutdown_ct = shutdown_ct.child_token();
-    let worker_addr: SocketAddr = args
-        .worker_address
-        .parse()
-        .map_err(|e: std::net::AddrParseError| SetupError::InvalidAddress(e.to_string()))?;
+    let leader = Peer::new(args.leader_id, args.leader_address);
 
     let job_rx = if let Some(tls) = args.tls.as_ref() {
         tracing::info!("Building WorkPool Worker with TLS");
@@ -88,38 +80,16 @@ pub async fn build_worker_handle(
             .as_ref()
             .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
 
-        let listener = TlsServer::new(worker_addr, private_key, leaf_cert, &root_certs)
-            .await
-            .map_err(|e| SetupError::ListenFailed(format!("Failed to create TLS server: {}", e)))?;
         let connector = TlsClient::new(private_key, leaf_cert, &root_certs)
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 
-        let leader = Peer::new(args.leader_id, args.leader_address);
-
-        worker_task::spawn(
-            args.worker_id,
-            leader,
-            connector,
-            listener,
-            shutdown_ct.clone(),
-        )
+        worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     } else {
         tracing::info!("Building WorkPool Worker without TLS");
 
-        let listener = BoxTcpServer(TcpServer::new(worker_addr).await.map_err(|e| {
-            SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
-        })?);
         let connector = BoxTcpClient(TcpClient::default());
-
-        let leader = Peer::new(args.leader_id, args.leader_address);
-        worker_task::spawn(
-            args.worker_id,
-            leader,
-            connector,
-            listener,
-            shutdown_ct.clone(),
-        )
+        worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     };
 
     Ok(WorkerHandle { job_rx })

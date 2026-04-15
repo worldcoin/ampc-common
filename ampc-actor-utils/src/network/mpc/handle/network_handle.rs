@@ -13,8 +13,8 @@ use crate::{
             NetworkHandle, Networking,
         },
         tcp::{
-            accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState,
-            NetworkConnection, Peer, Server,
+            accept_loop, Client, ConnectionConfig, ConnectionId, ConnectionRequest,
+            ConnectionState, NetworkConnection, Peer, Server,
         },
     },
     protocol::ops::setup_replicated_prf,
@@ -207,10 +207,12 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
                 let fut = crate::network::tcp::connect(
                     connection_id,
                     self.my_id.clone(),
-                    peer.clone(),
                     self.connection_state.clone(),
-                    self.connector.clone(),
-                    self.conn_cmd_tx.clone(),
+                    ConnectionConfig::Bidirectional {
+                        peer: peer.clone(),
+                        client: self.connector.clone(),
+                        conn_cmd_tx: self.conn_cmd_tx.clone(),
+                    },
                 );
                 connect_futures.push(fut);
             }

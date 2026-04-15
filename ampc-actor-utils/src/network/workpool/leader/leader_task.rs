@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
+use crate::network::tcp::Client;
 use crate::network::workpool::Error;
 use crate::network::workpool::{
     leader::job_tracker::{JobTracker, JobType},
@@ -19,8 +20,8 @@ use crate::network::workpool::{
 use crate::{
     execution::player::Identity,
     network::tcp::{
-        accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState, NetworkConnection,
-        Peer, Server,
+        accept_loop, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
+        NetworkConnection, Peer, Server,
     },
 };
 
@@ -29,10 +30,9 @@ use crate::{
 /// Returns the job sender and one `watch::Receiver<bool>` per worker.
 /// Each receiver starts as `false` and flips to `true` once that worker's
 /// connection (including the job-state handshake) is fully established.
-pub fn spawn<T, C, I, S>(
+pub fn spawn<T, C, S, I>(
     my_id: Identity,
     worker_urls: I,
-    connector: C,
     listener: S,
     shutdown_ct: CancellationToken,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
@@ -64,13 +64,12 @@ where
         worker_cmd_txs.push(cmd_tx);
         let (worker_conn_tx, worker_conn_rx) = watch::channel(false);
         workers_connected.push(worker_conn_rx);
-        tokio::spawn(worker_mgr(
+        tokio::spawn(worker_mgr::<T, C>(
             idx as WorkerId,
             my_id.clone(),
             worker.clone(),
             job_tracker.clone(),
             worker_conn_tx,
-            connector.clone(),
             connection_state.clone(),
             conn_cmd_tx.clone(),
             cmd_rx,
@@ -223,7 +222,6 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
     worker: Arc<Peer>,
     job_tracker: Arc<JobTracker>,
     worker_conn_tx: watch::Sender<bool>,
-    connector: C,
     connection_state: ConnectionState,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     mut cmd_rx: UnboundedReceiver<NetworkValue>,
@@ -238,10 +236,11 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
         let mut conn = match crate::network::tcp::connect(
             connection_id,
             my_id.clone(),
-            worker.clone(),
             connection_state.clone(),
-            connector.clone(),
-            conn_cmd_tx.clone(),
+            ConnectionConfig::<T, C>::ServerOnly {
+                peer_id: worker.id().clone(),
+                conn_cmd_tx: conn_cmd_tx.clone(),
+            },
         )
         .await
         {

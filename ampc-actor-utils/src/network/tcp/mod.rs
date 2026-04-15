@@ -13,7 +13,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use config::{configure_tcp_stream, TlsConfig};
-pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
+pub use connection::{accept_loop, connect, ConnectionConfig, ConnectionRequest, ConnectionState};
 pub use streams::{Client, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn};
 pub use types::{ConnectionId, Peer};
 
