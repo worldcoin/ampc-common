@@ -448,6 +448,12 @@ impl<T: IntRing2k> AdditiveShare<T> {
         Self { value }
     }
 
+    pub fn zero() -> Self {
+        Self {
+            value: RingElement::<T>::zero(),
+        }
+    }
+
     pub fn from_const<R: Role>(value: T, role: R) -> Self {
         let mut res = Self::zero();
         res.add_assign_const_role(value, role);
@@ -821,7 +827,6 @@ mod tests {
 
     use aes_prng::AesRng;
     use itertools::izip;
-    use num_traits::One;
     use rand::{Rng, SeedableRng};
     use rand_distr::{Distribution, Standard};
     use std::fmt::Debug;
@@ -1044,7 +1049,7 @@ mod tests {
         [u128, u128_test]
     }
 
-    fn get_additive_shares<T: IntRing2k>(value: T, bitwise: bool) -> Vec<AdditiveShare<T>>
+    fn get_additive_shares<T: IntRing2k>(value: T) -> Vec<AdditiveShare<T>>
     where
         Standard: Distribution<T>,
     {
@@ -1066,8 +1071,8 @@ mod tests {
         let a_t: T = rng.gen();
         let b_t: T = rng.gen();
 
-        let a = get_additive_shares(a_t, false);
-        let b = get_additive_shares(b_t, false);
+        let a = get_additive_shares(a_t);
+        let b = get_additive_shares(b_t);
 
         // Addition
         let expected_add = RingElement(a_t.wrapping_add(&b_t));

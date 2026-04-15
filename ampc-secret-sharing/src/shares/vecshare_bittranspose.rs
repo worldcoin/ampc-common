@@ -1,14 +1,14 @@
-use super::{ring48::Ring48, ring_impl::RingElement, share::ReplicatedShare, vecshare::VecShare};
+use super::{ring48::Ring48, ring_impl::RingElement, share::ReplicatedShare, vecshare::VecShareReplicated};
 
 pub trait Transpose64 {
-    fn transpose_pack_u64(self) -> Vec<VecShare<u64>>;
+    fn transpose_pack_u64(self) -> Vec<VecShareReplicated<u64>>;
 }
 
 pub trait Transpose128 {
-    fn transpose_pack_u128(self) -> Vec<VecShare<u128>>;
+    fn transpose_pack_u128(self) -> Vec<VecShareReplicated<u128>>;
 }
 
-impl VecShare<u16> {
+impl VecShareReplicated<u16> {
     fn share64_from_share16s(
         a: &ReplicatedShare<u16>,
         b: &ReplicatedShare<u16>,
@@ -136,14 +136,14 @@ impl VecShare<u16> {
     }
 }
 
-impl Transpose64 for VecShare<u16> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+impl Transpose64 for VecShareReplicated<u16> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShareReplicated<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, ReplicatedShare::default());
 
         let mut res = (0..16)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact(64).enumerate() {
@@ -157,14 +157,14 @@ impl Transpose64 for VecShare<u16> {
     }
 }
 
-impl Transpose128 for VecShare<u16> {
-    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
+impl Transpose128 for VecShareReplicated<u16> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShareReplicated<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, ReplicatedShare::default());
 
         let mut res = (0..16)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact(128).enumerate() {
@@ -178,7 +178,7 @@ impl Transpose128 for VecShare<u16> {
     }
 }
 
-impl VecShare<u32> {
+impl VecShareReplicated<u32> {
     fn share64_from_share32s(a: &ReplicatedShare<u32>, b: &ReplicatedShare<u32>) -> ReplicatedShare<u64> {
         let a_ = (a.a.0 as u64) | ((b.a.0 as u64) << 32);
         let b_ = (a.b.0 as u64) | ((b.b.0 as u64) << 32);
@@ -273,17 +273,17 @@ impl VecShare<u32> {
     }
 }
 
-impl Transpose64 for VecShare<u32> {
+impl Transpose64 for VecShareReplicated<u32> {
     /// Transposes `u32` shares into slices of bits and packs them into `u64` shares.
     /// The result is a vector of `VecShare<u64>` with 32 elements corresponding to each bit.
     /// The length of each `VecShare<u64>` is ceil(length of self / 64).
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShareReplicated<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, ReplicatedShare::default());
 
         let mut res = (0..32)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact(64).enumerate() {
@@ -297,17 +297,17 @@ impl Transpose64 for VecShare<u32> {
     }
 }
 
-impl Transpose128 for VecShare<u32> {
+impl Transpose128 for VecShareReplicated<u32> {
     /// Transposes `u32` shares into slices of bits and packs them into `u128` shares.
     /// The result is a vector of `VecShare<u128>` with 32 elements corresponding to each bit.
     /// The length of each `VecShare<u128>` is ceil(length of self / 128).
-    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShareReplicated<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, ReplicatedShare::default());
 
         let mut res = (0..32)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact(128).enumerate() {
@@ -321,7 +321,7 @@ impl Transpose128 for VecShare<u32> {
     }
 }
 
-impl VecShare<u64> {
+impl VecShareReplicated<u64> {
     fn share128_from_share64s(a: &ReplicatedShare<u64>, b: &ReplicatedShare<u64>) -> ReplicatedShare<u128> {
         let a_ = (a.a.0 as u128) | ((b.a.0 as u128) << 64);
         let b_ = (a.b.0 as u128) | ((b.b.0 as u128) << 64);
@@ -385,14 +385,14 @@ impl VecShare<u64> {
     }
 }
 
-impl Transpose64 for VecShare<u64> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+impl Transpose64 for VecShareReplicated<u64> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShareReplicated<u64>> {
         // Pad to multiple of 64
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, ReplicatedShare::default());
 
         let mut res = (0..64)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact_mut(64).enumerate() {
@@ -406,14 +406,14 @@ impl Transpose64 for VecShare<u64> {
     }
 }
 
-impl Transpose128 for VecShare<u64> {
-    fn transpose_pack_u128(mut self) -> Vec<VecShare<u128>> {
+impl Transpose128 for VecShareReplicated<u64> {
+    fn transpose_pack_u128(mut self) -> Vec<VecShareReplicated<u128>> {
         // Pad to multiple of 128
         let len = self.shares.len().div_ceil(128);
         self.shares.resize(len * 128, ReplicatedShare::default());
 
         let mut res = (0..64)
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, x) in self.shares.chunks_exact(128).enumerate() {
@@ -427,13 +427,13 @@ impl Transpose128 for VecShare<u64> {
     }
 }
 
-impl Transpose64 for VecShare<Ring48> {
-    fn transpose_pack_u64(mut self) -> Vec<VecShare<u64>> {
+impl Transpose64 for VecShareReplicated<Ring48> {
+    fn transpose_pack_u64(mut self) -> Vec<VecShareReplicated<u64>> {
         let len = self.shares.len().div_ceil(64);
         self.shares.resize(len * 64, ReplicatedShare::default());
 
         let mut res = (0..48) // not 64
-            .map(|_| VecShare::new_vec(vec![ReplicatedShare::default(); len]))
+            .map(|_| VecShareReplicated::new_vec(vec![ReplicatedShare::default(); len]))
             .collect::<Vec<_>>();
 
         for (j, chunk) in self.shares.chunks_exact(64).enumerate() {
@@ -441,7 +441,7 @@ impl Transpose64 for VecShare<Ring48> {
             let mut u64_chunk: [ReplicatedShare<u64>; 64] = core::array::from_fn(|i| {
                 ReplicatedShare::new(RingElement(chunk[i].a.0 .0), RingElement(chunk[i].b.0 .0))
             });
-            VecShare::<u64>::share_transpose64x64(&mut u64_chunk);
+            VecShareReplicated::<u64>::share_transpose64x64(&mut u64_chunk);
             for (src, des) in u64_chunk.into_iter().take(48).zip(res.iter_mut()) {
                 des.shares[j] = src;
             }
@@ -453,12 +453,12 @@ impl Transpose64 for VecShare<Ring48> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shares::{vecshare::VecShare, IntRing2k};
+    use crate::shares::{vecshare::VecShareReplicated, IntRing2k};
     use rand::Rng;
 
     fn check_transposed<T: IntRing2k, U: IntRing2k>(
-        transposed: Vec<VecShare<T>>,
-        original: VecShare<U>,
+        transposed: Vec<VecShareReplicated<T>>,
+        original: VecShareReplicated<U>,
     ) {
         assert_eq!(transposed.len(), U::K);
         let expected_bitslice_len = original.len().div_ceil(T::K);
@@ -488,7 +488,7 @@ mod tests {
     fn test_u16_transpose_pack_u64() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u16>> = (0..100).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
         check_transposed(transposed, vec_share);
@@ -498,7 +498,7 @@ mod tests {
     fn test_u32_transpose_pack_u64() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u32>> = (0..128).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
         check_transposed(transposed, vec_share);
@@ -508,7 +508,7 @@ mod tests {
     fn test_u64_transpose_pack_u64() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u64>> = (0..129).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
         check_transposed(transposed, vec_share);
@@ -518,7 +518,7 @@ mod tests {
     fn test_u16_transpose_pack_u128() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u16>> = (0..200).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
         check_transposed(transposed, vec_share);
@@ -528,7 +528,7 @@ mod tests {
     fn test_u32_transpose_pack_u128() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u32>> = (0..256).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
         check_transposed(transposed, vec_share);
@@ -538,7 +538,7 @@ mod tests {
     fn test_u64_transpose_pack_u128() {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<u64>> = (0..257).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u128();
 
         check_transposed(transposed, vec_share);
@@ -549,7 +549,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let shares: Vec<ReplicatedShare<Ring48>> =
             (0..130).map(|_| ReplicatedShare::new(rng.gen(), rng.gen())).collect();
-        let vec_share = VecShare { shares };
+        let vec_share = VecShareReplicated { shares };
         let transposed = vec_share.clone().transpose_pack_u64();
 
         check_transposed(transposed, vec_share);

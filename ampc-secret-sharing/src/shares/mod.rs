@@ -11,4 +11,4 @@ pub use int_ring::IntRing2k;
 pub use ring48::Ring48;
 pub use ring_impl::{RingElement, RingRandFillable, VecRingElement};
 pub use share::{reconstruct_distance_vector, DistanceShare, ReplicatedShare, Role};
-pub use vecshare::VecShare;
+pub use vecshare::VecShareReplicated;

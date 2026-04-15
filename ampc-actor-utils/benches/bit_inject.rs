@@ -1,6 +1,6 @@
 use ampc_actor_utils::protocol::Prf;
 use ampc_secret_sharing::{
-    shares::{VecRingElement, VecShare},
+    shares::{VecRingElement, VecShareReplicated},
     IntRing2k, RingElement, ReplicatedShare,
 };
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -46,7 +46,7 @@ fn test_bit_inject(
     input2: VecRingElement<u32>,
     mine: VecRingElement<u32>,
     theirs: VecRingElement<u32>,
-) -> VecShare<u32> {
+) -> VecShareReplicated<u32> {
     let len = input1.len();
 
     // Pack shares
@@ -63,7 +63,7 @@ fn test_bit_inject(
     // [b_0 XOR b_1 XOR b_2] = [b_0 XOR b_1] + [b_2] - 2 * [(b_0 XOR b_1 ) * b_2]
     // = [b_0 XOR b_1] + [b_2] - 2 * ([r_01 * b_2] + [x * b_2])
     // = s1 - 2 * (s3 + s4)
-    VecShare::new_vec(
+    VecShareReplicated::new_vec(
         izip!(s1, s3, s4)
             .map(|(s1, s3, s4)| {
                 let sum34 = s3 + s4;
@@ -78,8 +78,8 @@ fn test_bit_inject2(
     input2: VecRingElement<u32>,
     mine: VecRingElement<u32>,
     theirs: VecRingElement<u32>,
-) -> VecShare<u32> {
-    VecShare::new_vec(
+) -> VecShareReplicated<u32> {
+    VecShareReplicated::new_vec(
         izip!(
             input1.into_iter(),
             mine.into_iter(),

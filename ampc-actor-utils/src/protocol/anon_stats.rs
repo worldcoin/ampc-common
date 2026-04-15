@@ -2,7 +2,7 @@ use crate::protocol::binary::bit_inject;
 use crate::protocol::ops::{min_of_pair_batch, B};
 use crate::{execution::session::Session, protocol::binary::extract_msb_batch};
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::shares::VecShare;
+use ampc_secret_sharing::shares::VecShareReplicated;
 use ampc_secret_sharing::ReplicatedShare;
 use eyre::{eyre, Result};
 use itertools::Itertools;
@@ -28,7 +28,7 @@ pub async fn compare_against_thresholds_batched(
 
     tracing::info!("compare_threshold_buckets diffs length: {}", diffs.len());
     let msbs = extract_msb_batch(session, &diffs).await?;
-    let msbs = VecShare::new_vec(msbs);
+    let msbs = VecShareReplicated::new_vec(msbs);
     tracing::info!("msbs extracted, now bit_injecting");
     // bit_inject all MSBs into u32 to be able to add them up
     let sums = bit_inject(session, msbs).await?;
@@ -130,7 +130,7 @@ mod tests {
         },
         protocol::{
             ops::{open_ring, translate_threshold_a},
-            test_utils::create_array_sharing,
+            test_utils::create_array_sharing_replicated,
         },
     };
     use aes_prng::AesRng;
@@ -152,7 +152,7 @@ mod tests {
             })
             .collect_vec();
 
-        let shares = create_array_sharing(&mut rng, &items);
+        let shares = create_array_sharing_replicated(&mut rng, &items);
 
         let thresholds: [f64; NUM_BUCKETS] =
             std::array::from_fn(|i| i as f64 / (NUM_BUCKETS * 2) as f64);
@@ -253,7 +253,7 @@ mod tests {
             })
             .collect_vec();
 
-        let shares = create_array_sharing(&mut rng, &items);
+        let shares = create_array_sharing_replicated(&mut rng, &items);
 
         let thresholds: [f64; NUM_BUCKETS] =
             std::array::from_fn(|i| i as f64 / (NUM_BUCKETS * 2) as f64);

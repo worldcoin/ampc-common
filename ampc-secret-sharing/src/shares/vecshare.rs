@@ -1,3 +1,5 @@
+use crate::shares::share::AdditiveShare;
+
 use super::{bit::Bit, int_ring::IntRing2k, ring_impl::RingElement, share::ReplicatedShare};
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
@@ -43,8 +45,8 @@ pub struct SliceShareMut<'a, T: IntRing2k> {
 
 #[allow(clippy::needless_lifetimes)]
 impl<'a, T: IntRing2k> SliceShareMut<'a, T> {
-    pub fn to_vec(&self) -> VecShare<T> {
-        VecShare {
+    pub fn to_vec(&self) -> VecShareReplicated<T> {
+        VecShareReplicated {
             shares: self.shares.to_vec(),
         }
     }
@@ -59,11 +61,43 @@ impl<'a, T: IntRing2k> SliceShareMut<'a, T> {
 #[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(bound = "")]
 #[repr(transparent)]
-pub struct VecShare<T: IntRing2k> {
+pub struct VecShareAdditive<T: IntRing2k> {
+    pub shares: Vec<AdditiveShare<T>>,
+}
+
+impl<T: IntRing2k> VecShareAdditive<T> {
+    #[cfg(test)]
+    pub fn new_share(share: AdditiveShare<T>) -> Self {
+        let shares = vec![share];
+        Self { shares }
+    }
+
+    /// Access the underlying shares
+    pub fn shares(&self) -> &[AdditiveShare<T>] {
+        &self.shares
+    }
+
+    pub fn new_vec(shares: Vec<AdditiveShare<T>>) -> Self {
+        Self { shares }
+    }
+
+    pub fn inner(self) -> Vec<AdditiveShare<T>> {
+        self.shares
+    }
+
+    pub fn len(&self) -> usize {
+        self.shares.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(bound = "")]
+#[repr(transparent)]
+pub struct VecShareReplicated<T: IntRing2k> {
     pub shares: Vec<ReplicatedShare<T>>,
 }
 
-impl<T: IntRing2k> VecShare<T> {
+impl<T: IntRing2k> VecShareReplicated<T> {
     #[cfg(test)]
     pub fn new_share(share: ReplicatedShare<T>) -> Self {
         let shares = vec![share];
@@ -121,7 +155,9 @@ impl<T: IntRing2k> VecShare<T> {
     }
 
     pub fn sum(&self) -> ReplicatedShare<T> {
-        self.shares.iter().fold(ReplicatedShare::zero(), |a, b| a + b)
+        self.shares
+            .iter()
+            .fold(ReplicatedShare::zero(), |a, b| a + b)
     }
 
     pub fn not_inplace(&mut self) {
@@ -157,7 +193,10 @@ impl<T: IntRing2k> VecShare<T> {
         a: impl Iterator<Item = RingElement<T>>,
         b: impl Iterator<Item = RingElement<T>>,
     ) -> Self {
-        let shares = a.zip(b).map(|(a_, b_)| ReplicatedShare::new(a_, b_)).collect();
+        let shares = a
+            .zip(b)
+            .map(|(a_, b_)| ReplicatedShare::new(a_, b_))
+            .collect();
         Self { shares }
     }
 
@@ -165,8 +204,8 @@ impl<T: IntRing2k> VecShare<T> {
         inp.into_iter().flat_map(|x| x.shares)
     }
 
-    pub fn convert_to_bits(self) -> VecShare<Bit> {
-        let mut res = VecShare::with_capacity(T::K * self.shares.len());
+    pub fn convert_to_bits(self) -> VecShareReplicated<Bit> {
+        let mut res = VecShareReplicated::with_capacity(T::K * self.shares.len());
         for share in self.shares.into_iter() {
             let (a, b) = share.get_ab();
             for (a, b) in a.bit_iter().zip(b.bit_iter()) {
@@ -193,11 +232,11 @@ impl<T: IntRing2k> VecShare<T> {
     }
 }
 
-impl VecShare<Bit> {
+impl VecShareReplicated<Bit> {
     #[allow(clippy::manual_div_ceil)]
-    pub fn pack<T: IntRing2k>(self) -> VecShare<T> {
+    pub fn pack<T: IntRing2k>(self) -> VecShareReplicated<T> {
         let outlen = (self.shares.len() + T::K - 1) / T::K;
-        let mut out = VecShare::with_capacity(outlen);
+        let mut out = VecShareReplicated::with_capacity(outlen);
 
         for a_ in self.shares.chunks(T::K) {
             let mut share_a = RingElement::<T>::zero();
@@ -216,7 +255,7 @@ impl VecShare<Bit> {
 
     pub fn from_share<T: IntRing2k>(share: ReplicatedShare<T>) -> Self {
         let (a, b) = share.get_ab();
-        let mut res = VecShare::with_capacity(T::K);
+        let mut res = VecShareReplicated::with_capacity(T::K);
         for (a, b) in a.bit_iter().zip(b.bit_iter()) {
             res.push(ReplicatedShare::new(RingElement(a), RingElement(b)));
         }
@@ -224,7 +263,7 @@ impl VecShare<Bit> {
     }
 }
 
-impl<T: IntRing2k> IntoIterator for VecShare<T> {
+impl<T: IntRing2k> IntoIterator for VecShareReplicated<T> {
     type Item = ReplicatedShare<T>;
     type IntoIter = std::vec::IntoIter<ReplicatedShare<T>>;
 
@@ -234,10 +273,10 @@ impl<T: IntRing2k> IntoIterator for VecShare<T> {
 }
 
 impl<T: IntRing2k> Not for SliceShare<'_, T> {
-    type Output = VecShare<T>;
+    type Output = VecShareReplicated<T>;
 
     fn not(self) -> Self::Output {
-        let mut v = VecShare::with_capacity(self.shares.len());
+        let mut v = VecShareReplicated::with_capacity(self.shares.len());
         for x in self.shares.iter() {
             v.push(!x);
         }
@@ -246,11 +285,11 @@ impl<T: IntRing2k> Not for SliceShare<'_, T> {
 }
 
 impl<T: IntRing2k> BitXor<Self> for SliceShare<'_, T> {
-    type Output = VecShare<T>;
+    type Output = VecShareReplicated<T>;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
-        let mut v = VecShare::with_capacity(self.shares.len());
+        let mut v = VecShareReplicated::with_capacity(self.shares.len());
         for (x1, x2) in self.shares.iter().zip(rhs.shares.iter()) {
             v.push(x1 ^ x2);
         }
@@ -258,12 +297,12 @@ impl<T: IntRing2k> BitXor<Self> for SliceShare<'_, T> {
     }
 }
 
-impl<T: IntRing2k> BitXor<Self> for VecShare<T> {
+impl<T: IntRing2k> BitXor<Self> for VecShareReplicated<T> {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
-        let mut v = VecShare::with_capacity(self.shares.len());
+        let mut v = VecShareReplicated::with_capacity(self.shares.len());
         for (x1, x2) in self.shares.into_iter().zip(rhs.shares) {
             v.push(x1 ^ x2);
         }
@@ -271,12 +310,12 @@ impl<T: IntRing2k> BitXor<Self> for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> BitXor<SliceShare<'_, T>> for VecShare<T> {
+impl<T: IntRing2k> BitXor<SliceShare<'_, T>> for VecShareReplicated<T> {
     type Output = Self;
 
     fn bitxor(self, rhs: SliceShare<'_, T>) -> Self::Output {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
-        let mut v = VecShare::with_capacity(self.shares.len());
+        let mut v = VecShareReplicated::with_capacity(self.shares.len());
         for (x1, x2) in self.shares.into_iter().zip(rhs.shares.iter()) {
             v.push(x1 ^ x2);
         }
@@ -284,7 +323,7 @@ impl<T: IntRing2k> BitXor<SliceShare<'_, T>> for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> AddAssign<SliceShare<'_, T>> for VecShare<T> {
+impl<T: IntRing2k> AddAssign<SliceShare<'_, T>> for VecShareReplicated<T> {
     fn add_assign(&mut self, rhs: SliceShare<'_, T>) {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
         for (x1, x2) in self.shares.iter_mut().zip(rhs.shares.iter()) {
@@ -293,7 +332,7 @@ impl<T: IntRing2k> AddAssign<SliceShare<'_, T>> for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> SubAssign<SliceShare<'_, T>> for VecShare<T> {
+impl<T: IntRing2k> SubAssign<SliceShare<'_, T>> for VecShareReplicated<T> {
     fn sub_assign(&mut self, rhs: SliceShare<'_, T>) {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
         for (x1, x2) in self.shares.iter_mut().zip(rhs.shares.iter()) {
@@ -302,7 +341,7 @@ impl<T: IntRing2k> SubAssign<SliceShare<'_, T>> for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> SubAssign for VecShare<T> {
+impl<T: IntRing2k> SubAssign for VecShareReplicated<T> {
     fn sub_assign(&mut self, rhs: Self) {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
         for (x1, x2) in self.shares.iter_mut().zip(rhs.shares.into_iter()) {
@@ -311,7 +350,7 @@ impl<T: IntRing2k> SubAssign for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> BitXorAssign<SliceShare<'_, T>> for VecShare<T> {
+impl<T: IntRing2k> BitXorAssign<SliceShare<'_, T>> for VecShareReplicated<T> {
     fn bitxor_assign(&mut self, rhs: SliceShare<'_, T>) {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
         for (x1, x2) in self.shares.iter_mut().zip(rhs.shares.iter()) {
@@ -320,7 +359,7 @@ impl<T: IntRing2k> BitXorAssign<SliceShare<'_, T>> for VecShare<T> {
     }
 }
 
-impl<T: IntRing2k> BitXorAssign<Self> for VecShare<T> {
+impl<T: IntRing2k> BitXorAssign<Self> for VecShareReplicated<T> {
     fn bitxor_assign(&mut self, rhs: Self) {
         debug_assert_eq!(self.shares.len(), rhs.shares.len());
         for (x1, x2) in self.shares.iter_mut().zip(rhs.shares) {
@@ -368,7 +407,7 @@ mod tests {
         let mut rng = rand::thread_rng();
         let share1: ReplicatedShare<T> = ReplicatedShare::new(rng.gen(), rng.gen());
 
-        let mut vec_share = VecShare::new_share(share1);
+        let mut vec_share = VecShareReplicated::new_share(share1);
         assert!(!vec_share.is_empty());
         let popped_share = vec_share.pop();
         assert!(popped_share.is_some());
@@ -380,7 +419,7 @@ mod tests {
         for i in 1..17 {
             shares.push(one_share + shares[i - 1]);
         }
-        vec_share = VecShare::new_vec(shares);
+        vec_share = VecShareReplicated::new_vec(shares);
         let (slice1, slice2) = vec_share.split_at(3);
         assert!(!slice1.is_empty());
         assert_eq!(slice1.len(), 3);
@@ -390,7 +429,7 @@ mod tests {
             assert_eq!(one_share + chunk[0], chunk[1]);
         }
 
-        let mut vec_share = VecShare::new_share(ReplicatedShare::zero());
+        let mut vec_share = VecShareReplicated::new_share(ReplicatedShare::zero());
         vec_share.extend_from_slice(slice1);
         assert_eq!(vec_share.len(), 4);
         let slice_mut = vec_share.as_slice_mut();
@@ -403,7 +442,7 @@ mod tests {
         assert_eq!(slice21[0], three_share);
         assert_eq!(slice21[1], one_share + three_share);
 
-        vec_share = VecShare::new_vec(vec![share1, !&share1]);
+        vec_share = VecShareReplicated::new_vec(vec![share1, !&share1]);
         let mut not_vec_share = vec_share.clone();
         not_vec_share.not_inplace();
         assert_eq!(vec_share.get_at(0), not_vec_share.get_at(1));
@@ -418,7 +457,7 @@ mod tests {
         let share1: ReplicatedShare<T> = ReplicatedShare::new(rng.gen(), rng.gen());
 
         // NOT
-        let vec_share = VecShare::new_vec(vec![share1, !&share1]);
+        let vec_share = VecShareReplicated::new_vec(vec![share1, !&share1]);
         let mut not_vec_share = vec_share.clone();
         not_vec_share.not_inplace();
         assert_eq!(vec_share.get_at(0), not_vec_share.get_at(1));
@@ -427,7 +466,7 @@ mod tests {
         assert_eq!(!slice_share, not_vec_share);
 
         // XOR
-        let vec_zero = VecShare::new_vec(vec![ReplicatedShare::zero(); 2]);
+        let vec_zero = VecShareReplicated::new_vec(vec![ReplicatedShare::zero(); 2]);
         assert_eq!(vec_share.clone() ^ vec_share.clone(), vec_zero);
         assert_eq!(vec_share.clone() ^ slice_share, vec_zero);
         assert_eq!(
@@ -462,7 +501,7 @@ mod tests {
     {
         let mut rng = rand::thread_rng();
         let share: ReplicatedShare<T> = ReplicatedShare::new(rng.gen(), rng.gen());
-        let bit_vec_share = VecShare::from_share(share);
+        let bit_vec_share = VecShareReplicated::from_share(share);
         assert_eq!(bit_vec_share.len(), T::K);
         for (i_bit, bit) in bit_vec_share.into_iter().enumerate() {
             assert_eq!(bit.a, share.a.get_bit_as_bit(i_bit));
@@ -470,15 +509,16 @@ mod tests {
         }
 
         let mut bit_rng = rand::thread_rng();
-        let bit_shares = VecShare::new_vec(
+        let bit_shares = VecShareReplicated::new_vec(
             (0..(T::K + 1))
                 .map(|_| {
-                    let share: ReplicatedShare<Bit> = ReplicatedShare::new(bit_rng.gen(), bit_rng.gen());
+                    let share: ReplicatedShare<Bit> =
+                        ReplicatedShare::new(bit_rng.gen(), bit_rng.gen());
                     share
                 })
                 .collect::<Vec<_>>(),
         );
-        let t_shares: VecShare<T> = bit_shares.clone().pack();
+        let t_shares: VecShareReplicated<T> = bit_shares.clone().pack();
         for (i_bit, bit) in bit_shares.into_iter().enumerate() {
             let share_index = i_bit / T::K;
             let bit_index = i_bit % T::K;

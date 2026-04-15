@@ -1,10 +1,7 @@
-use std::{
-    ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign},
-    usize,
-};
+use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use num_traits::{Inv, One, PrimInt, ToPrimitive, Unsigned, Zero};
-use rand::{Rng, RngCore};
+use num_traits::{Inv, PrimInt};
+use rand::Rng;
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub struct PrimeElement<T: PrimInt> {

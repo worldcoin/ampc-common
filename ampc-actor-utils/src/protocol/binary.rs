@@ -10,9 +10,8 @@ use ampc_secret_sharing::shares::{
     ring48::Ring48,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
     share::ReplicatedShare,
-    vecshare::{SliceShare, VecShare},
+    vecshare::{SliceShare, VecShareReplicated},
 };
-use ampc_secret_sharing::Role;
 use eyre::{bail, eyre, Error, Result};
 use itertools::{izip, repeat_n, Itertools};
 use num_traits::Zero;
@@ -27,13 +26,13 @@ thread_local! {
 }
 
 struct VecBinShare<T: IntRing2k> {
-    inner: VecShare<T>,
+    inner: VecShareReplicated<T>,
 }
 
 impl<T: IntRing2k> VecBinShare<T> {
     fn from_ab(a: Vec<RingElement<T>>, b: Vec<RingElement<T>>) -> Self {
         Self {
-            inner: VecShare::from_ab(a, b),
+            inner: VecShareReplicated::from_ab(a, b),
         }
     }
 
@@ -110,7 +109,10 @@ fn a2b_pre<T: IntRing2k>(
 
 /// Computes in place binary XOR of two vectors of bit-sliced shares.
 #[inline]
-fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecShare<T>]) {
+fn transposed_pack_xor_assign<T: IntRing2k>(
+    x1: &mut [VecShareReplicated<T>],
+    x2: &[VecShareReplicated<T>],
+) {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
 
@@ -121,7 +123,10 @@ fn transposed_pack_xor_assign<T: IntRing2k>(x1: &mut [VecShare<T>], x2: &[VecSha
 
 /// Computes binary XOR of two vectors of bit-sliced shares.
 #[inline]
-fn transposed_pack_xor<T: IntRing2k>(x1: &[VecShare<T>], x2: &[VecShare<T>]) -> Vec<VecShare<T>> {
+fn transposed_pack_xor<T: IntRing2k>(
+    x1: &[VecShareReplicated<T>],
+    x2: &[VecShareReplicated<T>],
+) -> Vec<VecShareReplicated<T>> {
     let len = x1.len();
     debug_assert_eq!(len, x2.len());
 
@@ -217,14 +222,14 @@ async fn and_many<T>(
     session: &mut Session,
     a: SliceShare<'_, T>,
     b: SliceShare<'_, T>,
-) -> Result<VecShare<T>, Error>
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
 {
     let shares_a = and_many_send(session, a, b).await?;
     let shares_b = and_many_receive(session).await?;
-    let complete_shares = VecShare::from_ab(shares_a, shares_b);
+    let complete_shares = VecShareReplicated::from_ab(shares_a, shares_b);
     Ok(complete_shares)
 }
 
@@ -234,9 +239,9 @@ where
 #[allow(dead_code)]
 pub async fn and_product(
     session: &mut Session,
-    v: Vec<VecShare<Bit>>,
+    v: Vec<VecShareReplicated<Bit>>,
     len: usize,
-) -> Result<VecShare<Bit>, Error> {
+) -> Result<VecShareReplicated<Bit>, Error> {
     if v.is_empty() {
         bail!("Input vector is empty");
     }
@@ -251,10 +256,10 @@ pub async fn and_product(
         // if the length is odd, we save the last column to add it back later
         let maybe_last_column = if res.len() % 2 == 1 { res.pop() } else { None };
         let half_len = res.len() / 2;
-        let left_bits: VecShare<u64> =
-            VecShare::new_vec(res.drain(..half_len).flatten().collect_vec()).pack();
-        let right_bits: VecShare<u64> =
-            VecShare::new_vec(res.drain(..).flatten().collect_vec()).pack();
+        let left_bits: VecShareReplicated<u64> =
+            VecShareReplicated::new_vec(res.drain(..half_len).flatten().collect_vec()).pack();
+        let right_bits: VecShareReplicated<u64> =
+            VecShareReplicated::new_vec(res.drain(..).flatten().collect_vec()).pack();
         let and_bits = and_many(session, left_bits.as_slice(), right_bits.as_slice()).await?;
         let mut and_bits = and_bits.convert_to_bits();
         let num_and_bits = half_len * len;
@@ -262,7 +267,7 @@ pub async fn and_product(
         res = and_bits
             .inner()
             .chunks(len)
-            .map(|chunk| VecShare::new_vec(chunk.to_vec()))
+            .map(|chunk| VecShareReplicated::new_vec(chunk.to_vec()))
             .collect_vec();
         res.extend(maybe_last_column);
     }
@@ -273,9 +278,9 @@ pub async fn and_product(
 #[instrument(level = "trace", target = "searcher::network", skip(session, x1, x2))]
 async fn transposed_pack_and<T>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
-) -> Result<Vec<VecShare<T>>, Error>
+    x1: Vec<VecShareReplicated<T>>,
+    x2: Vec<VecShareReplicated<T>>,
+) -> Result<Vec<VecShareReplicated<T>>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -284,16 +289,18 @@ where
         bail!("Inputs have different length {} {}", x1.len(), x2.len());
     }
 
-    let chunk_sizes = x1.iter().map(VecShare::len).collect::<Vec<_>>();
-    for (chunk_size1, chunk_size2) in izip!(chunk_sizes.iter(), x2.iter().map(VecShare::len)) {
+    let chunk_sizes = x1.iter().map(VecShareReplicated::len).collect::<Vec<_>>();
+    for (chunk_size1, chunk_size2) in
+        izip!(chunk_sizes.iter(), x2.iter().map(VecShareReplicated::len))
+    {
         if *chunk_size1 != chunk_size2 {
             bail!("VecShare lengths are not equal");
         }
     }
 
     let flattened_len: usize = chunk_sizes.iter().sum();
-    let x1 = VecShare::flatten(x1);
-    let x2 = VecShare::flatten(x2);
+    let x1 = VecShareReplicated::flatten(x1);
+    let x2 = VecShareReplicated::flatten(x2);
     let shares_a = and_many_iter_send(session, x1, x2, flattened_len).await?;
     let shares_b = and_many_receive(session).await?;
 
@@ -303,7 +310,7 @@ where
     for l in chunk_sizes {
         let a = shares_a[offset..offset + l].iter().copied();
         let b = shares_b[offset..offset + l].iter().copied();
-        res.push(VecShare::from_iter_ab(a, b));
+        res.push(VecShareReplicated::from_iter_ab(a, b));
         offset += l;
     }
     Ok(res)
@@ -315,11 +322,11 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn binary_add_3_get_two_carries<T>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
-    x3: Vec<VecShare<T>>,
+    x1: Vec<VecShareReplicated<T>>,
+    x2: Vec<VecShareReplicated<T>>,
+    x3: Vec<VecShareReplicated<T>>,
     truncate_len: usize,
-) -> Result<(VecShare<Bit>, VecShare<Bit>), Error>
+) -> Result<(VecShareReplicated<Bit>, VecShareReplicated<Bit>), Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -449,8 +456,8 @@ where
 /// The resulting communication complexity is 2 rounds with each party sending 1 element of T per input bit.
 pub async fn bit_inject<T>(
     session: &mut Session,
-    input: VecShare<Bit>,
-) -> Result<VecShare<T>, Error>
+    input: VecShareReplicated<Bit>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -495,8 +502,8 @@ fn zero_iter<T: IntRing2k>(len: usize) -> impl Iterator<Item = RingElement<T>> {
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party0<T>(
     session: &mut Session,
-    input: VecShare<Bit>,
-) -> Result<VecShare<T>, Error>
+    input: VecShareReplicated<Bit>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -549,7 +556,7 @@ where
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
     // variable creation is commented out in the above comment.
     // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
-    Ok(VecShare::new_vec(
+    Ok(VecShareReplicated::new_vec(
         izip!(
             r_01.into_iter(),
             b2.into_iter(),
@@ -593,8 +600,8 @@ where
 /// = s1 - 2 * (s3 + s4)
 async fn bit_inject_party1<T>(
     session: &mut Session,
-    input: VecShare<Bit>,
-) -> Result<VecShare<T>, Error>
+    input: VecShareReplicated<Bit>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -640,7 +647,7 @@ where
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
     // variable creation is commented out in the above comment.
     // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
-    Ok(VecShare::new_vec(
+    Ok(VecShareReplicated::new_vec(
         izip!(x.into_iter(), r_01.into_iter(), y.into_iter(), r_12)
             .map(|(s1a, s1b, s3b, s4a)| {
                 let s1 = ReplicatedShare::new(s1a, s1b);
@@ -676,8 +683,8 @@ where
 /// = s1 + s2 - 2 * (s3 + s4)
 async fn bit_inject_party2<T>(
     session: &mut Session,
-    input: VecShare<Bit>,
-) -> Result<VecShare<T>, Error>
+    input: VecShareReplicated<Bit>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -729,7 +736,7 @@ where
     // note: this has been optimized to use fewer iterators and zips. the unoptimized
     // variable creation is commented out in the above comment.
     // if sXa or sXb is absent then it is a zero share, which is RingElement::zero().
-    Ok(VecShare::new_vec(
+    Ok(VecShareReplicated::new_vec(
         izip!(
             x.into_iter(),
             b2.into_iter(),
@@ -765,8 +772,8 @@ pub fn mul_lift_2k_to_32<const K: u64>(val: &ReplicatedShare<u16>) -> Replicated
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
 #[allow(dead_code)]
 #[inline]
-fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShare<u32> {
-    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
+fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShareReplicated<u32> {
+    VecShareReplicated::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
 }
 
 /// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
@@ -784,19 +791,22 @@ pub fn mul_lift_2k_to_48<const K: usize>(val: &ReplicatedShare<u32>) -> Replicat
 /// Lifts the given shares of u32 to shares of Ring48 by multiplying them by 2^k.
 #[allow(dead_code)]
 #[inline]
-fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShare<Ring48> {
-    VecShare::new_vec(vals.iter().map(mul_lift_2k_to_48::<K>).collect())
+fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShareReplicated<Ring48> {
+    VecShareReplicated::new_vec(vals.iter().map(mul_lift_2k_to_48::<K>).collect())
 }
 
 /// Lifts the given shares of u16 to shares of u32.
 #[allow(dead_code)]
-pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
+pub async fn lift(
+    session: &mut Session,
+    shares: VecShareReplicated<u16>,
+) -> Result<VecShareReplicated<u32>> {
     let len = shares.len();
     let mut padded_len = len.div_ceil(64);
     padded_len *= 64;
 
     // Interpret the shares as u32
-    let mut x_a = VecShare::with_capacity(padded_len);
+    let mut x_a = VecShareReplicated::with_capacity(padded_len);
     for share in shares.iter() {
         x_a.push(ReplicatedShare::new(
             RingElement(share.a.0 as u32),
@@ -815,9 +825,9 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 
     for x_ in x.into_iter() {
         let len__ = x_.len();
-        let mut x1_ = VecShare::with_capacity(len__);
-        let mut x2_ = VecShare::with_capacity(len__);
-        let mut x3_ = VecShare::with_capacity(len__);
+        let mut x1_ = VecShareReplicated::with_capacity(len__);
+        let mut x2_ = VecShareReplicated::with_capacity(len__);
+        let mut x3_ = VecShareReplicated::with_capacity(len__);
         for x__ in x_.into_iter() {
             let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
             x1_.push(x1__);
@@ -855,14 +865,14 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 #[allow(dead_code)]
 pub async fn lift_to_ring48(
     session: &mut Session,
-    shares: VecShare<u16>,
-) -> Result<VecShare<Ring48>> {
+    shares: VecShareReplicated<u16>,
+) -> Result<VecShareReplicated<Ring48>> {
     let len = shares.len();
     let mut padded_len = len.div_ceil(64);
     padded_len *= 64;
 
     // Interpret the shares as Ring48
-    let mut x_a = VecShare::with_capacity(padded_len);
+    let mut x_a = VecShareReplicated::with_capacity(padded_len);
     for share in shares.iter() {
         x_a.push(ReplicatedShare::new(
             RingElement(Ring48(share.a.0 as u64)),
@@ -881,9 +891,9 @@ pub async fn lift_to_ring48(
 
     for x_ in x.into_iter() {
         let len__ = x_.len();
-        let mut x1_ = VecShare::with_capacity(len__);
-        let mut x2_ = VecShare::with_capacity(len__);
-        let mut x3_ = VecShare::with_capacity(len__);
+        let mut x1_ = VecShareReplicated::with_capacity(len__);
+        let mut x2_ = VecShareReplicated::with_capacity(len__);
+        let mut x3_ = VecShareReplicated::with_capacity(len__);
         for x__ in x_.into_iter() {
             let (x1__, x2__, x3__) = a2b_pre(session, x__)?;
             x1_.push(x1__);
@@ -957,7 +967,7 @@ pub async fn lift_to_ring48(
 /// `a + b + c = x_i`
 async fn two_way_split<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    input: VecShare<T>,
+    input: VecShareReplicated<T>,
 ) -> Result<(VecBinShare<T>, VecBinShare<T>), Error>
 where
     Standard: Distribution<T>,
@@ -1048,9 +1058,9 @@ where
 #[cfg(feature = "ripple_carry_adder")]
 async fn binary_add_2_get_msb<T>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
-) -> Result<VecShare<T>, Error>
+    x1: Vec<VecShareReplicated<T>>,
+    x2: Vec<VecShareReplicated<T>>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -1094,9 +1104,9 @@ where
 #[cfg(not(feature = "ripple_carry_adder"))]
 async fn binary_add_2_get_msb<T>(
     session: &mut Session,
-    x1: Vec<VecShare<T>>,
-    x2: Vec<VecShare<T>>,
-) -> Result<VecShare<T>, Error>
+    x1: Vec<VecShareReplicated<T>>,
+    x2: Vec<VecShareReplicated<T>>,
+) -> Result<VecShareReplicated<T>, Error>
 where
     T: NetworkInt + RingRandFillable,
     Standard: Distribution<T>,
@@ -1201,10 +1211,13 @@ where
 }
 
 /// Extracts the MSBs of the secret shared input values in a bit-sliced form as u64 shares, i.e., the i-th bit of the j-th u64 secret share is the MSB of the (j * 64 + i)-th input value.
-async fn extract_msb<T>(session: &mut Session, x_: VecShare<T>) -> Result<VecShare<u64>, Error>
+async fn extract_msb<T>(
+    session: &mut Session,
+    x_: VecShareReplicated<T>,
+) -> Result<VecShareReplicated<u64>, Error>
 where
     T: NetworkInt + RingRandFillable,
-    VecShare<T>: Transpose64,
+    VecShareReplicated<T>: Transpose64,
     Standard: Distribution<T>,
 {
     // // call the new test MSB_rand function below
@@ -1231,10 +1244,10 @@ pub async fn single_extract_msb<T>(
 ) -> Result<ReplicatedShare<Bit>, Error>
 where
     T: NetworkInt + RingRandFillable,
-    VecShare<T>: Transpose64,
+    VecShareReplicated<T>: Transpose64,
     Standard: Distribution<T>,
 {
-    let (a, b) = extract_msb(session, VecShare::new_vec(vec![x]))
+    let (a, b) = extract_msb(session, VecShareReplicated::new_vec(vec![x]))
         .await?
         .get_at(0)
         .get_ab();
@@ -1254,14 +1267,14 @@ pub async fn extract_msb_batch<T>(
 ) -> Result<Vec<ReplicatedShare<Bit>>>
 where
     T: NetworkInt + RingRandFillable,
-    VecShare<T>: Transpose64,
+    VecShareReplicated<T>: Transpose64,
     Standard: Distribution<T>,
 {
     // println!("extract_msb_batch");
     let res_len = x.len();
     let mut res = Vec::with_capacity(res_len);
 
-    let packed_bits = extract_msb(session, VecShare::new_vec(x.to_vec())).await?;
+    let packed_bits = extract_msb(session, VecShareReplicated::new_vec(x.to_vec())).await?;
 
     'outer: for bit_batch in packed_bits.into_iter() {
         let (a, b) = bit_batch.get_ab();
@@ -1340,7 +1353,7 @@ pub async fn open_bin(session: &mut Session, shares: &[ReplicatedShare<Bit>]) ->
 mod tests {
     use crate::{
         execution::local::LocalRuntime,
-        protocol::{ops::open_ring, test_utils::create_array_sharing},
+        protocol::{ops::open_ring, test_utils::create_array_sharing_replicated},
     };
 
     use super::*;
@@ -1360,14 +1373,14 @@ mod tests {
 
         // Generate random bits and their shares
         let bits = (0..len).map(|_| rng.gen_bool(0.5).into()).collect_vec();
-        let shares = create_array_sharing::<AesRng, Bit>(&mut rng, &bits);
+        let shares = create_array_sharing_replicated::<AesRng, Bit>(&mut rng, &bits);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
             jobs.spawn(async move {
                 let mut session = session.lock().await;
                 let injected = bit_inject::<T>(&mut session, shares_i).await.unwrap();
@@ -1425,14 +1438,14 @@ mod tests {
 
         // Generate random input and their shares
         let ints: Vec<T> = (0..len).map(|_| rng.gen::<T>()).collect();
-        let shares = create_array_sharing(&mut rng, &ints);
+        let shares = create_array_sharing_replicated(&mut rng, &ints);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
             jobs.spawn(async move {
                 let mut session = session.lock().await;
                 two_way_split::<T>(&mut session, shares_i).await
@@ -1479,7 +1492,7 @@ mod tests {
     async fn test_extract_msb_generic<T>() -> Result<()>
     where
         T: NetworkInt + RingRandFillable,
-        VecShare<T>: Transpose64,
+        VecShareReplicated<T>: Transpose64,
         Standard: Distribution<T>,
     {
         let mut rng = AesRng::from_random_seed();
@@ -1499,14 +1512,14 @@ mod tests {
             })
             .collect();
 
-        let shares = create_array_sharing(&mut rng, &ints);
+        let shares = create_array_sharing_replicated(&mut rng, &ints);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
             jobs.spawn(async move {
                 let mut session = session.lock().await;
                 let msbs = extract_msb_batch::<T>(&mut session, shares_i.shares())
@@ -1557,14 +1570,14 @@ mod tests {
 
         // Generate random u16 inputs and their shares
         let inputs: Vec<u16> = (0..len).map(|_| rng.gen::<u16>()).collect();
-        let shares = create_array_sharing(&mut rng, &inputs);
+        let shares = create_array_sharing_replicated(&mut rng, &inputs);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
-            let shares_i = VecShare::new_vec(shares.of_party(i).clone());
+            let shares_i = VecShareReplicated::new_vec(shares.of_party(i).clone());
             jobs.spawn(async move {
                 let mut session = session.lock().await;
                 let lifted = lift_to_ring48(&mut session, shares_i).await.unwrap();

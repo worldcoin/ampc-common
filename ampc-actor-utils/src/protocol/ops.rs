@@ -9,7 +9,7 @@ use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
-    ring_impl::RingElement, share::ReplicatedShare, IntRing2k, Ring48, VecShare,
+    ring_impl::RingElement, share::ReplicatedShare, IntRing2k, Ring48, VecShareReplicated,
 };
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
@@ -169,8 +169,6 @@ pub async fn open_ring<T: IntRing2k + crate::network::value::NetworkInt>(
         .await
         .and_then(|v| T::into_vec(v))
         .map_err(|e| eyre!("Error in receiving in open operation: {}", e))?;
-
-    dbg!(&shares[0], &c, session.own_role().index());
 
     // ADD shares with the received shares
     shares
@@ -369,7 +367,7 @@ pub async fn oblivious_cross_compare_lifted(
     // compute the secret-shared bits d1 < d2
     let bits = oblivious_cross_compare(session, distances).await?;
     // inject bits to T shares
-    Ok(bit_inject(session, VecShare { shares: bits })
+    Ok(bit_inject(session, VecShareReplicated { shares: bits })
         .await?
         .inner())
 }
@@ -391,8 +389,8 @@ pub async fn min_of_pair_batch(
 /// (VecShare) of 32-bit values.
 pub async fn batch_signed_lift(
     session: &mut Session,
-    mut pre_lift: VecShare<u16>,
-) -> Result<VecShare<u32>> {
+    mut pre_lift: VecShareReplicated<u16>,
+) -> Result<VecShareReplicated<u32>> {
     // Compute (v + 2^{15}) % 2^{16}, to make values positive.
     for v in pre_lift.iter_mut() {
         v.add_assign_const_role(1_u16 << 15, session.own_role());
@@ -413,7 +411,7 @@ pub async fn batch_signed_lift_vec(
     session: &mut Session,
     pre_lift: Vec<ReplicatedShare<u16>>,
 ) -> Result<Vec<ReplicatedShare<u32>>> {
-    let pre_lift = VecShare::new_vec(pre_lift);
+    let pre_lift = VecShareReplicated::new_vec(pre_lift);
     Ok(batch_signed_lift(session, pre_lift).await?.inner())
 }
 
@@ -421,8 +419,8 @@ pub async fn batch_signed_lift_vec(
 /// targets 48-bit ring arithmetic.
 pub async fn batch_signed_lift_ring48(
     session: &mut Session,
-    mut pre_lift: VecShare<u16>,
-) -> Result<VecShare<Ring48>> {
+    mut pre_lift: VecShareReplicated<u16>,
+) -> Result<VecShareReplicated<Ring48>> {
     // Compute (v + 2^{15}) % 2^{16}, to make values positive.
     for v in pre_lift.iter_mut() {
         v.add_assign_const_role(1_u16 << 15, session.own_role());
@@ -446,7 +444,7 @@ pub async fn batch_signed_lift_vec_ring48(
     session: &mut Session,
     pre_lift: Vec<ReplicatedShare<u16>>,
 ) -> Result<Vec<ReplicatedShare<Ring48>>> {
-    let pre_lift = VecShare::new_vec(pre_lift);
+    let pre_lift = VecShareReplicated::new_vec(pre_lift);
     Ok(batch_signed_lift_ring48(session, pre_lift).await?.inner())
 }
 
