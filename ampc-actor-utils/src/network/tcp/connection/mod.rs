@@ -19,6 +19,16 @@ use tokio::{
     time::sleep,
 };
 
+pub enum ConnectionConfig<T: NetworkConnection + 'static> {
+    ClientServer {
+        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+    },
+    ServerOnly {
+        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+    },
+    ClientOnly,
+}
+
 // connect and perform handshake
 pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
     connection_id: ConnectionId,
@@ -26,7 +36,7 @@ pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     peer: Arc<Peer>,
     connection_state: ConnectionState,
     client: C,
-    conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+    connection_config: ConnectionConfig<T>,
 ) -> Result<T> {
     let peer_id = peer.id().clone();
     let connector = Connector {
@@ -35,7 +45,7 @@ pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
         peer,
         connection_state,
         client,
-        conn_req_tx: conn_cmd_tx,
+        connection_config,
     };
     let (rsp_tx, rsp_rx) = oneshot::channel();
     tokio::spawn(async move {
@@ -53,30 +63,48 @@ pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     Ok(r)
 }
 
-struct Connector<T: NetworkConnection, C: Client> {
+struct Connector<T: NetworkConnection + 'static, C: Client> {
     connection_id: ConnectionId,
     own_id: Arc<Identity>,
     peer: Arc<Peer>,
     connection_state: ConnectionState,
     // initiates the connection
     client: C,
-    // listens for the connection
-    conn_req_tx: UnboundedSender<ConnectionRequest<T>>,
+    connection_config: ConnectionConfig<T>,
 }
 
 impl<T: NetworkConnection, C: Client<Output = T>> Connector<T, C> {
     async fn connect(&self) -> Result<T> {
-        if &*self.own_id > self.peer.id() {
-            let mut stream = self.client.connect(self.peer.url().to_string()).await?;
-            handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
-            handshake::outbound_ok(&mut stream).await?;
-            Ok(stream)
-        } else {
-            let (rsp_tx, rsp_rx) = oneshot::channel();
-            let req = ConnectionRequest::new(self.peer.id().clone(), self.connection_id, rsp_tx);
-            let _ = self.conn_req_tx.send(req);
-            let r = rsp_rx.await?;
-            Ok(r)
+        match &self.connection_config {
+            ConnectionConfig::ClientServer { conn_cmd_tx } => {
+                if &*self.own_id > self.peer.id() {
+                    let mut stream = self.client.connect(self.peer.url().to_string()).await?;
+                    handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
+                    handshake::outbound_ok(&mut stream).await?;
+                    Ok(stream)
+                } else {
+                    let (rsp_tx, rsp_rx) = oneshot::channel();
+                    let req =
+                        ConnectionRequest::new(self.peer.id().clone(), self.connection_id, rsp_tx);
+                    let _ = conn_cmd_tx.send(req);
+                    let r = rsp_rx.await?;
+                    Ok(r)
+                }
+            }
+            ConnectionConfig::ServerOnly { conn_cmd_tx } => {
+                let (rsp_tx, rsp_rx) = oneshot::channel();
+                let req =
+                    ConnectionRequest::new(self.peer.id().clone(), self.connection_id, rsp_tx);
+                let _ = conn_cmd_tx.send(req);
+                let r = rsp_rx.await?;
+                Ok(r)
+            }
+            ConnectionConfig::ClientOnly => {
+                let mut stream = self.client.connect(self.peer.url().to_string()).await?;
+                handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
+                handshake::outbound_ok(&mut stream).await?;
+                Ok(stream)
+            }
         }
     }
 
