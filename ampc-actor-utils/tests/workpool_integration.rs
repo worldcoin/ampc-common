@@ -152,7 +152,6 @@ async fn start_cluster() -> (
         tracing::info!(worker_id = worker_id_str, worker_addr, "building worker");
         let args = WorkerArgs {
             worker_id: Identity(worker_id_str.clone()),
-            worker_address: worker_addr.clone(),
             leader_id: leader_id.clone(),
             leader_address: leader_addr.clone(),
             tls: None,
