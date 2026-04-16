@@ -21,6 +21,7 @@ pub struct TcpServer {
     listener: TcpListener,
 }
 
+/// tls configuration for a server
 pub enum TlsServerAuth {
     Server {
         /// the server key

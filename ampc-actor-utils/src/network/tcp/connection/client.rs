@@ -19,6 +19,7 @@ pub struct TlsClient {
 #[derive(Clone, Default)]
 pub struct TcpClient {}
 
+/// tls configuration for a client
 pub enum TlsClientAuth {
     /// only the server is authenticated
     Server {
