@@ -25,11 +25,11 @@ pub enum ConnectionConfig<T: NetworkConnection + 'static> {
         client: Arc<dyn Client<Output = T>>,
         conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     },
-    ServerOnly {
+    Server {
         peer_id: Identity,
         conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     },
-    ClientOnly {
+    Client {
         peer: Arc<Peer>,
         client: Arc<dyn Client<Output = T>>,
     },
@@ -39,8 +39,8 @@ impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
     fn get_peer_id(&self) -> Identity {
         match self {
             Self::Bidirectional { peer, .. } => peer.id().clone(),
-            Self::ServerOnly { peer_id, .. } => peer_id.clone(),
-            Self::ClientOnly { peer, .. } => peer.id().clone(),
+            Self::Server { peer_id, .. } => peer_id.clone(),
+            Self::Client { peer, .. } => peer.id().clone(),
         }
     }
 }
@@ -105,7 +105,7 @@ impl<T: NetworkConnection> Connector<T> {
                     Ok(r)
                 }
             }
-            ConnectionConfig::ServerOnly {
+            ConnectionConfig::Server {
                 peer_id,
                 conn_cmd_tx,
             } => {
@@ -117,7 +117,7 @@ impl<T: NetworkConnection> Connector<T> {
                 let r = rsp_rx.await?;
                 Ok(r)
             }
-            ConnectionConfig::ClientOnly { peer, client } => {
+            ConnectionConfig::Client { peer, client } => {
                 let mut stream = client.connect(peer.url().to_string()).await?;
                 handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
                 handshake::outbound_ok(&mut stream).await?;

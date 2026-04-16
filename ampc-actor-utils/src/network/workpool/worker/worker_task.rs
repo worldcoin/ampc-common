@@ -70,7 +70,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clo
             connection_id,
             my_id.clone(),
             connection_state.clone(),
-            ConnectionConfig::ClientOnly {
+            ConnectionConfig::Client {
                 peer: leader.clone(),
                 client: Arc::new(client.clone()),
             },

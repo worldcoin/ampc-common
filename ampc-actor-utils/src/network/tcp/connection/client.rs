@@ -20,12 +20,18 @@ pub struct TlsClient {
 pub struct TcpClient {}
 
 pub enum TlsClientAuth {
-    ServerOnly {
+    /// only the server is authenticated
+    Server {
+        /// the root certs for the server
         root_certs: Vec<String>,
     },
+    /// both the client and server are authenticated
     Mutual {
+        /// the root certs for the server
         root_certs: Vec<String>,
+        /// the client key
         key_file: String,
+        /// the client cert
         cert_file: String,
     },
 }
@@ -34,7 +40,7 @@ impl TlsClient {
     pub async fn new(auth: TlsClientAuth) -> Result<Self> {
         let mut roots = RootCertStore::empty();
         let client_config = match auth {
-            TlsClientAuth::ServerOnly { root_certs } => {
+            TlsClientAuth::Server { root_certs } => {
                 for root_cert in &root_certs {
                     for cert in CertificateDer::pem_file_iter(root_cert)? {
                         roots.add(cert?)?;

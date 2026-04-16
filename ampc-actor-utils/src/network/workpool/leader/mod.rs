@@ -237,9 +237,10 @@ pub async fn build_leader(
 
         let listener = TlsServer::new(
             leader_addr,
-            private_key,
-            leaf_cert,
-            TlsServerAuth::ServerOnly,
+            TlsServerAuth::Server {
+                key_file: private_key.clone(),
+                cert_file: leaf_cert.clone(),
+            },
         )
         .await
         .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;

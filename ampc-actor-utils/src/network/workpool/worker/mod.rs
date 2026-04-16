@@ -69,7 +69,7 @@ pub async fn build_worker_handle(
 
     let job_rx = if let Some(root_certs) = args.root_certs.clone() {
         tracing::info!("Building WorkPool Worker with TLS");
-        let connector = TlsClient::new(TlsClientAuth::ServerOnly { root_certs })
+        let connector = TlsClient::new(TlsClientAuth::Server { root_certs })
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())

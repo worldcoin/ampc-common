@@ -22,24 +22,46 @@ pub struct TcpServer {
 }
 
 pub enum TlsServerAuth {
-    ServerOnly,
-    Mutual { root_certs: Vec<String> },
+    Server {
+        /// the server key
+        key_file: String,
+        /// the server cert
+        cert_file: String,
+    },
+    Mutual {
+        /// the client certs
+        root_certs: Vec<String>,
+        /// the server key
+        key_file: String,
+        /// the server cert
+        cert_file: String,
+    },
 }
 
 impl TlsServer {
-    pub async fn new(
-        own_addr: SocketAddr,
-        key_file: &str,
-        cert_file: &str,
-        auth: TlsServerAuth,
-    ) -> Result<Self> {
-        let certs = CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
-        let key = PrivateKeyDer::from_pem_file(key_file)?;
+    pub async fn new(own_addr: SocketAddr, auth: TlsServerAuth) -> Result<Self> {
         let server_config = match auth {
-            TlsServerAuth::ServerOnly => ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(certs, key)?,
-            TlsServerAuth::Mutual { root_certs } => {
+            TlsServerAuth::Server {
+                key_file,
+                cert_file,
+            } => {
+                let certs =
+                    CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
+                let key = PrivateKeyDer::from_pem_file(key_file)?;
+
+                ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(certs, key)?
+            }
+            TlsServerAuth::Mutual {
+                root_certs,
+                key_file,
+                cert_file,
+            } => {
+                let certs =
+                    CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
+                let key = PrivateKeyDer::from_pem_file(key_file)?;
+
                 let mut root_cert_store = RootCertStore::empty();
                 for root_cert in root_certs {
                     for cert in CertificateDer::pem_file_iter(root_cert)? {

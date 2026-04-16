@@ -118,10 +118,10 @@ pub async fn build_network_handle(
 
         let listener = TlsServer::new(
             my_addr,
-            private_key,
-            leaf_cert,
             TlsServerAuth::Mutual {
                 root_certs: root_certs.clone(),
+                key_file: private_key.clone(),
+                cert_file: leaf_cert.clone(),
             },
         )
         .await?;

@@ -234,7 +234,7 @@ async fn worker_mgr<T: NetworkConnection + 'static>(
             connection_id,
             my_name.clone(),
             connection_state.clone(),
-            ConnectionConfig::<T>::ServerOnly {
+            ConnectionConfig::<T>::Server {
                 peer_id: worker_name.clone(),
                 conn_cmd_tx: conn_cmd_tx.clone(),
             },
