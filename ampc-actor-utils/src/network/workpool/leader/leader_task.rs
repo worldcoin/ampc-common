@@ -20,7 +20,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         accept_loop, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
-        NetworkConnection, Peer, Server,
+        NetworkConnection, Server,
     },
 };
 
@@ -29,25 +29,22 @@ use crate::{
 /// Returns the job sender and one `watch::Receiver<bool>` per worker.
 /// Each receiver starts as `false` and flips to `true` once that worker's
 /// connection (including the job-state handshake) is fully established.
-pub fn spawn<T, S, I>(
+pub fn spawn<T, S>(
     my_id: Identity,
-    worker_ids: I,
+    // this is called worker_names due to naming conflict between the protocol level id and the
+    // application level id
+    worker_names: Vec<Identity>,
     listener: S,
     shutdown_ct: CancellationToken,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
-    I: Iterator<Item = String>,
     S: Server<Output = T> + 'static,
 {
     let my_id = Arc::new(my_id);
     let job_tracker = Arc::new(JobTracker::new());
     let shutdown_ct = shutdown_ct.child_token();
     let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
-    let workers: Vec<_> = worker_ids
-        .enumerate()
-        .map(|(idx, id)| Arc::new(Peer::new(Identity(format!("{}-w-{}", &my_id.0, idx)), id)))
-        .collect();
 
     let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
     tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
@@ -55,9 +52,9 @@ where
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();
     let (job_sent_tx, job_sent_rx) = mpsc::unbounded_channel();
-    let mut workers_connected = Vec::with_capacity(workers.len());
+    let mut workers_connected = Vec::with_capacity(worker_names.len());
 
-    for (idx, worker) in workers.iter().enumerate() {
+    for (idx, worker) in worker_names.iter().enumerate() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         worker_cmd_txs.push(cmd_tx);
         let (worker_conn_tx, worker_conn_rx) = watch::channel(false);
@@ -216,8 +213,10 @@ fn send_to_workpool(
 #[allow(clippy::too_many_arguments)]
 async fn worker_mgr<T: NetworkConnection + 'static>(
     worker_id: WorkerId,
-    my_id: Arc<Identity>,
-    worker: Arc<Peer>,
+    my_name: Arc<Identity>,
+    // this is called worker_name due to naming conflict between the protocol level id and the
+    // application level id
+    worker_name: Identity,
     job_tracker: Arc<JobTracker>,
     worker_conn_tx: watch::Sender<bool>,
     connection_state: ConnectionState,
@@ -233,10 +232,10 @@ async fn worker_mgr<T: NetworkConnection + 'static>(
         let connection_id = ConnectionId::new(0); // workers always connect with id 0
         let mut conn = match crate::network::tcp::connect(
             connection_id,
-            my_id.clone(),
+            my_name.clone(),
             connection_state.clone(),
             ConnectionConfig::<T>::ServerOnly {
-                peer_id: worker.id().clone(),
+                peer_id: worker_name.clone(),
                 conn_cmd_tx: conn_cmd_tx.clone(),
             },
         )

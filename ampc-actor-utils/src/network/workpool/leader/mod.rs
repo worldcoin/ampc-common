@@ -220,7 +220,7 @@ pub async fn build_leader(
         .parse()
         .map_err(|e: net::AddrParseError| SetupError::InvalidAddress(e.to_string()))?;
     let num_workers = args.worker_ids.len();
-    let worker_ids = args.worker_ids.into_iter().map(|x| x.0);
+    let worker_ids = args.worker_ids;
 
     let (handle_tx, worker_connected) = if let Some(tls) = args.tls.as_ref() {
         tracing::info!("Building WorkPool Leader with TLS");
@@ -239,7 +239,7 @@ pub async fn build_leader(
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
 
-        Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer, _>(
+        Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer>(
             args.leader_id,
             worker_ids,
             listener,
@@ -252,7 +252,7 @@ pub async fn build_leader(
             SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
         })?);
 
-        Result::<_, SetupError>::Ok(leader_task::spawn::<DynStreamConn, BoxTcpServer, _>(
+        Result::<_, SetupError>::Ok(leader_task::spawn::<DynStreamConn, BoxTcpServer>(
             args.leader_id,
             worker_ids,
             listener,
