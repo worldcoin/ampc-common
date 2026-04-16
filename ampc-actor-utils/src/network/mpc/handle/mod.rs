@@ -13,7 +13,7 @@ use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
-use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
+use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsAuth, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsConfig};
 use async_trait::async_trait;
 use eyre::Result;
@@ -116,7 +116,15 @@ pub async fn build_network_handle(
             .as_ref()
             .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
 
-        let listener = TlsServer::new(my_addr, private_key, leaf_cert, &root_certs).await?;
+        let listener = TlsServer::new(
+            my_addr,
+            private_key,
+            leaf_cert,
+            TlsAuth::Mutual {
+                root_certs: root_certs.clone(),
+            },
+        )
+        .await?;
         let connector = TlsClient::new(private_key, leaf_cert, &root_certs).await?;
         build_network_handle!(listener, connector)
     } else {
