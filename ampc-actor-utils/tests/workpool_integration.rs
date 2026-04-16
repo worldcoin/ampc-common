@@ -151,7 +151,7 @@ async fn start_cluster() -> (
             worker_id: worker_id_str.clone(),
             leader_id: leader_id.clone(),
             leader_address: leader_addr.clone(),
-            tls: None,
+            root_certs: None,
         };
         let mut worker = build_worker_handle(args, shutdown.clone())
             .await

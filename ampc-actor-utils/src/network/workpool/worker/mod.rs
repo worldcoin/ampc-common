@@ -8,7 +8,6 @@ use crate::{
     network::tcp::{
         self,
         connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientAuth},
-        TlsConfig,
     },
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
@@ -55,7 +54,8 @@ pub struct WorkerArgs {
     pub worker_id: Identity,
     pub leader_id: Identity,
     pub leader_address: String,
-    pub tls: Option<TlsConfig>,
+    /// set to Some for server only TLS, or None for TCP
+    pub root_certs: Option<Vec<String>>,
 }
 
 pub async fn build_worker_handle(
@@ -67,31 +67,14 @@ pub async fn build_worker_handle(
     let shutdown_ct = shutdown_ct.child_token();
     let leader = Peer::new(args.leader_id, args.leader_address);
 
-    let job_rx = if let Some(tls) = args.tls.as_ref() {
+    let job_rx = if let Some(root_certs) = args.root_certs.clone() {
         tracing::info!("Building WorkPool Worker with TLS");
-
-        let root_certs = tls.clone().root_certs;
-        let private_key = tls
-            .private_key
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS private key required".to_string()))?;
-        let leaf_cert = tls
-            .leaf_cert
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
-
-        let connector = TlsClient::new(TlsClientAuth::Mutual {
-            root_certs,
-            key_file: private_key.clone(),
-            cert_file: leaf_cert.clone(),
-        })
-        .await
-        .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
-
+        let connector = TlsClient::new(TlsClientAuth::ServerOnly { root_certs })
+            .await
+            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     } else {
         tracing::info!("Building WorkPool Worker without TLS");
-
         let connector = BoxTcpClient(TcpClient::default());
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     };
