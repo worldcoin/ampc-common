@@ -316,15 +316,15 @@ struct TestCluster {
 async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let global_shutdown = CancellationToken::new();
 
-    let proxy_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let proxy_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await?);
     let proxy_worker_to_leader_addr = proxy_listener.local_addr()?;
-    drop(proxy_listener);
 
     let leader_listener = Arc::new(TcpListener::bind("127.0.0.1:0").await?);
     let leader_addr = leader_listener.local_addr()?;
+    drop(leader_listener);
 
     // Create proxy for worker 0: worker connects to proxy, proxy connects to leader.
-    let proxy = TcpProxy::new(leader_addr, leader_listener).await?;
+    let proxy = TcpProxy::new(leader_addr, proxy_listener).await?;
 
     let leader_id = Identity("leader".to_string());
     let mut worker_ids = vec![];
