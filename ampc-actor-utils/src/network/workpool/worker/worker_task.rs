@@ -27,7 +27,7 @@ pub fn spawn<T, C>(
 ) -> UnboundedReceiver<Job>
 where
     T: NetworkConnection + 'static,
-    C: Client<Output = T> + 'static,
+    C: Client<Output = T> + Clone + 'static,
 {
     let my_id = Arc::new(my_id);
     let leader = Arc::new(leader);
@@ -46,7 +46,7 @@ where
     job_rx
 }
 
-async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
+async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>(
     my_id: Arc<Identity>,
     leader: Arc<Peer>,
     connector: C,
@@ -72,7 +72,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
             connection_state.clone(),
             ConnectionConfig::ClientOnly {
                 peer: leader.clone(),
-                client: connector.clone(),
+                client: Arc::new(connector.clone()),
             },
         )
         .await

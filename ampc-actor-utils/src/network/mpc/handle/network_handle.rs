@@ -27,7 +27,8 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
+pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
+{
     peers: [Arc<Peer>; 2],
     my_id: Arc<Identity>,
     connector: C,
@@ -40,7 +41,7 @@ pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T
     role_assignments: Arc<RoleAssignment>,
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> Drop
     for TcpNetworkHandle<T, C>
 {
     fn drop(&mut self) {
@@ -50,7 +51,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop
 }
 
 #[async_trait]
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHandle
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> NetworkHandle
     for TcpNetworkHandle<T, C>
 {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
@@ -141,7 +142,9 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
     }
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetworkHandle<T, C> {
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
+    TcpNetworkHandle<T, C>
+{
     #[allow(clippy::too_many_arguments)]
     pub async fn new<I, S>(
         my_id: Identity,
@@ -210,7 +213,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
                     self.connection_state.clone(),
                     ConnectionConfig::Bidirectional {
                         peer: peer.clone(),
-                        client: self.connector.clone(),
+                        client: Arc::new(self.connector.clone()),
                         conn_cmd_tx: self.conn_cmd_tx.clone(),
                     },
                 );

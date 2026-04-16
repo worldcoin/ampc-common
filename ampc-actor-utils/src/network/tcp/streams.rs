@@ -13,7 +13,7 @@ pub trait NetworkConnection: AsyncRead + AsyncWrite + Send + Sync + Unpin {
 
 /// Trait for establishing outbound connections
 #[async_trait]
-pub trait Client: Send + Sync + Clone {
+pub trait Client: Send + Sync {
     type Output: NetworkConnection;
     async fn connect(&self, url: String) -> Result<Self::Output>;
 }

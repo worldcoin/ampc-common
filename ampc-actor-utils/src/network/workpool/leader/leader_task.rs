@@ -7,7 +7,6 @@ use tokio::sync::watch;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-use crate::network::tcp::Client;
 use crate::network::workpool::Error;
 use crate::network::workpool::{
     leader::job_tracker::{JobTracker, JobType},
@@ -30,7 +29,7 @@ use crate::{
 /// Returns the job sender and one `watch::Receiver<bool>` per worker.
 /// Each receiver starts as `false` and flips to `true` once that worker's
 /// connection (including the job-state handshake) is fully established.
-pub fn spawn<T, C, S, I>(
+pub fn spawn<T, S, I>(
     my_id: Identity,
     worker_urls: I,
     listener: S,
@@ -38,7 +37,6 @@ pub fn spawn<T, C, S, I>(
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
-    C: Client<Output = T> + 'static,
     I: Iterator<Item = String>,
     S: Server<Output = T> + 'static,
 {
@@ -64,7 +62,7 @@ where
         worker_cmd_txs.push(cmd_tx);
         let (worker_conn_tx, worker_conn_rx) = watch::channel(false);
         workers_connected.push(worker_conn_rx);
-        tokio::spawn(worker_mgr::<T, C>(
+        tokio::spawn(worker_mgr::<T>(
             idx as WorkerId,
             my_id.clone(),
             worker.clone(),
@@ -216,7 +214,7 @@ fn send_to_workpool(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
+async fn worker_mgr<T: NetworkConnection + 'static>(
     worker_id: WorkerId,
     my_id: Arc<Identity>,
     worker: Arc<Peer>,
@@ -237,7 +235,7 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
             connection_id,
             my_id.clone(),
             connection_state.clone(),
-            ConnectionConfig::<T, C>::ServerOnly {
+            ConnectionConfig::<T>::ServerOnly {
                 peer_id: worker.id().clone(),
                 conn_cmd_tx: conn_cmd_tx.clone(),
             },

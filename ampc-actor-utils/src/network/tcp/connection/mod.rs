@@ -19,10 +19,10 @@ use tokio::{
     time::sleep,
 };
 
-pub enum ConnectionConfig<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
+pub enum ConnectionConfig<T: NetworkConnection + 'static> {
     Bidirectional {
         peer: Arc<Peer>,
-        client: C,
+        client: Arc<dyn Client<Output = T>>,
         conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     },
     ServerOnly {
@@ -31,11 +31,11 @@ pub enum ConnectionConfig<T: NetworkConnection + 'static, C: Client<Output = T> 
     },
     ClientOnly {
         peer: Arc<Peer>,
-        client: C,
+        client: Arc<dyn Client<Output = T>>,
     },
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> ConnectionConfig<T, C> {
+impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
     fn get_peer_id(&self) -> Identity {
         match self {
             Self::Bidirectional { peer, .. } => peer.id().clone(),
@@ -46,11 +46,11 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Connection
 }
 
 // connect and perform handshake
-pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
+pub async fn connect<T: NetworkConnection + 'static>(
     connection_id: ConnectionId,
     own_id: Arc<Identity>,
     connection_state: ConnectionState,
-    connection_config: ConnectionConfig<T, C>,
+    connection_config: ConnectionConfig<T>,
 ) -> Result<T> {
     let peer_id = connection_config.get_peer_id();
     let connector = Connector {
@@ -75,14 +75,14 @@ pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
     Ok(r)
 }
 
-struct Connector<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
+struct Connector<T: NetworkConnection + 'static> {
     connection_id: ConnectionId,
     own_id: Arc<Identity>,
     connection_state: ConnectionState,
-    connection_config: ConnectionConfig<T, C>,
+    connection_config: ConnectionConfig<T>,
 }
 
-impl<T: NetworkConnection, C: Client<Output = T>> Connector<T, C> {
+impl<T: NetworkConnection> Connector<T> {
     async fn connect(&self) -> Result<T> {
         match &self.connection_config {
             ConnectionConfig::Bidirectional {

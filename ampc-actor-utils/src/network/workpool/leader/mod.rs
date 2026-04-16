@@ -8,10 +8,7 @@ use crate::{
     network::{
         tcp::{
             self,
-            connection::{
-                client::{BoxTcpClient, TlsClient},
-                server::{BoxTcpServer, TcpServer, TlsAuth, TlsServer},
-            },
+            connection::server::{BoxTcpServer, TcpServer, TlsAuth, TlsServer},
             DynStreamConn, TlsConfig, TlsStreamConn,
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
@@ -242,14 +239,12 @@ pub async fn build_leader(
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
 
-        Result::<_, SetupError>::Ok(
-            leader_task::spawn::<TlsStreamConn, TlsClient, TlsServer, _>(
-                args.leader_id,
-                worker_urls,
-                listener,
-                shutdown_ct.clone(),
-            ),
-        )
+        Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer, _>(
+            args.leader_id,
+            worker_urls,
+            listener,
+            shutdown_ct.clone(),
+        ))
     } else {
         tracing::info!("Building WorkPool Leader without TLS");
 
@@ -257,13 +252,11 @@ pub async fn build_leader(
             SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
         })?);
 
-        Result::<_, SetupError>::Ok(leader_task::spawn::<
-            DynStreamConn,
-            BoxTcpClient,
-            BoxTcpServer,
-            _,
-        >(
-            args.leader_id, worker_urls, listener, shutdown_ct.clone()
+        Result::<_, SetupError>::Ok(leader_task::spawn::<DynStreamConn, BoxTcpServer, _>(
+            args.leader_id,
+            worker_urls,
+            listener,
+            shutdown_ct.clone(),
         ))
     }?;
 
