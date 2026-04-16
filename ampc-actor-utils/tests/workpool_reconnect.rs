@@ -319,16 +319,7 @@ struct TestCluster {
 async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let global_shutdown = CancellationToken::new();
 
-    let worker_listeners: Vec<TcpListener> =
-        try_join_all((0..NUM_WORKERS).map(|_| TcpListener::bind("127.0.0.1:0"))).await?;
-
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await?;
-
-    let worker_addrs: Vec<SocketAddr> = worker_listeners
-        .iter()
-        .map(|l| l.local_addr().unwrap())
-        .collect();
-
     let proxy_worker_to_leader_addr = proxy_listener.local_addr()?;
     drop(proxy_listener);
 
@@ -339,12 +330,8 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     // Create proxy for worker 0: worker connects to proxy, proxy connects to leader.
     let proxy = TcpProxy::new(leader_addr, proxy_worker_to_leader_addr).await?;
 
-    let leader_worker_addrs: Vec<String> = worker_addrs.iter().map(|a| a.to_string()).collect();
-
     let leader_id = Identity("leader".to_string());
-    for (idx, listener) in worker_listeners.into_iter().enumerate() {
-        drop(listener); // Release so worker can bind
-
+    for idx in 0..NUM_WORKERS {
         // Worker ID must match what leader expects: "{leader_id}-w-{idx}"
         let worker_id = Identity(format!("{}-w-{}", leader_id.0, idx));
         // Worker 0 connects through the proxy; all others connect directly to the leader.
@@ -368,7 +355,6 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let leader_args = LeaderArgs {
         leader_id,
         leader_address: leader_addr.to_string(),
-        worker_addresses: leader_worker_addrs,
         tls: None,
     };
     let leader = build_leader(leader_args, global_shutdown.clone()).await?;
