@@ -19,23 +19,49 @@ pub struct TlsClient {
 #[derive(Clone, Default)]
 pub struct TcpClient {}
 
+pub enum TlsClientAuth {
+    ServerOnly {
+        root_certs: Vec<String>,
+    },
+    Mutual {
+        root_certs: Vec<String>,
+        key_file: String,
+        cert_file: String,
+    },
+}
+
 impl TlsClient {
-    /// Create a client that trusts the given CAs and authenticates with its own cert
-    pub async fn new(key_file: &str, cert_file: &str, root_certs: &[String]) -> Result<Self> {
+    pub async fn new(auth: TlsClientAuth) -> Result<Self> {
         let mut roots = RootCertStore::empty();
-        for root_cert in root_certs {
-            for cert in CertificateDer::pem_file_iter(root_cert)? {
-                roots.add(cert?)?;
+        let client_config = match auth {
+            TlsClientAuth::ServerOnly { root_certs } => {
+                for root_cert in &root_certs {
+                    for cert in CertificateDer::pem_file_iter(root_cert)? {
+                        roots.add(cert?)?;
+                    }
+                }
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth()
             }
-        }
-
-        let certs = CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
-        let key = PrivateKeyDer::from_pem_file(key_file)?;
-
-        let client_config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_client_auth_cert(certs, key)?;
-
+            TlsClientAuth::Mutual {
+                root_certs,
+                key_file,
+                cert_file,
+            } => {
+                for root_cert in &root_certs {
+                    for cert in CertificateDer::pem_file_iter(root_cert)? {
+                        roots.add(cert?)?;
+                    }
+                }
+                let certs =
+                    CertificateDer::pem_file_iter(&cert_file)?.collect::<Result<Vec<_>, _>>()?;
+                let key = PrivateKeyDer::from_pem_file(&key_file)?;
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_client_auth_cert(certs, key)?
+            }
+        };
         let tls_connector = TlsConnector::from(Arc::new(client_config));
         Ok(Self { tls_connector })
     }

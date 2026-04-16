@@ -7,7 +7,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         self,
-        connection::client::{BoxTcpClient, TcpClient, TlsClient},
+        connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientAuth},
         TlsConfig,
     },
 };
@@ -80,9 +80,13 @@ pub async fn build_worker_handle(
             .as_ref()
             .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
 
-        let connector = TlsClient::new(private_key, leaf_cert, &root_certs)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
+        let connector = TlsClient::new(TlsClientAuth::Mutual {
+            root_certs,
+            key_file: private_key.clone(),
+            cert_file: leaf_cert.clone(),
+        })
+        .await
+        .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     } else {

@@ -21,7 +21,7 @@ pub struct TcpServer {
     listener: TcpListener,
 }
 
-pub enum TlsAuth {
+pub enum TlsServerAuth {
     ServerOnly,
     Mutual { root_certs: Vec<String> },
 }
@@ -31,15 +31,15 @@ impl TlsServer {
         own_addr: SocketAddr,
         key_file: &str,
         cert_file: &str,
-        auth: TlsAuth,
+        auth: TlsServerAuth,
     ) -> Result<Self> {
         let certs = CertificateDer::pem_file_iter(cert_file)?.collect::<Result<Vec<_>, _>>()?;
         let key = PrivateKeyDer::from_pem_file(key_file)?;
         let server_config = match auth {
-            TlsAuth::ServerOnly => ServerConfig::builder()
+            TlsServerAuth::ServerOnly => ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(certs, key)?,
-            TlsAuth::Mutual { root_certs } => {
+            TlsServerAuth::Mutual { root_certs } => {
                 let mut root_cert_store = RootCertStore::empty();
                 for root_cert in root_certs {
                     for cert in CertificateDer::pem_file_iter(root_cert)? {

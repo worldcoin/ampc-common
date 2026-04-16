@@ -22,7 +22,7 @@ use crate::{
 pub fn spawn<T, C>(
     my_id: Identity,
     leader: Peer,
-    connector: C,
+    client: C,
     shutdown_ct: CancellationToken,
 ) -> UnboundedReceiver<Job>
 where
@@ -38,7 +38,7 @@ where
     tokio::spawn(worker_task(
         my_id,
         leader,
-        connector,
+        client,
         connection_state,
         job_tx,
         shutdown_ct,
@@ -49,7 +49,7 @@ where
 async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>(
     my_id: Arc<Identity>,
     leader: Arc<Peer>,
-    connector: C,
+    client: C,
     connection_state: ConnectionState,
     job_tx: UnboundedSender<Job>,
     shutdown_ct: CancellationToken,
@@ -72,7 +72,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clo
             connection_state.clone(),
             ConnectionConfig::ClientOnly {
                 peer: leader.clone(),
-                client: Arc::new(connector.clone()),
+                client: Arc::new(client.clone()),
             },
         )
         .await

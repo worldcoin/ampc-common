@@ -8,7 +8,7 @@ use crate::{
     network::{
         tcp::{
             self,
-            connection::server::{BoxTcpServer, TcpServer, TlsAuth, TlsServer},
+            connection::server::{BoxTcpServer, TcpServer, TlsServer, TlsServerAuth},
             DynStreamConn, TlsConfig, TlsStreamConn,
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
@@ -235,9 +235,14 @@ pub async fn build_leader(
             .as_ref()
             .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
 
-        let listener = TlsServer::new(leader_addr, private_key, leaf_cert, TlsAuth::ServerOnly)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
+        let listener = TlsServer::new(
+            leader_addr,
+            private_key,
+            leaf_cert,
+            TlsServerAuth::ServerOnly,
+        )
+        .await
+        .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
 
         Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer>(
             args.leader_id,
