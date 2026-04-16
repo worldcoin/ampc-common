@@ -12,7 +12,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{Client, ConnectionId, NetworkConnection, Peer},
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc::UnboundedSender, oneshot},
@@ -98,7 +98,9 @@ impl<T: NetworkConnection> Connector<T> {
                 } else {
                     let (rsp_tx, rsp_rx) = oneshot::channel();
                     let req = ConnectionRequest::new(peer.id().clone(), self.connection_id, rsp_tx);
-                    let _ = conn_cmd_tx.send(req);
+                    if conn_cmd_tx.send(req).is_err() {
+                        bail!("failed to send connection request");
+                    }
                     let r = rsp_rx.await?;
                     Ok(r)
                 }
@@ -109,7 +111,9 @@ impl<T: NetworkConnection> Connector<T> {
             } => {
                 let (rsp_tx, rsp_rx) = oneshot::channel();
                 let req = ConnectionRequest::new(peer_id.clone(), self.connection_id, rsp_tx);
-                let _ = conn_cmd_tx.send(req);
+                if conn_cmd_tx.send(req).is_err() {
+                    bail!("failed to send connection request");
+                }
                 let r = rsp_rx.await?;
                 Ok(r)
             }
