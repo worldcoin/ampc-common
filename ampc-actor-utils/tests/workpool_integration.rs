@@ -137,20 +137,18 @@ async fn start_cluster() -> (
     let leader_id = Identity("leader".to_string());
     let shutdown = CancellationToken::new();
 
+    // The leader internally names workers "{leader_id}-w-{idx}",
+    // so the worker must announce that same identity in the handshake.
     let worker_ids: Vec<Identity> = (0..NUM_WORKERS)
         .map(|idx| Identity(format!("{}-w-{}", leader_id.0, idx)))
         .collect();
 
     tracing::info!(leader_addr, ?worker_ids, "starting cluster");
 
-    // Start workers before the leader so their listeners are ready.
-    for (idx, _) in worker_ids.iter().enumerate() {
-        // The leader internally names workers "{leader_id}-w-{idx}",
-        // so the worker must announce that same identity in the handshake.
-        let worker_id_str = format!("leader-w-{idx}");
-        tracing::info!(worker_id = worker_id_str, "building worker");
+    for worker_id_str in worker_ids.iter() {
+        tracing::info!(worker_id = worker_id_str.0, "building worker");
         let args = WorkerArgs {
-            worker_id: Identity(worker_id_str.clone()),
+            worker_id: worker_id_str.clone(),
             leader_id: leader_id.clone(),
             leader_address: leader_addr.clone(),
             tls: None,
@@ -160,17 +158,18 @@ async fn start_cluster() -> (
             .expect("failed to build worker");
 
         // Echo every payload back to the leader unchanged.
+        let worker_id = worker_id_str.0.clone();
         tokio::spawn(async move {
             while let Some(mut job) = worker.recv().await {
                 let payload = job.take_payload();
                 tracing::info!(
-                    worker_id = worker_id_str,
+                    worker_id = worker_id,
                     bytes = payload.len(),
                     "worker echoing payload"
                 );
                 job.send_result(payload);
             }
-            tracing::info!(worker_id = worker_id_str, "worker echo loop exited");
+            tracing::info!(worker_id = worker_id, "worker echo loop exited");
         });
     }
 
