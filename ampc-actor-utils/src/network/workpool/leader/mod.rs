@@ -101,7 +101,7 @@ pub struct LeaderHandle {
 pub struct LeaderArgs {
     pub leader_id: Identity,
     pub leader_address: String,
-    pub worker_addresses: Vec<String>,
+    pub worker_ids: Vec<Identity>,
     pub tls: Option<TlsConfig>,
 }
 
@@ -219,8 +219,8 @@ pub async fn build_leader(
         .leader_address
         .parse()
         .map_err(|e: net::AddrParseError| SetupError::InvalidAddress(e.to_string()))?;
-    let num_workers = args.worker_addresses.len();
-    let worker_urls = args.worker_addresses.into_iter();
+    let num_workers = args.worker_ids.len();
+    let worker_ids = args.worker_ids.into_iter().map(|x| x.0);
 
     let (handle_tx, worker_connected) = if let Some(tls) = args.tls.as_ref() {
         tracing::info!("Building WorkPool Leader with TLS");
@@ -241,7 +241,7 @@ pub async fn build_leader(
 
         Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer, _>(
             args.leader_id,
-            worker_urls,
+            worker_ids,
             listener,
             shutdown_ct.clone(),
         ))
@@ -254,7 +254,7 @@ pub async fn build_leader(
 
         Result::<_, SetupError>::Ok(leader_task::spawn::<DynStreamConn, BoxTcpServer, _>(
             args.leader_id,
-            worker_urls,
+            worker_ids,
             listener,
             shutdown_ct.clone(),
         ))

@@ -331,9 +331,11 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let proxy = TcpProxy::new(leader_addr, proxy_worker_to_leader_addr).await?;
 
     let leader_id = Identity("leader".to_string());
+    let mut worker_ids = vec![];
     for idx in 0..NUM_WORKERS {
         // Worker ID must match what leader expects: "{leader_id}-w-{idx}"
         let worker_id = Identity(format!("{}-w-{}", leader_id.0, idx));
+        worker_ids.push(worker_id.clone());
         // Worker 0 connects through the proxy; all others connect directly to the leader.
         let leader_addr_for_worker = if idx == 0 {
             proxy_worker_to_leader_addr
@@ -355,6 +357,7 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let leader_args = LeaderArgs {
         leader_id,
         leader_address: leader_addr.to_string(),
+        worker_ids,
         tls: None,
     };
     let leader = build_leader(leader_args, global_shutdown.clone()).await?;

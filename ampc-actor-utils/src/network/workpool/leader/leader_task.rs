@@ -31,7 +31,7 @@ use crate::{
 /// connection (including the job-state handshake) is fully established.
 pub fn spawn<T, S, I>(
     my_id: Identity,
-    worker_urls: I,
+    worker_ids: I,
     listener: S,
     shutdown_ct: CancellationToken,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
@@ -44,9 +44,9 @@ where
     let job_tracker = Arc::new(JobTracker::new());
     let shutdown_ct = shutdown_ct.child_token();
     let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
-    let workers: Vec<_> = worker_urls
+    let workers: Vec<_> = worker_ids
         .enumerate()
-        .map(|(idx, url)| Arc::new(Peer::new(Identity(format!("{}-w-{}", &my_id.0, idx)), url)))
+        .map(|(idx, id)| Arc::new(Peer::new(Identity(format!("{}-w-{}", &my_id.0, idx)), id)))
         .collect();
 
     let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
