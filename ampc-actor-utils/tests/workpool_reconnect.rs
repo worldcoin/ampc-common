@@ -63,11 +63,7 @@ impl TcpProxy {
     ///
     /// - `leader_addr`: the real leader address; the proxy connects here when a worker arrives.
     /// - `worker_to_leader_addr`: the address the proxy listens on; workers connect here.
-    pub async fn new(
-        leader_addr: SocketAddr,
-        worker_to_leader_addr: SocketAddr,
-        worker_to_leader: Arc<TcpListener>,
-    ) -> Result<Self> {
+    pub async fn new(leader_addr: SocketAddr, worker_to_leader: Arc<TcpListener>) -> Result<Self> {
         let drop_leader_to_worker = Arc::new(AtomicBool::new(false));
         let drop_worker_to_leader = Arc::new(AtomicBool::new(false));
         let shutdown = CancellationToken::new();
@@ -328,7 +324,7 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
     let leader_addr = leader_listener.local_addr()?;
 
     // Create proxy for worker 0: worker connects to proxy, proxy connects to leader.
-    let proxy = TcpProxy::new(leader_addr, proxy_worker_to_leader_addr, leader_listener).await?;
+    let proxy = TcpProxy::new(leader_addr, leader_listener).await?;
 
     let leader_id = Identity("leader".to_string());
     let mut worker_ids = vec![];
