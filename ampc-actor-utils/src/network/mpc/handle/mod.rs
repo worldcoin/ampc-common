@@ -12,13 +12,9 @@ use self::network_handle::TcpNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
-use crate::network::tcp::connection::client::{
-    BoxTcpClient, TcpClient, TlsClient, TlsClientConfig,
-};
-use crate::network::tcp::connection::server::{
-    BoxTcpServer, TcpServer, TlsServer, TlsServerConfig,
-};
-use crate::network::tcp::{self, TcpStreamConn, TlsConfig};
+use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
+use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
+use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;

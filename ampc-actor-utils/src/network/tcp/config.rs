@@ -20,8 +20,7 @@ pub fn configure_tcp_stream(stream: &TcpStream) -> Result<()> {
 }
 
 /// TLS configuration for secure network communication.
-/// Used for the Server for regular or mTLS.
-/// In the case of mTLS, this is used by the Client oo.
+/// Parsed from a config file
 #[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
 #[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
 pub struct TlsConfig {
@@ -33,14 +32,6 @@ pub struct TlsConfig {
     #[serde(default)]
     pub leaf_cert: Option<String>,
 
-    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
-    pub root_certs: Vec<String>,
-}
-
-/// In the case of Server only TLS, this is used by the Client
-#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
-#[group(requires_all = ["root_certs"])]
-pub struct TlsClientConfig {
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub root_certs: Vec<String>,
 }

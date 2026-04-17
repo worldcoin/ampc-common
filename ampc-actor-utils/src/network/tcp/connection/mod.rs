@@ -10,35 +10,11 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{Client, ConnectionId, NetworkConnection, Peer},
+    network::tcp::{ConnectionConfig, ConnectionId, NetworkConnection},
 };
 use eyre::{bail, Result};
 use std::{sync::Arc, time::Duration};
-use tokio::{
-    sync::{mpsc::UnboundedSender, oneshot},
-    time::sleep,
-};
-
-/// specifies how the connection will be initiated
-pub enum ConnectionConfig<T: NetworkConnection + 'static> {
-    /// both peers can act as client and server. the initiator
-    /// depends on who has the greater peer id
-    Bidirectional {
-        peer: Arc<Peer>,
-        client: Arc<dyn Client<Output = T>>,
-        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
-    },
-    /// listen for connections from this peer_id
-    Server {
-        peer_id: Identity,
-        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
-    },
-    /// initiate a connection to this peer
-    Client {
-        peer: Arc<Peer>,
-        client: Arc<dyn Client<Output = T>>,
-    },
-}
+use tokio::{sync::oneshot, time::sleep};
 
 impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
     fn get_peer_id(&self) -> Identity {

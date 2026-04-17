@@ -4,7 +4,7 @@
 //! and stream wrappers that can be used by both MPC and workpool modules.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
 pub mod config;
 pub mod connection;
@@ -13,9 +13,74 @@ pub mod types;
 
 // Re-export commonly used types
 pub use config::{configure_tcp_stream, TlsConfig};
-pub use connection::{accept_loop, connect, ConnectionConfig, ConnectionRequest, ConnectionState};
+pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{Client, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn};
+use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
+
+use crate::execution::player::Identity;
+
+/// specifies how the connection will be initiated between two parties
+pub enum ConnectionConfig<T: NetworkConnection + 'static> {
+    /// The given party will listen for incoming connections and will either
+    /// wait for a peer to initiate a connection or initiate the connection
+    /// themself, depending on who has the greater peer id
+    ///
+    /// Assumes that both parties are configured as Bidirectional
+    Bidirectional {
+        peer: Arc<Peer>,
+        client: Arc<dyn Client<Output = T>>,
+        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+    },
+    /// The given party will listen for connections from this peer_id.
+    /// Assumes the other party is configured as Client
+    Server {
+        peer_id: Identity,
+        conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+    },
+    /// The given party will initiate a connection to this peer.
+    /// Assumes the other party is configured as Server
+    Client {
+        peer: Arc<Peer>,
+        client: Arc<dyn Client<Output = T>>,
+    },
+}
+
+/// tls configuration for a client
+pub enum TlsClientConfig {
+    /// only the server is authenticated
+    ServerOnly {
+        /// the root certs for the server
+        root_certs: Vec<String>,
+    },
+    /// both the client and server are authenticated
+    Mutual {
+        /// the root certs for the server
+        root_certs: Vec<String>,
+        /// the client key
+        key_file: String,
+        /// the client cert
+        cert_file: String,
+    },
+}
+
+/// tls configuration for a server
+pub enum TlsServerConfig {
+    ServerOnly {
+        /// the server key
+        key_file: String,
+        /// the server cert
+        cert_file: String,
+    },
+    Mutual {
+        /// the client certs
+        root_certs: Vec<String>,
+        /// the server key
+        key_file: String,
+        /// the server cert
+        cert_file: String,
+    },
+}
 
 // allow initialization of TLS from possibly multiple modules, while ensuring that the provider is only installed once
 pub fn init_rustls_crypto_provider() {

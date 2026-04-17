@@ -8,7 +8,8 @@ use crate::{
     network::{
         tcp::{
             self,
-            connection::server::{BoxTcpServer, TcpServer, TlsServer, TlsServerConfig},
+            connection::server::{BoxTcpServer, TcpServer, TlsServer},
+            TlsServerConfig,
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
     },

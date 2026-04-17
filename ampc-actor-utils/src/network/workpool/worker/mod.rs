@@ -1,13 +1,13 @@
 mod worker_task;
 
 use super::{JobId, Payload, SetupError, WorkerId};
-use crate::network::tcp::Peer;
+use crate::network::tcp::{Peer, TlsClientConfig};
 use crate::network::workpool::value::NetworkValue;
 use crate::{
     execution::player::Identity,
     network::tcp::{
         self,
-        connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientConfig},
+        connection::client::{BoxTcpClient, TcpClient, TlsClient},
     },
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};

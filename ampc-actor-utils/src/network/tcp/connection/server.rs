@@ -1,5 +1,5 @@
 use crate::network::tcp::{
-    configure_tcp_stream, DynStreamConn, Server, TcpStreamConn, TlsStreamConn,
+    configure_tcp_stream, DynStreamConn, Server, TcpStreamConn, TlsServerConfig, TlsStreamConn,
 };
 use async_trait::async_trait;
 use eyre::{eyre, Result};
@@ -19,24 +19,6 @@ pub struct TlsServer {
 
 pub struct TcpServer {
     listener: TcpListener,
-}
-
-/// tls configuration for a server
-pub enum TlsServerConfig {
-    ServerOnly {
-        /// the server key
-        key_file: String,
-        /// the server cert
-        cert_file: String,
-    },
-    Mutual {
-        /// the client certs
-        root_certs: Vec<String>,
-        /// the server key
-        key_file: String,
-        /// the server cert
-        cert_file: String,
-    },
 }
 
 impl TlsServer {
