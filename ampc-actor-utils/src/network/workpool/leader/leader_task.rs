@@ -29,7 +29,7 @@ use crate::{
 /// Returns the job sender and one `watch::Receiver<bool>` per worker.
 /// Each receiver starts as `false` and flips to `true` once that worker's
 /// connection (including the job-state handshake) is fully established.
-pub fn spawn<T, S>(
+pub fn spawn<S, T>(
     my_id: Identity,
     // this is called worker_names due to naming conflict between the protocol level id and the
     // application level id

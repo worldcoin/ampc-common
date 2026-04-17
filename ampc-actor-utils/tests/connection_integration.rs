@@ -3,8 +3,8 @@ use ampc_actor_utils::{
     network::tcp::{
         connection::{
             accept_loop,
-            client::{TcpClient, TlsClient, TlsClientAuth},
-            server::{TcpServer, TlsServer, TlsServerAuth},
+            client::{TcpClient, TlsClient, TlsClientConfig},
+            server::{TcpServer, TlsServer, TlsServerConfig},
             ConnectionConfig, ConnectionRequest,
         },
         to_inaddr_any, ConnectionId, Peer, TcpStreamConn, TlsStreamConn,
@@ -357,7 +357,7 @@ async fn test_server_only_connection_with_server_only_tls() -> Result<()> {
     // Create TLS server with ServerOnly auth (no client cert verification)
     let listener = TlsServer::new(
         to_inaddr_any(addr),
-        TlsServerAuth::Server {
+        TlsServerConfig::ServerOnly {
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
         },
@@ -390,7 +390,7 @@ async fn test_server_only_connection_with_server_only_tls() -> Result<()> {
 
     // Client connects using TlsClient with ServerOnly auth
     let client = Arc::new(
-        TlsClient::new(TlsClientAuth::Server {
+        TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
@@ -443,7 +443,7 @@ async fn test_server_only_connection_with_mutual_tls() -> Result<()> {
     // Create TLS server with Mutual auth (requires and verifies client cert)
     let listener = TlsServer::new(
         to_inaddr_any(addr),
-        TlsServerAuth::Mutual {
+        TlsServerConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
@@ -477,7 +477,7 @@ async fn test_server_only_connection_with_mutual_tls() -> Result<()> {
 
     // Client connects using TlsClient with Mutual auth (presents client cert)
     let client = Arc::new(
-        TlsClient::new(TlsClientAuth::Mutual {
+        TlsClient::new(TlsClientConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.client_key_path.clone(),
             cert_file: certs.client_cert_path.clone(),
@@ -536,7 +536,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
     // Create separate TLS server listeners for each peer with ServerOnly auth
     let listener_a = TlsServer::new(
         to_inaddr_any(addr_a),
-        TlsServerAuth::Server {
+        TlsServerConfig::ServerOnly {
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
         },
@@ -545,7 +545,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
 
     let listener_b = TlsServer::new(
         to_inaddr_any(addr_b),
-        TlsServerAuth::Server {
+        TlsServerConfig::ServerOnly {
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
         },
@@ -554,14 +554,14 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
 
     // Create separate TLS clients for each peer
     let client_a = Arc::new(
-        TlsClient::new(TlsClientAuth::Server {
+        TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
     );
 
     let client_b = Arc::new(
-        TlsClient::new(TlsClientAuth::Server {
+        TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
@@ -656,7 +656,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     // Create separate TLS server listeners for each peer with ServerOnly auth
     let listener_a = TlsServer::new(
         to_inaddr_any(addr_a),
-        TlsServerAuth::Mutual {
+        TlsServerConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
@@ -666,7 +666,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
 
     let listener_b = TlsServer::new(
         to_inaddr_any(addr_b),
-        TlsServerAuth::Mutual {
+        TlsServerConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
@@ -676,7 +676,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
 
     // Create separate TLS clients for each peer
     let client_a = Arc::new(
-        TlsClient::new(TlsClientAuth::Mutual {
+        TlsClient::new(TlsClientConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.client_key_path.clone(),
             cert_file: certs.client_cert_path.clone(),
@@ -685,7 +685,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     );
 
     let client_b = Arc::new(
-        TlsClient::new(TlsClientAuth::Mutual {
+        TlsClient::new(TlsClientConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.client_key_path.clone(),
             cert_file: certs.client_cert_path.clone(),
@@ -849,7 +849,7 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
     // Server requires Mutual TLS (client cert)
     let listener = TlsServer::new(
         to_inaddr_any(addr),
-        TlsServerAuth::Mutual {
+        TlsServerConfig::Mutual {
             root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
@@ -881,7 +881,7 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
 
     // Client only has ServerOnly auth (no client cert) - should fail
     let client = Arc::new(
-        TlsClient::new(TlsClientAuth::Server {
+        TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,

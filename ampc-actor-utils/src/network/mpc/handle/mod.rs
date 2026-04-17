@@ -12,8 +12,12 @@ use self::network_handle::TcpNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
-use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientAuth};
-use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer, TlsServerAuth};
+use crate::network::tcp::connection::client::{
+    BoxTcpClient, TcpClient, TlsClient, TlsClientConfig,
+};
+use crate::network::tcp::connection::server::{
+    BoxTcpServer, TcpServer, TlsServer, TlsServerConfig,
+};
 use crate::network::tcp::{self, TcpStreamConn, TlsConfig};
 use async_trait::async_trait;
 use eyre::Result;
@@ -118,14 +122,14 @@ pub async fn build_network_handle(
 
         let listener = TlsServer::new(
             my_addr,
-            TlsServerAuth::Mutual {
+            TlsServerConfig::Mutual {
                 root_certs: root_certs.clone(),
                 key_file: private_key.clone(),
                 cert_file: leaf_cert.clone(),
             },
         )
         .await?;
-        let connector = TlsClient::new(TlsClientAuth::Mutual {
+        let connector = TlsClient::new(TlsClientConfig::Mutual {
             root_certs,
             key_file: private_key.clone(),
             cert_file: leaf_cert.clone(),

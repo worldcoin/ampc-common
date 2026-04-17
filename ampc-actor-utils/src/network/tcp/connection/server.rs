@@ -22,8 +22,8 @@ pub struct TcpServer {
 }
 
 /// tls configuration for a server
-pub enum TlsServerAuth {
-    Server {
+pub enum TlsServerConfig {
+    ServerOnly {
         /// the server key
         key_file: String,
         /// the server cert
@@ -40,9 +40,9 @@ pub enum TlsServerAuth {
 }
 
 impl TlsServer {
-    pub async fn new(own_addr: SocketAddr, auth: TlsServerAuth) -> Result<Self> {
-        let server_config = match auth {
-            TlsServerAuth::Server {
+    pub async fn new(own_addr: SocketAddr, cfg: TlsServerConfig) -> Result<Self> {
+        let server_config = match cfg {
+            TlsServerConfig::ServerOnly {
                 key_file,
                 cert_file,
             } => {
@@ -54,7 +54,7 @@ impl TlsServer {
                     .with_no_client_auth()
                     .with_single_cert(certs, key)?
             }
-            TlsServerAuth::Mutual {
+            TlsServerConfig::Mutual {
                 root_certs,
                 key_file,
                 cert_file,

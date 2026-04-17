@@ -285,7 +285,7 @@ async fn spawn_worker(
         worker_id: info.worker_id.clone(),
         leader_id: info.leader_id.clone(),
         leader_address: info.leader_addr.to_string(),
-        root_certs: None,
+        tls: None,
     };
 
     let mut worker = build_worker_handle(worker_args, shutdown_ct.clone()).await?;

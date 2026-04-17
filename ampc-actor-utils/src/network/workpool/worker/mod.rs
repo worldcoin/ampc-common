@@ -7,7 +7,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         self,
-        connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientAuth},
+        connection::client::{BoxTcpClient, TcpClient, TlsClient, TlsClientConfig},
     },
 };
 use tokio::sync::mpsc::{self, UnboundedReceiver};
@@ -54,8 +54,8 @@ pub struct WorkerArgs {
     pub worker_id: Identity,
     pub leader_id: Identity,
     pub leader_address: String,
-    /// set to Some for server only TLS, or None for TCP
-    pub root_certs: Option<Vec<String>>,
+    /// set to None for TCP
+    pub tls: Option<TlsClientConfig>,
 }
 
 pub async fn build_worker_handle(
@@ -67,9 +67,9 @@ pub async fn build_worker_handle(
     let shutdown_ct = shutdown_ct.child_token();
     let leader = Peer::new(args.leader_id, args.leader_address);
 
-    let job_rx = if let Some(root_certs) = args.root_certs.clone() {
+    let job_rx = if let Some(tls) = args.tls {
         tracing::info!("Building WorkPool Worker with TLS");
-        let connector = TlsClient::new(TlsClientAuth::Server { root_certs })
+        let connector = TlsClient::new(tls)
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())

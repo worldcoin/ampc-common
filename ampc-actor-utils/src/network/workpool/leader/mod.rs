@@ -8,8 +8,7 @@ use crate::{
     network::{
         tcp::{
             self,
-            connection::server::{BoxTcpServer, TcpServer, TlsServer, TlsServerAuth},
-            DynStreamConn, TlsConfig, TlsStreamConn,
+            connection::server::{BoxTcpServer, TcpServer, TlsServer, TlsServerConfig},
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
     },
@@ -102,7 +101,7 @@ pub struct LeaderArgs {
     pub leader_id: Identity,
     pub leader_address: String,
     pub worker_ids: Vec<Identity>,
-    pub tls: Option<TlsConfig>,
+    pub tls: Option<TlsServerConfig>,
 }
 
 impl Drop for LeaderHandle {
@@ -222,30 +221,14 @@ pub async fn build_leader(
     let num_workers = args.worker_ids.len();
     let worker_ids = args.worker_ids;
 
-    let (handle_tx, worker_connected) = if let Some(tls) = args.tls.as_ref() {
+    let (handle_tx, worker_connected) = if let Some(tls) = args.tls {
         tracing::info!("Building WorkPool Leader with TLS");
 
-        let private_key = tls
-            .private_key
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS private key required".to_string()))?;
+        let listener = TlsServer::new(leader_addr, tls)
+            .await
+            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
 
-        let leaf_cert = tls
-            .leaf_cert
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
-
-        let listener = TlsServer::new(
-            leader_addr,
-            TlsServerAuth::Server {
-                key_file: private_key.clone(),
-                cert_file: leaf_cert.clone(),
-            },
-        )
-        .await
-        .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
-
-        Result::<_, SetupError>::Ok(leader_task::spawn::<TlsStreamConn, TlsServer>(
+        Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,
             worker_ids,
             listener,
@@ -258,7 +241,7 @@ pub async fn build_leader(
             SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
         })?);
 
-        Result::<_, SetupError>::Ok(leader_task::spawn::<DynStreamConn, BoxTcpServer>(
+        Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,
             worker_ids,
             listener,
