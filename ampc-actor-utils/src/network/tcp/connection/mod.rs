@@ -17,6 +17,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::{sync::oneshot, time::sleep};
 
 impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
+    // used for logging
     fn get_peer_id(&self) -> Identity {
         match self {
             Self::Bidirectional { peer, .. } => peer.id().clone(),

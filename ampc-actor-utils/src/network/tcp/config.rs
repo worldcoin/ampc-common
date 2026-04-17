@@ -20,7 +20,7 @@ pub fn configure_tcp_stream(stream: &TcpStream) -> Result<()> {
 }
 
 /// TLS configuration for secure network communication.
-/// Parsed from a config file
+/// Used to deserialize inputs from a yaml file
 #[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
 #[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
 pub struct TlsConfig {

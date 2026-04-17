@@ -31,7 +31,7 @@ pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T
 {
     peers: [Arc<Peer>; 2],
     my_id: Arc<Identity>,
-    connector: C,
+    connector: Arc<C>,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     connection_state: ConnectionState,
     config: TcpConfig,
@@ -179,7 +179,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
         Ok(Self {
             my_id,
             peers,
-            connector,
+            connector: Arc::new(connector),
             config,
             conn_cmd_tx,
             connection_state,
@@ -213,7 +213,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
                     self.connection_state.clone(),
                     ConnectionConfig::Bidirectional {
                         peer: peer.clone(),
-                        client: Arc::new(self.connector.clone()),
+                        client: self.connector.clone(),
                         conn_cmd_tx: self.conn_cmd_tx.clone(),
                     },
                 );

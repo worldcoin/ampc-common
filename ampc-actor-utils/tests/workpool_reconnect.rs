@@ -43,7 +43,6 @@ fn worker_proceed_signal() -> &'static Notify {
 ///
 /// The worker connects to the proxy's `worker_to_leader` address; the proxy then
 /// initiates the outbound connection to the leader, creating a bidirectional bridge.
-/// Both leader-to-worker and worker-to-leader traffic flows through this single bridge.
 pub struct TcpProxy {
     leader_addr: SocketAddr,
     worker_to_leader: Arc<TcpListener>,
