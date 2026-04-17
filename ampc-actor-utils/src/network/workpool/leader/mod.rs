@@ -102,6 +102,7 @@ pub struct LeaderArgs {
     pub leader_id: Identity,
     pub leader_address: String,
     pub worker_ids: Vec<Identity>,
+    /// set to None for TCP
     pub tls: Option<TlsServerConfig>,
 }
 

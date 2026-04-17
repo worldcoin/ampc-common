@@ -40,6 +40,8 @@ pub struct NetworkHandleArgs {
     pub connection_parallelism: usize,
     pub request_parallelism: usize,
     pub sessions_per_request: usize,
+    /// assumes that if tls is Some, everything needed for mutual TLS will
+    /// be present
     pub tls: Option<TlsConfig>,
 }
 
