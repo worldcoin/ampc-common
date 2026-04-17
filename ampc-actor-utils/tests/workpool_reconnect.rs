@@ -7,7 +7,7 @@ use ampc_actor_utils::network::workpool::Payload;
 use ampc_actor_utils::{
     execution::player::Identity,
     network::workpool::{
-        leader::{build_leader, LeaderArgs, WorkerJob},
+        leader::{build_leader_handle, LeaderArgs, WorkerJob},
         worker::{build_worker_handle, WorkerArgs},
         WorkpoolError,
     },
@@ -355,7 +355,7 @@ async fn start_cluster_with_proxy() -> Result<TestCluster> {
         worker_ids,
         tls: None,
     };
-    let leader = build_leader(leader_args, global_shutdown.clone()).await?;
+    let leader = build_leader_handle(leader_args, global_shutdown.clone()).await?;
 
     Ok(TestCluster {
         leader,

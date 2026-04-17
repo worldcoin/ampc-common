@@ -209,7 +209,7 @@ impl LeaderHandle {
     }
 }
 
-pub async fn build_leader(
+pub async fn build_leader_handle(
     args: LeaderArgs,
     shutdown_ct: CancellationToken,
 ) -> Result<LeaderHandle, SetupError> {

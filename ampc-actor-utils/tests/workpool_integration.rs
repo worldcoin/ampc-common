@@ -8,7 +8,7 @@ use std::sync::Arc;
 use ampc_actor_utils::{
     execution::player::Identity,
     network::workpool::{
-        leader::{build_leader, LeaderArgs, WorkerJob},
+        leader::{build_leader_handle, LeaderArgs, WorkerJob},
         worker::{build_worker_handle, WorkerArgs},
         Payload, ToBytes, WorkpoolError,
     },
@@ -174,7 +174,7 @@ async fn start_cluster() -> (
     }
 
     tracing::info!(leader_addr, "building leader");
-    let leader = build_leader(
+    let leader = build_leader_handle(
         LeaderArgs {
             leader_id,
             leader_address: leader_addr,
