@@ -24,7 +24,7 @@ use tokio::{
 #[derive(Debug)]
 pub struct TcpSession {
     session_id: SessionId,
-    // TcpSession is typically used with 2 peers, with the Identity string being 3 characters.
+    // TcpSession is typically used with 2 peers, with a short Identity String.
     // In this case, it is better to avoid a HashMap.
     identities: Vec<Identity>,
     tx: Vec<OutStream>,
@@ -40,6 +40,8 @@ impl TcpSession {
         rx: Vec<InStream>,
         config: TcpConfig,
     ) -> Self {
+        assert_eq!(identities.len(), tx.len());
+        assert_eq!(identities.len(), rx.len());
         Self {
             session_id,
             identities,
@@ -201,8 +203,8 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
         .map(SessionId::from)
         .enumerate()
     {
-        let mut tx = vec![];
-        let mut rx = vec![];
+        let mut tx = Vec::with_capacity(peer_ids.len());
+        let mut rx = Vec::with_capacity(peer_ids.len());
         let connection_id = ConnectionId::from(idx as u32 % num_connections);
 
         for peer_id in &peer_ids {
@@ -213,7 +215,7 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
                 .get(&connection_id)
                 .cloned()
                 .unwrap();
-            tx.push(outbound_tx.clone());
+            tx.push(outbound_tx);
             let inbound_rx = sc
                 .inbound_rx
                 .get_mut(peer_id)
