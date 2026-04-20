@@ -24,20 +24,25 @@ use tokio::{
 #[derive(Debug)]
 pub struct TcpSession {
     session_id: SessionId,
-    tx: HashMap<Identity, OutStream>,
-    rx: HashMap<Identity, InStream>,
+    // TcpSession is typically used with 2 peers, with the Identity string being 3 characters.
+    // In this case, it is better to avoid a HashMap.
+    identities: Vec<Identity>,
+    tx: Vec<OutStream>,
+    rx: Vec<InStream>,
     config: TcpConfig,
 }
 
 impl TcpSession {
     pub fn new(
         session_id: SessionId,
-        tx: HashMap<Identity, OutStream>,
-        rx: HashMap<Identity, InStream>,
+        identities: Vec<Identity>,
+        tx: Vec<OutStream>,
+        rx: Vec<InStream>,
         config: TcpConfig,
     ) -> Self {
         Self {
             session_id,
+            identities,
             tx,
             rx,
             config,
@@ -46,6 +51,20 @@ impl TcpSession {
 
     pub fn id(&self) -> SessionId {
         self.session_id
+    }
+
+    fn get_tx(&self, id: &Identity) -> Option<&OutStream> {
+        self.identities
+            .iter()
+            .position(|x| x == id)
+            .and_then(|idx| self.tx.get(idx))
+    }
+
+    fn get_rx(&mut self, id: &Identity) -> Option<&mut InStream> {
+        self.identities
+            .iter()
+            .position(|x| x == id)
+            .and_then(|idx| self.rx.get_mut(idx))
     }
 }
 
@@ -58,7 +77,7 @@ impl Drop for TcpSession {
 #[async_trait]
 impl Networking for TcpSession {
     async fn send(&mut self, value: NetworkValue, receiver: &Identity) -> Result<()> {
-        let outgoing_stream = self.tx.get(receiver).ok_or(eyre!(
+        let outgoing_stream = self.get_tx(receiver).ok_or(eyre!(
             "Outgoing stream for {receiver:?} in session {:?} not found",
             self.session_id
         ))?;
@@ -69,11 +88,13 @@ impl Networking for TcpSession {
     }
 
     async fn receive(&mut self, sender: &Identity) -> Result<NetworkValue> {
-        let incoming_stream = self.rx.get_mut(sender).ok_or(eyre!(
+        let session_id = self.session_id;
+        let timeout_duration = self.config.timeout_duration;
+        let incoming_stream = self.get_rx(sender).ok_or(eyre!(
             "Incoming stream for {sender:?} in session {:?} not found",
-            self.session_id
+            session_id
         ))?;
-        match timeout(self.config.timeout_duration, incoming_stream.recv()).await {
+        match timeout(timeout_duration, incoming_stream.recv()).await {
             Ok(res) => res.ok_or(eyre!("No message received")),
             Err(_) => Err(eyre!(
                 "Timeout while waiting for message from {sender:?} in \
@@ -180,8 +201,8 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
         .map(SessionId::from)
         .enumerate()
     {
-        let mut tx_map = HashMap::new();
-        let mut rx_map = HashMap::new();
+        let mut tx = vec![];
+        let mut rx = vec![];
         let connection_id = ConnectionId::from(idx as u32 % num_connections);
 
         for peer_id in &peer_ids {
@@ -192,18 +213,18 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
                 .get(&connection_id)
                 .cloned()
                 .unwrap();
-            tx_map.insert(peer_id.clone(), outbound_tx.clone());
+            tx.push(outbound_tx.clone());
             let inbound_rx = sc
                 .inbound_rx
                 .get_mut(peer_id)
                 .unwrap()
                 .remove(&session_id)
                 .unwrap();
-            rx_map.insert(peer_id.clone(), inbound_rx);
+            rx.push(inbound_rx);
         }
 
         // Create the TcpSession for this stream
-        let session = TcpSession::new(session_id, tx_map, rx_map, config.clone());
+        let session = TcpSession::new(session_id, peer_ids.clone(), tx, rx, config.clone());
         sessions.push(session);
     }
 
