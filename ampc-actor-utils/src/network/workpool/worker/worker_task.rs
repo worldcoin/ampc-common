@@ -27,7 +27,7 @@ pub fn spawn<T, C>(
 ) -> UnboundedReceiver<Job>
 where
     T: NetworkConnection + 'static,
-    C: Client<Output = T> + Clone + 'static,
+    C: Client<Output = T> + 'static,
 {
     let my_id = Arc::new(my_id);
     let leader = Arc::new(leader);
@@ -46,7 +46,7 @@ where
     job_rx
 }
 
-async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>(
+async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
     my_id: Arc<Identity>,
     leader: Arc<Peer>,
     client: C,
@@ -54,6 +54,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clo
     job_tx: UnboundedSender<Job>,
     shutdown_ct: CancellationToken,
 ) {
+    let client = Arc::new(client);
     let pending_jobs = Arc::new(Mutex::new(HashSet::<JobId>::new()));
 
     // This channel allows the workpool worker to send responses back to the
@@ -72,7 +73,7 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + Clo
             connection_state.clone(),
             ConnectionConfig::Client {
                 peer: leader.clone(),
-                client: Arc::new(client.clone()),
+                client: client.clone(),
             },
         )
         .await
