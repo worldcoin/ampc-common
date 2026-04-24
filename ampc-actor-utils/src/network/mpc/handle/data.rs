@@ -6,6 +6,7 @@ use eyre::{bail, Result};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 // Re-export shared tcp types
 pub use crate::network::tcp::Peer;
@@ -26,13 +27,14 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
-    pub async fn sync(&mut self) -> Result<()> {
+    pub async fn sync(&mut self, shutdown_ct: CancellationToken) -> Result<()> {
         let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
-        let _replies = futures::future::join_all(all_conns.map(send_and_receive))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(())
+        tokio::select! {
+            _ = shutdown_ct.cancelled() => bail!("shutdown triggered"),
+            r = futures::future::join_all(all_conns.map(send_and_receive)) => r
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>().map(|_| ())
+        }
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {
