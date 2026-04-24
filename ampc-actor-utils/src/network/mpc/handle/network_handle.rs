@@ -27,8 +27,7 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
-{
+pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
     peers: [Arc<Peer>; 2],
     my_id: Arc<Identity>,
     connector: Arc<C>,
@@ -41,7 +40,7 @@ pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T
     role_assignments: Arc<RoleAssignment>,
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> Drop
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop
     for TcpNetworkHandle<T, C>
 {
     fn drop(&mut self) {
@@ -51,7 +50,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> Dr
 }
 
 #[async_trait]
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> NetworkHandle
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHandle
     for TcpNetworkHandle<T, C>
 {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
@@ -142,9 +141,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static> Ne
     }
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + Clone + 'static>
-    TcpNetworkHandle<T, C>
-{
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetworkHandle<T, C> {
     #[allow(clippy::too_many_arguments)]
     pub async fn new<I, S>(
         my_id: Identity,
