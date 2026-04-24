@@ -36,6 +36,7 @@ pub enum ConnectionConfig<T: NetworkConnection + 'static> {
     },
     /// The given party will listen for connections from this peer_id.
     /// Assumes the other party is configured as Client
+    /// Note that the Server will trust the peers to correctly self-identify
     Server {
         peer_id: Identity,
         conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
