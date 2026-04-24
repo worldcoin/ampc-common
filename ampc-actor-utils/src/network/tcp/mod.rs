@@ -14,7 +14,9 @@ pub mod types;
 // Re-export commonly used types
 pub use config::{configure_tcp_stream, TlsConfig};
 pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
-pub use streams::{Client, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn};
+pub use streams::{
+    Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
+};
 use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
 

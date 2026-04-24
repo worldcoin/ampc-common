@@ -1,8 +1,9 @@
 use crate::{
     execution::player::Identity,
-    network::tcp::{ConnectionId, NetworkConnection},
+    network::tcp::{ConnectError, ConnectionId, NetworkConnection},
 };
-use eyre::{bail, Result};
+use eyre::bail;
+use eyre::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const HANDSHAKE_OK: &[u8] = b"2ok";
@@ -12,32 +13,36 @@ pub async fn outbound<T: NetworkConnection>(
     stream: &mut T,
     own_id: &Identity,
     connection_id: &ConnectionId,
-) -> Result<()> {
+) -> Result<(), ConnectError> {
     // Perform handshake: send our StreamId, expect to read it back
-    if let Err(e) = stream.write_u32(connection_id.0).await {
-        bail!("Failed to write stream_id during handshake: {:?}", e);
-    }
-    let echoed_id = match stream.read_u32().await {
-        Ok(id) => id,
-        Err(e) => {
-            bail!("Failed to read stream_id during handshake: {:?}", e);
-        }
-    };
+    stream
+        .write_u32(connection_id.0)
+        .await
+        .map_err(|e| ConnectError::HandshakeError(format!("Failed to write stream_id: {:?}", e)))?;
+
+    let echoed_id = stream
+        .read_u32()
+        .await
+        .map_err(|e| ConnectError::HandshakeError(format!("Failed to read stream_id: {:?}", e)))?;
+
     if echoed_id != connection_id.0 {
-        bail!(
-            "Handshake failed: expected stream_id {}, got {}",
-            connection_id.0,
-            echoed_id
-        );
+        return Err(ConnectError::HandshakeError(format!(
+            "expected stream_id {}, got {}",
+            connection_id.0, echoed_id
+        )));
     }
+
     let own_id_bytes = own_id.0.as_bytes();
     let own_id_len = own_id_bytes.len() as u32;
-    if let Err(e) = stream.write_u32(own_id_len).await {
-        bail!("Failed to write own_id length during handshake: {:?}", e);
-    }
-    if let Err(e) = stream.write_all(own_id_bytes).await {
-        bail!("Failed to write own_id bytes during handshake: {:?}", e);
-    }
+
+    stream.write_u32(own_id_len).await.map_err(|e| {
+        ConnectError::HandshakeError(format!("Failed to write own_id length: {:?}", e))
+    })?;
+
+    stream.write_all(own_id_bytes).await.map_err(|e| {
+        ConnectError::HandshakeError(format!("Failed to write own_id bytes: {:?}", e))
+    })?;
+
     Ok(())
 }
 
@@ -73,11 +78,17 @@ pub async fn inbound<T: NetworkConnection>(stream: &mut T) -> Result<(Identity, 
     Ok((peer_id, connection_id.into()))
 }
 
-pub async fn outbound_ok<T: NetworkConnection>(stream: &mut T) -> Result<()> {
+pub async fn outbound_ok<T: NetworkConnection>(stream: &mut T) -> Result<(), ConnectError> {
     let mut rsp = [0; 3];
-    let n = stream.read(&mut rsp[..]).await?;
+    let n = stream.read(&mut rsp[..]).await.map_err(|e| {
+        ConnectError::HandshakeError(format!("Failed to read handshake response: {:?}", e))
+    })?;
+
     if n != rsp.len() || &rsp[..n] != HANDSHAKE_OK {
-        Err(eyre::eyre!("handshake not accepted: rsp={:?}", &rsp[..n]))
+        Err(ConnectError::HandshakeError(format!(
+            "not accepted: rsp={:?}",
+            &rsp[..n]
+        )))
     } else {
         Ok(())
     }

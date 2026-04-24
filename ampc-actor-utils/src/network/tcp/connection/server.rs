@@ -1,5 +1,6 @@
 use crate::network::tcp::{
-    configure_tcp_stream, DynStreamConn, Server, TcpStreamConn, TlsServerConfig, TlsStreamConn,
+    configure_tcp_stream, ConnectError, DynStreamConn, Server, TcpStreamConn, TlsServerConfig,
+    TlsStreamConn,
 };
 use async_trait::async_trait;
 use eyre::{eyre, Result};
@@ -80,9 +81,10 @@ impl TcpServer {
 #[async_trait]
 impl Server for TlsServer {
     type Output = TlsStreamConn;
-    async fn accept(&self) -> Result<(SocketAddr, Self::Output)> {
+    async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError> {
         let (tcp_stream, peer_addr) = self.listener.accept().await?;
-        configure_tcp_stream(&tcp_stream)?;
+        configure_tcp_stream(&tcp_stream)
+            .map_err(|e| ConnectError::TcpConfigFailed(e.to_string()))?;
         let tls_stream = self.tls_acceptor.accept(tcp_stream).await?;
         Ok((peer_addr, TlsStreamConn(TlsStream::Server(tls_stream))))
     }
@@ -91,9 +93,10 @@ impl Server for TlsServer {
 #[async_trait]
 impl Server for TcpServer {
     type Output = TcpStreamConn;
-    async fn accept(&self) -> Result<(SocketAddr, Self::Output)> {
+    async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError> {
         let (tcp_stream, peer_addr) = self.listener.accept().await?;
-        configure_tcp_stream(&tcp_stream)?;
+        configure_tcp_stream(&tcp_stream)
+            .map_err(|e| ConnectError::TcpConfigFailed(e.to_string()))?;
         Ok((peer_addr, TcpStreamConn(tcp_stream)))
     }
 }
@@ -102,7 +105,7 @@ pub struct BoxTcpServer(pub TcpServer);
 #[async_trait]
 impl Server for BoxTcpServer {
     type Output = DynStreamConn;
-    async fn accept(&self) -> Result<(SocketAddr, Self::Output)> {
+    async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError> {
         let (addr, stream) = self.0.accept().await?;
         Ok((addr, Box::new(stream)))
     }
@@ -113,7 +116,7 @@ pub struct BoxTlsServer(pub TlsServer);
 #[async_trait]
 impl Server for BoxTlsServer {
     type Output = DynStreamConn;
-    async fn accept(&self) -> Result<(SocketAddr, Self::Output)> {
+    async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError> {
         let (addr, stream) = self.0.accept().await?;
         Ok((addr, Box::new(stream)))
     }

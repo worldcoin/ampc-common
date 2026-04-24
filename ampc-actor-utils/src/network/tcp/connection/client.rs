@@ -1,8 +1,9 @@
 use crate::network::tcp::{
-    configure_tcp_stream, Client, DynStreamConn, TcpStreamConn, TlsClientConfig, TlsStreamConn,
+    configure_tcp_stream, Client, ConnectError, DynStreamConn, TcpStreamConn, TlsClientConfig,
+    TlsStreamConn,
 };
 use async_trait::async_trait;
-use eyre::{eyre, Result};
+use eyre::Result;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::{
@@ -59,16 +60,17 @@ impl TlsClient {
 #[async_trait]
 impl Client for TlsClient {
     type Output = TlsStreamConn;
-    async fn connect(&self, url: String) -> Result<Self::Output> {
+    async fn connect(&self, url: String) -> Result<Self::Output, ConnectError> {
         let hostname = url
             .split(':')
             .next()
-            .ok_or_else(|| eyre!("Invalid URL: missing hostname"))?
+            .ok_or_else(|| ConnectError::InvalidInput("Invalid URL: missing hostname".to_string()))?
             .to_string();
 
-        let domain = ServerName::try_from(hostname)?;
-        let stream = TcpStream::connect(url).await?;
-        configure_tcp_stream(&stream)?;
+        let domain = ServerName::try_from(hostname)
+            .map_err(|e| ConnectError::InvalidInput(format!("Invalid server name: {}", e)))?;
+        let stream = TcpStream::connect(&url).await?;
+        configure_tcp_stream(&stream).map_err(|e| ConnectError::TcpConfigFailed(e.to_string()))?;
 
         let tls_stream = self.tls_connector.connect(domain, stream).await?;
         Ok(TlsStreamConn(TlsStream::Client(tls_stream)))
@@ -78,9 +80,9 @@ impl Client for TlsClient {
 #[async_trait]
 impl Client for TcpClient {
     type Output = TcpStreamConn;
-    async fn connect(&self, url: String) -> Result<Self::Output> {
-        let stream = TcpStream::connect(url).await?;
-        configure_tcp_stream(&stream)?;
+    async fn connect(&self, url: String) -> Result<Self::Output, ConnectError> {
+        let stream = TcpStream::connect(&url).await?;
+        configure_tcp_stream(&stream).map_err(|e| ConnectError::TcpConfigFailed(e.to_string()))?;
         Ok(TcpStreamConn(stream))
     }
 }
@@ -90,7 +92,7 @@ pub struct BoxTcpClient(pub TcpClient);
 #[async_trait]
 impl Client for BoxTcpClient {
     type Output = DynStreamConn;
-    async fn connect(&self, url: String) -> Result<Self::Output> {
+    async fn connect(&self, url: String) -> Result<Self::Output, ConnectError> {
         let stream = self.0.connect(url).await?;
         Ok(Box::new(stream))
     }
