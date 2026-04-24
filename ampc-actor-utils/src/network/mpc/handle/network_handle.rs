@@ -32,10 +32,9 @@ pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T
     my_id: Arc<Identity>,
     connector: Arc<C>,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
-    connection_state: ConnectionState,
+    shutdown_ct: CancellationToken,
     config: TcpConfig,
     next_session_id: u32,
-    shutdown_ct: CancellationToken,
     party_index: usize,
     role_assignments: Arc<RoleAssignment>,
 }
@@ -54,30 +53,30 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
     for TcpNetworkHandle<T, C>
 {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
-        let err_ct = CancellationToken::new();
-        // cancel the old token just in case
-        self.connection_state.err_ct().await.cancel();
-        self.connection_state
-            .replace_cancellation_token(err_ct.clone())
-            .await;
+        let session_err_ct = CancellationToken::new();
+        let drop_guard = session_err_ct.clone().drop_guard();
+        let connection_state =
+            ConnectionState::new(self.shutdown_ct.clone(), session_err_ct.clone());
 
         // wait for all peers to establish all connections
-        let mut connections = self
-            .make_peer_connections(self.config.num_connections)
+        let connections = self
+            .make_peer_connections(self.config.num_connections, connection_state.clone())
             .await?;
-
-        connections.sync().await?;
 
         // calls multiplexer::run() on each TCP/TLS stream
         let mut tcp_sessions = super::session::make_sessions(
             connections,
-            self.connection_state.clone(),
+            connection_state,
             &self.config,
             self.next_session_id,
         )
         .await;
 
-        self.validate_sessions(&mut tcp_sessions).await?;
+        tokio::select! {
+            r = self.validate_sessions(&mut tcp_sessions) =>  r,
+            _ = self.shutdown_ct.cancelled() => Err(eyre!("shutdown_ct triggered")),
+            _ = session_err_ct.cancelled() => Err(eyre!("session_err_ct triggered")),
+        }?;
 
         let network_sessions: Vec<_> = tcp_sessions
             .into_iter()
@@ -105,11 +104,13 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
             self.next_session_id = 0;
         }
 
-        Ok((network_sessions, err_ct))
+        drop_guard.disarm();
+        Ok((network_sessions, session_err_ct))
     }
 
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)> {
         let (network_sessions, ct) = self.make_network_sessions().await?;
+        let drop_guard = ct.clone().drop_guard();
 
         let mut session_futures = vec![];
         for mut network_session in network_sessions.into_iter() {
@@ -125,19 +126,26 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         }
 
         let r = parallelize(session_futures.into_iter()).await?;
+        drop_guard.disarm();
         Ok((r, ct))
     }
 
     async fn sync_peers(&mut self) -> Result<()> {
-        let mut connections = self
-            .make_peer_connections(1)
+        let err_ct = CancellationToken::new();
+        let _drop_guard = err_ct.clone().drop_guard();
+        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct.clone());
+
+        let res = self
+            .make_peer_connections(1, connection_state.clone())
             .await
-            .map_err(|e| eyre!("make_peer_connections failed: {}", e))?;
-        connections
-            .sync()
-            .await
-            .map_err(|_| eyre!("sync connections failed"))?;
-        Ok(())
+            .map_err(|e| eyre!("make_peer_connections failed: {}", e));
+        match res {
+            Ok(mut connections) => connections
+                .sync(connection_state.shutdown_ct())
+                .await
+                .map_err(|e| eyre!("sync connections failed: {}", e)),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -166,8 +174,6 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
         // use the shutdown_ct to cancel anything spawned by the NetworkHandle. But don't want this to affect the calling code.
         // Hence the child_token()
         let shutdown_ct = shutdown_ct.child_token();
-        let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
-
         let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
 
         // be sure not to make more than one network handle...
@@ -179,23 +185,32 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
             connector: Arc::new(connector),
             config,
             conn_cmd_tx,
-            connection_state,
-            next_session_id: 0,
             shutdown_ct,
+            next_session_id: 0,
             party_index,
             role_assignments,
         })
     }
 
     // associates the connections with an Identity
-    async fn make_peer_connections(&self, conns_per_peer: u32) -> Result<PeerConnections<T>> {
-        let (c0, c1) = self.make_connections(conns_per_peer).await?;
+    async fn make_peer_connections(
+        &self,
+        conns_per_peer: u32,
+        connection_state: ConnectionState,
+    ) -> Result<PeerConnections<T>> {
+        let (c0, c1) = self
+            .make_connections(conns_per_peer, connection_state)
+            .await?;
         Ok(PeerConnections::new(self.peers.clone(), c0, c1))
     }
 
     // returns the connections for each peer
     // when returned, the handshakes have successfully completed
-    async fn make_connections(&self, conns_per_peer: u32) -> Result<(Vec<T>, Vec<T>)> {
+    async fn make_connections(
+        &self,
+        conns_per_peer: u32,
+        connection_state: ConnectionState,
+    ) -> Result<(Vec<T>, Vec<T>)> {
         assert_eq!(self.peers.len(), 2);
         let mut connect_futures = Vec::with_capacity(conns_per_peer as usize * self.peers.len());
 
@@ -207,7 +222,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
                 let fut = crate::network::tcp::connect(
                     connection_id,
                     self.my_id.clone(),
-                    self.connection_state.clone(),
+                    connection_state.clone(),
                     ConnectionConfig::Bidirectional {
                         peer: peer.clone(),
                         client: self.connector.clone(),
@@ -264,10 +279,11 @@ mod tests {
     use eyre::Result;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::task::JoinSet;
+    use tokio_util::sync::CancellationToken;
     use tracing_test::traced_test;
 
     use crate::execution::local::generate_local_identities;
-    use crate::network::tcp::TcpStreamConn;
+    use crate::network::tcp::{ConnectionState, TcpStreamConn};
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
@@ -276,12 +292,13 @@ mod tests {
 
         let identities = generate_local_identities();
         let handles = get_local_tcp_handles(identities, CONNECTIONS_PER_PEER as usize, 1).await?;
+        let cs = ConnectionState::new(CancellationToken::new(), CancellationToken::new());
 
         // for each peer, a vec of the connections to other peers
         let connections: Vec<(Vec<TcpStreamConn>, Vec<TcpStreamConn>)> = futures::future::join_all(
             handles
                 .iter()
-                .map(|h| h.make_connections(CONNECTIONS_PER_PEER)),
+                .map(|h| h.make_connections(CONNECTIONS_PER_PEER, cs.clone())),
         )
         .await
         .into_iter()
