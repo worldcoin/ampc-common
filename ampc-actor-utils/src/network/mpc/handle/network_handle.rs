@@ -13,8 +13,8 @@ use crate::{
             NetworkHandle, Networking,
         },
         tcp::{
-            accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState,
-            NetworkConnection, Peer, Server,
+            accept_loop, Client, ConnectionConfig, ConnectionId, ConnectionRequest,
+            ConnectionState, NetworkConnection, Peer, Server,
         },
     },
     protocol::ops::setup_replicated_prf,
@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
     peers: [Arc<Peer>; 2],
     my_id: Arc<Identity>,
-    connector: C,
+    connector: Arc<C>,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     shutdown_ct: CancellationToken,
     config: TcpConfig,
@@ -182,7 +182,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
         Ok(Self {
             my_id,
             peers,
-            connector,
+            connector: Arc::new(connector),
             config,
             conn_cmd_tx,
             shutdown_ct,
@@ -222,10 +222,12 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetwork
                 let fut = crate::network::tcp::connect(
                     connection_id,
                     self.my_id.clone(),
-                    peer.clone(),
                     connection_state.clone(),
-                    self.connector.clone(),
-                    self.conn_cmd_tx.clone(),
+                    ConnectionConfig::Bidirectional {
+                        peer: peer.clone(),
+                        client: self.connector.clone(),
+                        conn_cmd_tx: self.conn_cmd_tx.clone(),
+                    },
                 );
                 connect_futures.push(fut);
             }

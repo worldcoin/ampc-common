@@ -10,106 +10,161 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{Client, ConnectionId, NetworkConnection, Peer},
+    network::tcp::{ConnectError, ConnectionConfig, ConnectionId, NetworkConnection},
 };
-use eyre::Result;
 use std::{sync::Arc, time::Duration};
-use tokio::{
-    sync::{mpsc::UnboundedSender, oneshot},
-    time::sleep,
-};
+use tokio::{sync::oneshot, time::sleep};
+
+impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
+    // used for logging
+    fn get_peer_id(&self) -> Identity {
+        match self {
+            Self::Bidirectional { peer, .. } => peer.id().clone(),
+            Self::Server { peer_id, .. } => peer_id.clone(),
+            Self::Client { peer, .. } => peer.id().clone(),
+        }
+    }
+}
 
 // connect and perform handshake
-pub async fn connect<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
+pub async fn connect<T: NetworkConnection + 'static>(
     connection_id: ConnectionId,
     own_id: Arc<Identity>,
-    peer: Arc<Peer>,
     connection_state: ConnectionState,
-    client: C,
-    conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
-) -> Result<T> {
-    let peer_id = peer.id().clone();
+    connection_config: ConnectionConfig<T>,
+) -> Result<T, ConnectError> {
+    let peer_id = connection_config.get_peer_id();
     let connector = Connector {
         connection_id,
         own_id: own_id.clone(),
-        peer,
         connection_state,
-        client,
-        conn_req_tx: conn_cmd_tx,
+        connection_config,
     };
-    let (rsp_tx, rsp_rx) = oneshot::channel();
+    let (rsp_tx, rsp_rx) = oneshot::channel::<Result<T, ConnectError>>();
     tokio::spawn(async move {
-        if let Some(c) = connector.run().await {
-            let _ = rsp_tx.send(c);
-        }
+        let r = connector.run().await;
+        let _ = rsp_tx.send(r);
     });
-    let r = rsp_rx.await?;
+    let result = rsp_rx
+        .await
+        .map_err(|_| ConnectError::Other("unreachable error in connect()".into()))??;
     tracing::debug!(
         "connection succeeded for {:?} -> {:?}, {:?}",
         own_id,
         peer_id,
         connection_id
     );
-    Ok(r)
+    Ok(result)
 }
 
-struct Connector<T: NetworkConnection, C: Client> {
+struct Connector<T: NetworkConnection + 'static> {
     connection_id: ConnectionId,
     own_id: Arc<Identity>,
-    peer: Arc<Peer>,
     connection_state: ConnectionState,
-    // initiates the connection
-    client: C,
-    // listens for the connection
-    conn_req_tx: UnboundedSender<ConnectionRequest<T>>,
+    connection_config: ConnectionConfig<T>,
 }
 
-impl<T: NetworkConnection, C: Client<Output = T>> Connector<T, C> {
-    async fn connect(&self) -> Result<T> {
-        if &*self.own_id > self.peer.id() {
-            let mut stream = self.client.connect(self.peer.url().to_string()).await?;
-            handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
-            handshake::outbound_ok(&mut stream).await?;
-            Ok(stream)
-        } else {
-            let (rsp_tx, rsp_rx) = oneshot::channel();
-            let req = ConnectionRequest::new(self.peer.id().clone(), self.connection_id, rsp_tx);
-            let _ = self.conn_req_tx.send(req);
-            let r = rsp_rx.await?;
-            Ok(r)
+impl<T: NetworkConnection> Connector<T> {
+    async fn connect(&self) -> Result<T, ConnectError> {
+        match &self.connection_config {
+            ConnectionConfig::Bidirectional {
+                peer,
+                client,
+                conn_cmd_tx,
+            } => {
+                if &*self.own_id > peer.id() {
+                    let mut stream = client.connect(peer.url().to_string()).await?;
+                    handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
+                    handshake::outbound_ok(&mut stream).await?;
+                    Ok(stream)
+                } else {
+                    let (rsp_tx, rsp_rx) = oneshot::channel();
+                    let req = ConnectionRequest::new(peer.id().clone(), self.connection_id, rsp_tx);
+                    if conn_cmd_tx.send(req).is_err() {
+                        return Err(ConnectError::Other(
+                            "failed to send connection request".into(),
+                        ));
+                    }
+                    let r = rsp_rx.await?;
+                    Ok(r)
+                }
+            }
+            ConnectionConfig::Server {
+                peer_id,
+                conn_cmd_tx,
+            } => {
+                let (rsp_tx, rsp_rx) = oneshot::channel();
+                let req = ConnectionRequest::new(peer_id.clone(), self.connection_id, rsp_tx);
+                if conn_cmd_tx.send(req).is_err() {
+                    return Err(ConnectError::Other(
+                        "failed to send connection request".into(),
+                    ));
+                }
+                let r = rsp_rx.await?;
+                Ok(r)
+            }
+            ConnectionConfig::Client { peer, client } => {
+                let mut stream = client.connect(peer.url().to_string()).await?;
+                handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
+                handshake::outbound_ok(&mut stream).await?;
+                Ok(stream)
+            }
         }
     }
 
-    async fn connect_loop(&self) -> T {
+    async fn connect_loop(&self) -> Result<T, ConnectError> {
         let mut rng: StdRng =
             StdRng::from_rng(&mut rand::thread_rng()).expect("Failed to seed RNG");
 
-        let retry_sec = 2;
+        const RETRY_SECS: u64 = 2;
 
         sleep(Duration::from_millis(rng.gen_range(0..=3000))).await;
 
         loop {
-            if let Ok(stream) = self.connect().await {
-                return stream;
-            }
+            let err = match self.connect().await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => e,
+            };
 
-            sleep(Duration::from_secs(retry_sec)).await;
+            // Log all errors
+            tracing::warn!(
+                "connection attempt failed for {:?} -> {:?}: {}",
+                self.own_id,
+                self.connection_config.get_peer_id(),
+                err
+            );
+
+            // Fatal errors - don't retry
+            match &err {
+                ConnectError::TlsCertificateError(_)
+                | ConnectError::TlsError(_)
+                | ConnectError::TcpConfigFailed(_)
+                | ConnectError::InvalidInput(_) => {
+                    return Err(err);
+                }
+                // Transient errors - retry after sleep
+                ConnectError::IoError(_)
+                | ConnectError::Other(_)
+                | ConnectError::HandshakeError(_) => {
+                    sleep(Duration::from_secs(RETRY_SECS)).await;
+                }
+            }
         }
     }
 
-    async fn run(&self) -> Option<T> {
+    async fn run(&self) -> Result<T, ConnectError> {
         let err_ct = self.connection_state.err_ct();
         let shutdown_ct = self.connection_state.shutdown_ct();
 
         tokio::select! {
-            r = self.connect_loop() => {
-                Some(r)
+            result = self.connect_loop() => {
+                result
             },
             _ = err_ct.cancelled() => {
-                None
+                Err(ConnectError::Other("connection task cancelled".into()))
             },
             _ = shutdown_ct.cancelled() => {
-                 None
+                Err(ConnectError::Other("connection task cancelled".into()))
             }
         }
     }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use ampc_actor_utils::{
     execution::player::Identity,
     network::workpool::{
-        leader::{build_leader, LeaderArgs, WorkerJob},
+        leader::{build_leader_handle, LeaderArgs, WorkerJob},
         worker::{build_worker_handle, WorkerArgs},
         Payload, ToBytes, WorkpoolError,
     },
@@ -129,30 +129,26 @@ async fn start_cluster() -> (
     ampc_actor_utils::network::workpool::leader::LeaderHandle,
     CancellationToken,
 ) {
-    let ports = find_free_ports(1 + NUM_WORKERS);
+    let ports = find_free_ports(1);
     let leader_port = ports[0];
-    let worker_ports = &ports[1..];
 
     let leader_addr = format!("127.0.0.1:{leader_port}");
-    let worker_addrs: Vec<String> = worker_ports
-        .iter()
-        .map(|p| format!("127.0.0.1:{p}"))
-        .collect();
-
-    tracing::info!(leader_addr, ?worker_addrs, "starting cluster");
 
     let leader_id = Identity("leader".to_string());
     let shutdown = CancellationToken::new();
 
-    // Start workers before the leader so their listeners are ready.
-    for (idx, worker_addr) in worker_addrs.iter().enumerate() {
-        // The leader internally names workers "{leader_id}-w-{idx}",
-        // so the worker must announce that same identity in the handshake.
-        let worker_id_str = format!("leader-w-{idx}");
-        tracing::info!(worker_id = worker_id_str, worker_addr, "building worker");
+    // The leader internally names workers "{leader_id}-w-{idx}",
+    // so the worker must announce that same identity in the handshake.
+    let worker_ids: Vec<Identity> = (0..NUM_WORKERS)
+        .map(|idx| Identity(format!("{}-w-{}", leader_id.0, idx)))
+        .collect();
+
+    tracing::info!(leader_addr, ?worker_ids, "starting cluster");
+
+    for worker_id_str in worker_ids.iter() {
+        tracing::info!(worker_id = worker_id_str.0, "building worker");
         let args = WorkerArgs {
-            worker_id: Identity(worker_id_str.clone()),
-            worker_address: worker_addr.clone(),
+            worker_id: worker_id_str.clone(),
             leader_id: leader_id.clone(),
             leader_address: leader_addr.clone(),
             tls: None,
@@ -162,26 +158,27 @@ async fn start_cluster() -> (
             .expect("failed to build worker");
 
         // Echo every payload back to the leader unchanged.
+        let worker_id = worker_id_str.0.clone();
         tokio::spawn(async move {
             while let Some(mut job) = worker.recv().await {
                 let payload = job.take_payload();
                 tracing::info!(
-                    worker_id = worker_id_str,
+                    worker_id = worker_id,
                     bytes = payload.len(),
                     "worker echoing payload"
                 );
                 job.send_result(payload);
             }
-            tracing::info!(worker_id = worker_id_str, "worker echo loop exited");
+            tracing::info!(worker_id = worker_id, "worker echo loop exited");
         });
     }
 
     tracing::info!(leader_addr, "building leader");
-    let leader = build_leader(
+    let leader = build_leader_handle(
         LeaderArgs {
             leader_id,
             leader_address: leader_addr,
-            worker_addresses: worker_addrs,
+            worker_ids,
             tls: None,
         },
         shutdown.clone(),

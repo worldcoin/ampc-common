@@ -8,11 +8,8 @@ use crate::{
     network::{
         tcp::{
             self,
-            connection::{
-                client::{BoxTcpClient, TcpClient, TlsClient},
-                server::{BoxTcpServer, TcpServer, TlsServer},
-            },
-            TlsConfig,
+            connection::server::{BoxTcpServer, TcpServer, TlsServer},
+            TlsServerConfig,
         },
         workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
     },
@@ -104,8 +101,9 @@ pub struct LeaderHandle {
 pub struct LeaderArgs {
     pub leader_id: Identity,
     pub leader_address: String,
-    pub worker_addresses: Vec<String>,
-    pub tls: Option<TlsConfig>,
+    pub worker_ids: Vec<Identity>,
+    /// set to None for TCP
+    pub tls: Option<TlsServerConfig>,
 }
 
 impl Drop for LeaderHandle {
@@ -211,7 +209,7 @@ impl LeaderHandle {
     }
 }
 
-pub async fn build_leader(
+pub async fn build_leader_handle(
     args: LeaderArgs,
     shutdown_ct: CancellationToken,
 ) -> Result<LeaderHandle, SetupError> {
@@ -222,34 +220,19 @@ pub async fn build_leader(
         .leader_address
         .parse()
         .map_err(|e: net::AddrParseError| SetupError::InvalidAddress(e.to_string()))?;
-    let num_workers = args.worker_addresses.len();
-    let worker_urls = args.worker_addresses.into_iter();
+    let num_workers = args.worker_ids.len();
+    let worker_ids = args.worker_ids;
 
-    let (handle_tx, worker_connected) = if let Some(tls) = args.tls.as_ref() {
+    let (handle_tx, worker_connected) = if let Some(tls) = args.tls {
         tracing::info!("Building WorkPool Leader with TLS");
 
-        let root_certs = tls.clone().root_certs;
-        let private_key = tls
-            .private_key
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS private key required".to_string()))?;
-
-        let leaf_cert = tls
-            .leaf_cert
-            .as_ref()
-            .ok_or_else(|| SetupError::BadConfig("TLS leaf cert required".to_string()))?;
-
-        let listener = TlsServer::new(leader_addr, private_key, leaf_cert, &root_certs)
+        let listener = TlsServer::new(leader_addr, tls)
             .await
             .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
-        let connector = TlsClient::new(private_key, leaf_cert, &root_certs)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
 
         Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,
-            worker_urls,
-            connector,
+            worker_ids,
             listener,
             shutdown_ct.clone(),
         ))
@@ -259,12 +242,10 @@ pub async fn build_leader(
         let listener = BoxTcpServer(TcpServer::new(leader_addr).await.map_err(|e| {
             SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
         })?);
-        let connector = BoxTcpClient(TcpClient::default());
 
         Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,
-            worker_urls,
-            connector,
+            worker_ids,
             listener,
             shutdown_ct.clone(),
         ))

@@ -19,8 +19,8 @@ use crate::network::workpool::{
 use crate::{
     execution::player::Identity,
     network::tcp::{
-        accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState, NetworkConnection,
-        Peer, Server,
+        accept_loop, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
+        NetworkConnection, Server,
     },
 };
 
@@ -29,27 +29,22 @@ use crate::{
 /// Returns the job sender and one `watch::Receiver<bool>` per worker.
 /// Each receiver starts as `false` and flips to `true` once that worker's
 /// connection (including the job-state handshake) is fully established.
-pub fn spawn<T, C, I, S>(
+pub fn spawn<S, T>(
     my_id: Identity,
-    worker_urls: I,
-    connector: C,
+    // this is called worker_names due to naming conflict between the protocol level id and the
+    // application level id
+    worker_names: Vec<Identity>,
     listener: S,
     shutdown_ct: CancellationToken,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
-    C: Client<Output = T> + 'static,
-    I: Iterator<Item = String>,
     S: Server<Output = T> + 'static,
 {
     let my_id = Arc::new(my_id);
     let job_tracker = Arc::new(JobTracker::new());
     let shutdown_ct = shutdown_ct.child_token();
     let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
-    let workers: Vec<_> = worker_urls
-        .enumerate()
-        .map(|(idx, url)| Arc::new(Peer::new(Identity(format!("{}-w-{}", &my_id.0, idx)), url)))
-        .collect();
 
     let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
     tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
@@ -57,20 +52,19 @@ where
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();
     let (job_sent_tx, job_sent_rx) = mpsc::unbounded_channel();
-    let mut workers_connected = Vec::with_capacity(workers.len());
+    let mut workers_connected = Vec::with_capacity(worker_names.len());
 
-    for (idx, worker) in workers.iter().enumerate() {
+    for (idx, worker) in worker_names.iter().enumerate() {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         worker_cmd_txs.push(cmd_tx);
         let (worker_conn_tx, worker_conn_rx) = watch::channel(false);
         workers_connected.push(worker_conn_rx);
-        tokio::spawn(worker_mgr(
+        tokio::spawn(worker_mgr::<T>(
             idx as WorkerId,
             my_id.clone(),
             worker.clone(),
             job_tracker.clone(),
             worker_conn_tx,
-            connector.clone(),
             connection_state.clone(),
             conn_cmd_tx.clone(),
             cmd_rx,
@@ -217,13 +211,14 @@ fn send_to_workpool(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
+async fn worker_mgr<T: NetworkConnection + 'static>(
     worker_id: WorkerId,
-    my_id: Arc<Identity>,
-    worker: Arc<Peer>,
+    my_name: Arc<Identity>,
+    // this is called worker_name due to naming conflict between the protocol level id and the
+    // application level id
+    worker_name: Identity,
     job_tracker: Arc<JobTracker>,
     worker_conn_tx: watch::Sender<bool>,
-    connector: C,
     connection_state: ConnectionState,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     mut cmd_rx: UnboundedReceiver<NetworkValue>,
@@ -237,11 +232,12 @@ async fn worker_mgr<T: NetworkConnection + 'static, C: Client<Output = T> + 'sta
         let connection_id = ConnectionId::new(0); // workers always connect with id 0
         let mut conn = match crate::network::tcp::connect(
             connection_id,
-            my_id.clone(),
-            worker.clone(),
+            my_name.clone(),
             connection_state.clone(),
-            connector.clone(),
-            conn_cmd_tx.clone(),
+            ConnectionConfig::<T>::Server {
+                peer_id: worker_name.clone(),
+                conn_cmd_tx: conn_cmd_tx.clone(),
+            },
         )
         .await
         {

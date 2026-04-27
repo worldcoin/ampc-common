@@ -44,6 +44,8 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 criterion = "0.8.1"
 statrs = "0.17"
 serial_test = "3"
+rcgen = "0.13"
+tempfile = "3.10"
 
 [[bench]]
 name = "bit_inject"

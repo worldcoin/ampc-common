@@ -14,7 +14,7 @@ use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
-use crate::network::tcp::{self, TcpStreamConn, TlsConfig};
+use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -40,6 +40,8 @@ pub struct NetworkHandleArgs {
     pub connection_parallelism: usize,
     pub request_parallelism: usize,
     pub sessions_per_request: usize,
+    /// assumes that if tls is Some, everything needed for mutual TLS will
+    /// be present
     pub tls: Option<TlsConfig>,
 }
 
@@ -116,8 +118,21 @@ pub async fn build_network_handle(
             .as_ref()
             .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
 
-        let listener = TlsServer::new(my_addr, private_key, leaf_cert, &root_certs).await?;
-        let connector = TlsClient::new(private_key, leaf_cert, &root_certs).await?;
+        let listener = TlsServer::new(
+            my_addr,
+            TlsServerConfig::Mutual {
+                root_certs: root_certs.clone(),
+                key_file: private_key.clone(),
+                cert_file: leaf_cert.clone(),
+            },
+        )
+        .await?;
+        let connector = TlsClient::new(TlsClientConfig::Mutual {
+            root_certs,
+            key_file: private_key.clone(),
+            cert_file: leaf_cert.clone(),
+        })
+        .await?;
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(

@@ -15,38 +15,31 @@ use crate::network::workpool::{
 use crate::{
     execution::player::Identity,
     network::tcp::{
-        accept_loop, Client, ConnectionId, ConnectionRequest, ConnectionState, NetworkConnection,
-        Peer, Server,
+        Client, ConnectionConfig, ConnectionId, ConnectionState, NetworkConnection, Peer,
     },
 };
 
-pub fn spawn<T, C, S>(
+pub fn spawn<T, C>(
     my_id: Identity,
     leader: Peer,
-    connector: C,
-    listener: S,
+    client: C,
     shutdown_ct: CancellationToken,
 ) -> UnboundedReceiver<Job>
 where
     T: NetworkConnection + 'static,
     C: Client<Output = T> + 'static,
-    S: Server<Output = T> + 'static,
 {
     let my_id = Arc::new(my_id);
     let leader = Arc::new(leader);
     let shutdown_ct = shutdown_ct.child_token();
     let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
 
-    let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
-    tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
-
     let (job_tx, job_rx) = mpsc::unbounded_channel::<Job>();
     tokio::spawn(worker_task(
         my_id,
         leader,
-        connector,
+        client,
         connection_state,
-        conn_cmd_tx,
         job_tx,
         shutdown_ct,
     ));
@@ -56,12 +49,12 @@ where
 async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'static>(
     my_id: Arc<Identity>,
     leader: Arc<Peer>,
-    connector: C,
+    client: C,
     connection_state: ConnectionState,
-    conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     job_tx: UnboundedSender<Job>,
     shutdown_ct: CancellationToken,
 ) {
+    let client = Arc::new(client);
     let pending_jobs = Arc::new(Mutex::new(HashSet::<JobId>::new()));
 
     // This channel allows the workpool worker to send responses back to the
@@ -77,10 +70,11 @@ async fn worker_task<T: NetworkConnection + 'static, C: Client<Output = T> + 'st
         let mut conn = match crate::network::tcp::connect(
             connection_id,
             my_id.clone(),
-            leader.clone(),
             connection_state.clone(),
-            connector.clone(),
-            conn_cmd_tx.clone(),
+            ConnectionConfig::Client {
+                peer: leader.clone(),
+                client: client.clone(),
+            },
         )
         .await
         {
