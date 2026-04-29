@@ -1,20 +1,24 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use tokio::sync::mpsc::UnboundedSender;
+use async_trait::async_trait;
+use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     execution::player::Identity,
     network::tcp::{
-        self, Client, ConnectionRequest, NetworkConnection, Server, SetupError, TlsConfig,
+        self, accept_loop, connect, Client, ConnectError, ConnectionConfig, ConnectionId,
+        ConnectionRequest, ConnectionState, NetworkConnection, Peer, Server, SetupError, TlsConfig,
     },
 };
 
+#[async_trait]
 pub trait Connector {
-    pub fn connect(&self) -> Box<dyn NetworkConnection>;
+    async fn connect(&self, peer: Peer) -> Result<Box<dyn NetworkConnection>, ConnectError>;
 }
 
 pub struct PeerConnector<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
+    id: Arc<Identity>,
     connector: Arc<C>,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     shutdown_ct: CancellationToken,
@@ -27,16 +31,55 @@ pub struct PeerConnectorArgs {
     pub tls: Option<TlsConfig>,
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> PeerConnector<T, C> {
-    pub fn new<S>(connector: C, listener: S, shutdown_ct: CancellationToken) -> Self
-    where
-        S: Server<Output = T> + 'static,
-    {
-        todo!()
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop for PeerConnector<T, C> {
+    fn drop(&mut self) {
+        self.shutdown_ct.cancel();
+        tracing::debug!("PeerConnector dropped");
     }
 }
 
-// todo: implement Connector for PeerConnector
+#[async_trait]
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Connector
+    for PeerConnector<T, C>
+{
+    async fn connect(&self, peer: Peer) -> Result<Box<dyn NetworkConnection>, ConnectError> {
+        let err_ct = CancellationToken::new();
+        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct);
+        let conn = connect(
+            ConnectionId::new(0),
+            self.id.clone(),
+            connection_state,
+            ConnectionConfig::Bidirectional {
+                peer: Arc::new(peer),
+                client: self.connector.clone(),
+                conn_cmd_tx: self.conn_cmd_tx.clone(),
+            },
+        )
+        .await?;
+
+        Ok(Box::new(conn))
+    }
+}
+
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> PeerConnector<T, C> {
+    pub fn new<S>(id: Identity, connector: C, listener: S, shutdown_ct: CancellationToken) -> Self
+    where
+        S: Server<Output = T> + 'static,
+    {
+        let shutdown_ct = shutdown_ct.child_token();
+        let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
+
+        // be sure not to make more than one network handle...
+        tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
+
+        Self {
+            id: Arc::new(id),
+            connector: Arc::new(connector),
+            conn_cmd_tx,
+            shutdown_ct,
+        }
+    }
+}
 
 pub async fn build_peer_connector<
     T: NetworkConnection + 'static,
@@ -47,31 +90,27 @@ pub async fn build_peer_connector<
 ) -> Result<Box<dyn Connector>, SetupError> {
     tcp::init_rustls_crypto_provider();
 
-    let my_addr = tcp::to_inaddr_any(args.address.parse::<SocketAddr>()?);
+    let my_addr = tcp::to_inaddr_any(
+        args.address
+            .parse::<SocketAddr>()
+            .map_err(|e| SetupError::InvalidAddress(e.to_string()))?,
+    );
 
     macro_rules! build_network_handle {
         ($listener:expr, $connector:expr) => {
-            Ok(Box::new(
-                PeerConnector::new(
-                    my_identity,
-                    peers,
-                    $connector,
-                    $listener,
-                    tcp_config,
-                    shutdown_ct,
-                    my_index,
-                    role_assignments,
-                )
-                .await?,
-            ))
+            Ok(Box::new(PeerConnector::new(
+                args.id,
+                $connector,
+                $listener,
+                shutdown_ct,
+            )))
         };
     }
 
     if let Some(tls) = args.tls.as_ref() {
         tracing::info!(
-            "Building PeerConnector, with TLS, from configs: {:?} {:?}",
-            tcp_config,
-            tls,
+            "Building PeerConnector with TLS, listen_addr: {:?}",
+            my_addr,
         );
 
         let root_certs = tls.clone().root_certs;
