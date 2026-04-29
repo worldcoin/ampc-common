@@ -174,7 +174,7 @@ pub mod testing {
         Ok(addresses)
     }
 
-    pub async fn setup_local_tcp_networking(
+    pub async fn setup_local_mpc_networking(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
@@ -183,7 +183,7 @@ pub mod testing {
         Vec<Vec<NetworkSession>>,
     )> {
         let mut handles =
-            get_local_tcp_handles(parties, connection_parallelism, request_parallelism).await?;
+            get_local_mpc_handles(parties, connection_parallelism, request_parallelism).await?;
 
         let results =
             futures::future::join_all(handles.iter_mut().map(|h| h.make_network_sessions())).await;
@@ -193,7 +193,7 @@ pub mod testing {
         Ok((handles, no_ct))
     }
 
-    pub async fn get_local_tcp_handles(
+    pub async fn get_local_mpc_handles(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
@@ -346,10 +346,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
-    async fn test_tcp_comms_correct() -> Result<()> {
+    async fn test_mpc_comms_correct() -> Result<()> {
         let identities = generate_local_identities();
         let (_managers, mut sessions) =
-            setup_local_tcp_networking(identities.clone(), 1, 4).await?;
+            setup_local_mpc_networking(identities.clone(), 1, 4).await?;
         sleep(Duration::from_millis(500)).await;
 
         assert_eq!(sessions.len(), 3);

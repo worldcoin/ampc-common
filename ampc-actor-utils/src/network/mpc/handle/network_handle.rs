@@ -291,7 +291,7 @@ mod tests {
         const CONNECTIONS_PER_PEER: u32 = 2;
 
         let identities = generate_local_identities();
-        let handles = get_local_tcp_handles(identities, CONNECTIONS_PER_PEER as usize, 1).await?;
+        let handles = get_local_mpc_handles(identities, CONNECTIONS_PER_PEER as usize, 1).await?;
         let cs = ConnectionState::new(CancellationToken::new(), CancellationToken::new());
 
         // for each peer, a vec of the connections to other peers
