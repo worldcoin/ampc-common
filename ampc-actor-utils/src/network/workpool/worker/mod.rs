@@ -1,7 +1,7 @@
 mod worker_task;
 
-use super::{JobId, Payload, SetupError, WorkerId};
-use crate::network::tcp::{Peer, TlsClientConfig};
+use super::{JobId, Payload, WorkerId};
+use crate::network::tcp::{Peer, SetupError, TlsClientConfig};
 use crate::network::workpool::value::NetworkValue;
 use crate::{
     execution::player::Identity,

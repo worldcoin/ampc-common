@@ -9,9 +9,9 @@ use crate::{
         tcp::{
             self,
             connection::server::{BoxTcpServer, TcpServer, TlsServer},
-            TlsServerConfig,
+            SetupError, TlsServerConfig,
         },
-        workpool::{JobId, Payload, SetupError, WorkerId, WorkpoolError},
+        workpool::{JobId, Payload, WorkerId, WorkpoolError},
     },
 };
 use std::{

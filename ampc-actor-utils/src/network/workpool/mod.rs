@@ -35,17 +35,6 @@ pub enum WorkpoolError {
     Timeout,
 }
 
-// used when constructing a worker or leader handle
-#[derive(Error, Debug)]
-pub enum SetupError {
-    #[error("connection error: {0}")]
-    BadConfig(String),
-    #[error("parse error: {0}")]
-    InvalidAddress(String),
-    #[error("error in TCP stack: {0}")]
-    ListenFailed(String),
-}
-
 #[derive(Error, Debug)]
 pub enum DeserializeError {
     #[error("io err")]

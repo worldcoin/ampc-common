@@ -8,6 +8,7 @@ use std::sync::{Arc, Once};
 
 pub mod config;
 pub mod connection;
+pub mod peer_connector;
 pub mod streams;
 pub mod types;
 
@@ -17,6 +18,7 @@ pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{
     Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
 };
+use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
 
@@ -83,6 +85,17 @@ pub enum TlsServerConfig {
         /// the server cert
         cert_file: String,
     },
+}
+
+// used when constructing a worker or leader handle
+#[derive(Error, Debug)]
+pub enum SetupError {
+    #[error("connection error: {0}")]
+    BadConfig(String),
+    #[error("parse error: {0}")]
+    InvalidAddress(String),
+    #[error("error in TCP stack: {0}")]
+    ListenFailed(String),
 }
 
 // allow initialization of TLS from possibly multiple modules, while ensuring that the provider is only installed once
