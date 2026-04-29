@@ -98,6 +98,28 @@ pub enum SetupError {
     ListenFailed(String),
 }
 
+/// Error type for TLS configuration and setup
+#[derive(Error, Debug)]
+pub enum TlsError {
+    #[error("Failed to load or parse certificate: {0}")]
+    CertificateError(String),
+
+    #[error("Failed to load or parse private key: {0}")]
+    PrivateKeyError(String),
+
+    #[error("Failed to configure TLS: {0}")]
+    ConfigError(String),
+
+    #[error("TLS error: {0}")]
+    Other(String),
+}
+
+impl From<TlsError> for SetupError {
+    fn from(err: TlsError) -> Self {
+        SetupError::BadConfig(err.to_string())
+    }
+}
+
 // allow initialization of TLS from possibly multiple modules, while ensuring that the provider is only installed once
 pub fn init_rustls_crypto_provider() {
     static INSTALL_CRYPTO_PROVIDER: Once = Once::new();

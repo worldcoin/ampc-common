@@ -142,15 +142,13 @@ pub async fn build_peer_connector<
                 cert_file: leaf_cert.clone(),
             },
         )
-        .await
-        .map_err(|e| SetupError::BadConfig(e.to_string()))?;
+        .await?;
         let connector = TlsClient::new(TlsClientConfig::Mutual {
             root_certs,
             key_file: private_key.clone(),
             cert_file: leaf_cert.clone(),
         })
-        .await
-        .map_err(|e| SetupError::BadConfig(e.to_string()))?;
+        .await?;
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(
