@@ -7,8 +7,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     execution::player::Identity,
     network::tcp::{
-        self, accept_loop, connect, Client, ConnectError, ConnectionConfig, ConnectionId,
-        ConnectionRequest, ConnectionState, NetworkConnection, Peer, Server, SetupError, TlsConfig,
+        self, accept_loop, connect,
+        connection::{
+            client::{BoxTcpClient, TcpClient, TlsClient},
+            server::{BoxTcpServer, TcpServer, TlsServer},
+        },
+        Client, ConnectError, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
+        NetworkConnection, Peer, Server, SetupError, TlsClientConfig, TlsConfig, TlsServerConfig,
     },
 };
 
@@ -117,19 +122,17 @@ pub async fn build_peer_connector<
 
         tracing::info!("Running in full app TLS mode.");
         if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(eyre::eyre!(
-                "TLS configuration is required for this operation"
+            return Err(SetupError::BadConfig(
+                "TLS configuration is required for this operation".to_string(),
             ));
         }
-        let private_key = tls
-            .private_key
-            .as_ref()
-            .ok_or(eyre::eyre!("Private key is required for TLS"))?;
+        let private_key = tls.private_key.as_ref().ok_or(SetupError::BadConfig(
+            "Private key is required for TLS".to_string(),
+        ))?;
 
-        let leaf_cert = tls
-            .leaf_cert
-            .as_ref()
-            .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
+        let leaf_cert = tls.leaf_cert.as_ref().ok_or(SetupError::BadConfig(
+            "Leaf certificate is required for TLS".to_string(),
+        ))?;
 
         let listener = TlsServer::new(
             my_addr,
@@ -139,21 +142,26 @@ pub async fn build_peer_connector<
                 cert_file: leaf_cert.clone(),
             },
         )
-        .await?;
+        .await
+        .map_err(|e| SetupError::BadConfig(e.to_string()))?;
         let connector = TlsClient::new(TlsClientConfig::Mutual {
             root_certs,
             key_file: private_key.clone(),
             cert_file: leaf_cert.clone(),
         })
-        .await?;
+        .await
+        .map_err(|e| SetupError::BadConfig(e.to_string()))?;
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(
-            "Building PeerConnector, without TLS, from config: {:?}, listen_addr: {:?}",
-            tcp_config,
+            "Building PeerConnector, without TLS, listen_addr: {:?}",
             my_addr
         );
-        let listener = BoxTcpServer(TcpServer::new(my_addr).await?);
+        let listener = BoxTcpServer(
+            TcpServer::new(my_addr)
+                .await
+                .map_err(|e| SetupError::ListenFailed(e.to_string()))?,
+        );
         let connector = BoxTcpClient(TcpClient::default());
         build_network_handle!(listener, connector)
     }
