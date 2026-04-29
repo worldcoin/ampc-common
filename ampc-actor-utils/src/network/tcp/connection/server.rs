@@ -61,7 +61,7 @@ impl TlsServer {
                         let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
                         root_cert_store
                             .add(cert)
-                            .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
                     }
                 }
                 let client_verifier =
@@ -78,7 +78,7 @@ impl TlsServer {
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
         let listener = TcpListener::bind(own_addr)
             .await
-            .map_err(|e| TlsError::Other(e.to_string()))?;
+            .map_err(|e| TlsError::BindFailed(e.to_string()))?;
         Ok(Self {
             listener,
             tls_acceptor,

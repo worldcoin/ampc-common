@@ -104,14 +104,17 @@ pub enum TlsError {
     #[error("Failed to load or parse certificate: {0}")]
     CertificateError(String),
 
+    #[error("Failed to validate certificate: {0}")]
+    CertificateValidation(String),
+
     #[error("Failed to load or parse private key: {0}")]
     PrivateKeyError(String),
 
     #[error("Failed to configure TLS: {0}")]
     ConfigError(String),
 
-    #[error("TLS error: {0}")]
-    Other(String),
+    #[error("Failed to bind listener: {0}")]
+    BindFailed(String),
 }
 
 impl From<TlsError> for SetupError {

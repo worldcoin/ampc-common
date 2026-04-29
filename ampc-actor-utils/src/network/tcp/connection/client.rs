@@ -32,7 +32,7 @@ impl TlsClient {
                         let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
                         roots
                             .add(cert)
-                            .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
                     }
                 }
                 ClientConfig::builder()
@@ -51,7 +51,7 @@ impl TlsClient {
                         let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
                         roots
                             .add(cert)
-                            .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
                     }
                 }
                 let certs = CertificateDer::pem_file_iter(&cert_file)
