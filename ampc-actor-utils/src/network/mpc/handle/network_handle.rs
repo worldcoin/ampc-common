@@ -8,7 +8,7 @@ use crate::{
     },
     network::{
         mpc::{
-            handle::{config::TcpConfig, data::PeerConnections, session::TcpSession},
+            handle::{config::MpcConfig, data::PeerConnections, session::TcpSession},
             value::NetworkValue,
             NetworkHandle, Networking,
         },
@@ -27,20 +27,20 @@ use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-pub struct TcpNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
+pub struct MpcNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
     peers: [Arc<Peer>; 2],
     my_id: Arc<Identity>,
     connector: Arc<C>,
     conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
     shutdown_ct: CancellationToken,
-    config: TcpConfig,
+    config: MpcConfig,
     next_session_id: u32,
     party_index: usize,
     role_assignments: Arc<RoleAssignment>,
 }
 
 impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop
-    for TcpNetworkHandle<T, C>
+    for MpcNetworkHandle<T, C>
 {
     fn drop(&mut self) {
         self.shutdown_ct.cancel();
@@ -50,7 +50,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop
 
 #[async_trait]
 impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHandle
-    for TcpNetworkHandle<T, C>
+    for MpcNetworkHandle<T, C>
 {
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
         let session_err_ct = CancellationToken::new();
@@ -149,14 +149,14 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
     }
 }
 
-impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> TcpNetworkHandle<T, C> {
+impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetworkHandle<T, C> {
     #[allow(clippy::too_many_arguments)]
     pub async fn new<I, S>(
         my_id: Identity,
         mut peers: I,
         connector: C,
         listener: S,
-        config: TcpConfig,
+        config: MpcConfig,
         shutdown_ct: CancellationToken,
         party_index: usize,
         role_assignments: Arc<RoleAssignment>,

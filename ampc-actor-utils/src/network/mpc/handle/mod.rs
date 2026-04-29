@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use self::config::TcpConfig;
-use self::network_handle::TcpNetworkHandle;
+use self::config::MpcConfig;
+use self::network_handle::MpcNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
@@ -64,7 +64,7 @@ pub async fn build_network_handle(
     let my_address = &args.addresses[my_index];
     let my_addr = tcp::to_inaddr_any(my_address.parse::<SocketAddr>()?);
 
-    let tcp_config = TcpConfig::new(
+    let tcp_config = MpcConfig::new(
         Duration::from_secs(10),
         args.connection_parallelism,
         args.request_parallelism * args.sessions_per_request,
@@ -78,7 +78,7 @@ pub async fn build_network_handle(
     macro_rules! build_network_handle {
         ($listener:expr, $connector:expr) => {
             Ok(Box::new(
-                TcpNetworkHandle::new(
+                MpcNetworkHandle::new(
                     my_identity,
                     peers,
                     $connector,
@@ -179,7 +179,7 @@ pub mod testing {
         connection_parallelism: usize,
         request_parallelism: usize,
     ) -> Result<(
-        Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>,
+        Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>,
         Vec<Vec<NetworkSession>>,
     )> {
         let mut handles =
@@ -197,10 +197,10 @@ pub mod testing {
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
-    ) -> Result<Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>> {
+    ) -> Result<Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>> {
         assert_eq!(parties.len(), 3);
 
-        let config = TcpConfig::new(
+        let config = MpcConfig::new(
             Duration::from_secs(30),
             connection_parallelism,
             request_parallelism,
@@ -234,7 +234,7 @@ pub mod testing {
                         .map(|(_, (id, url))| (id.clone(), url.to_string()))
                         .collect::<Vec<_>>();
 
-                    let handle: TcpNetworkHandle<TcpStreamConn, TcpClient> = TcpNetworkHandle::new(
+                    let handle: MpcNetworkHandle<TcpStreamConn, TcpClient> = MpcNetworkHandle::new(
                         id.clone(),
                         peers.into_iter(),
                         connector,
@@ -249,7 +249,7 @@ pub mod testing {
                 }
             });
 
-        let handles: Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
+        let handles: Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
             .await
             .into_iter()
             .collect::<Result<Vec<_>, eyre::Report>>()?;
