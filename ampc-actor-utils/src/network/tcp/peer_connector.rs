@@ -19,7 +19,11 @@ use crate::{
 
 #[async_trait]
 pub trait Connector: Send + Sync {
-    async fn connect(&self, peer: Peer) -> Result<Box<dyn NetworkConnection>, ConnectError>;
+    async fn connect(
+        &self,
+        peer: Peer,
+        connection_id: u32,
+    ) -> Result<Box<dyn NetworkConnection>, ConnectError>;
 }
 
 pub struct PeerConnector<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
@@ -47,11 +51,15 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Drop for P
 impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Connector
     for PeerConnector<T, C>
 {
-    async fn connect(&self, peer: Peer) -> Result<Box<dyn NetworkConnection>, ConnectError> {
+    async fn connect(
+        &self,
+        peer: Peer,
+        connection_id: u32,
+    ) -> Result<Box<dyn NetworkConnection>, ConnectError> {
         let err_ct = CancellationToken::new();
         let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct);
         let conn = connect(
-            ConnectionId::new(0),
+            ConnectionId::new(connection_id),
             self.id.clone(),
             connection_state,
             ConnectionConfig::Bidirectional {
