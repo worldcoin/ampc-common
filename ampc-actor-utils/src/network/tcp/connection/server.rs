@@ -1,5 +1,5 @@
 use crate::network::tcp::{
-    configure_tcp_stream, ConnectError, DynStreamConn, Server, TcpStreamConn, TlsError,
+    configure_tcp_stream, ConnectError, DynStreamConn, Server, SetupError, TcpStreamConn, TlsError,
     TlsServerConfig, TlsStreamConn,
 };
 use async_trait::async_trait;
@@ -23,23 +23,28 @@ pub struct TcpServer {
 }
 
 impl TlsServer {
-    pub async fn new(own_addr: SocketAddr, cfg: TlsServerConfig) -> Result<Self, TlsError> {
+    pub async fn new(own_addr: SocketAddr, cfg: TlsServerConfig) -> Result<Self, SetupError> {
         let server_config = match cfg {
             TlsServerConfig::ServerOnly {
                 key_file,
                 cert_file,
             } => {
                 let certs = CertificateDer::pem_file_iter(cert_file)
-                    .map_err(|e| TlsError::CertificateError(e.to_string()))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                    .map_err(|e| TlsError::CertificateError(e.to_string()))
+                    .and_then(|iter| {
+                        iter.collect::<Result<Vec<_>, _>>()
+                            .map_err(|e| TlsError::CertificateError(e.to_string()))
+                    })
+                    .map_err(SetupError::from)?;
                 let key = PrivateKeyDer::from_pem_file(key_file)
-                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))?;
+                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))
+                    .map_err(SetupError::from)?;
 
                 ServerConfig::builder()
                     .with_no_client_auth()
                     .with_single_cert(certs, key)
-                    .map_err(|e| TlsError::ConfigError(e.to_string()))?
+                    .map_err(|e| TlsError::ConfigError(e.to_string()))
+                    .map_err(SetupError::from)?
             }
             TlsServerConfig::Mutual {
                 root_certs,
@@ -47,38 +52,48 @@ impl TlsServer {
                 cert_file,
             } => {
                 let certs = CertificateDer::pem_file_iter(cert_file)
-                    .map_err(|e| TlsError::CertificateError(e.to_string()))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                    .map_err(|e| TlsError::CertificateError(e.to_string()))
+                    .and_then(|iter| {
+                        iter.collect::<Result<Vec<_>, _>>()
+                            .map_err(|e| TlsError::CertificateError(e.to_string()))
+                    })
+                    .map_err(SetupError::from)?;
                 let key = PrivateKeyDer::from_pem_file(key_file)
-                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))?;
+                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))
+                    .map_err(SetupError::from)?;
 
                 let mut root_cert_store = RootCertStore::empty();
                 for root_cert in root_certs {
                     for cert in CertificateDer::pem_file_iter(root_cert)
-                        .map_err(|e| TlsError::CertificateError(e.to_string()))?
+                        .map_err(|e| TlsError::CertificateError(e.to_string()))
+                        .map_err(SetupError::from)?
                     {
-                        let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                        let cert = cert
+                            .map_err(|e| TlsError::CertificateError(e.to_string()))
+                            .map_err(SetupError::from)?;
                         root_cert_store
                             .add(cert)
-                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))
+                            .map_err(SetupError::from)?;
                     }
                 }
                 let client_verifier =
                     WebPkiClientVerifier::builder(<Arc<RootCertStore>>::from(root_cert_store))
                         .build()
-                        .map_err(|e| TlsError::ConfigError(e.to_string()))?;
+                        .map_err(|e| TlsError::ConfigError(e.to_string()))
+                        .map_err(SetupError::from)?;
                 ServerConfig::builder()
                     .with_client_cert_verifier(client_verifier)
                     .with_single_cert(certs, key)
-                    .map_err(|e| TlsError::ConfigError(e.to_string()))?
+                    .map_err(|e| TlsError::ConfigError(e.to_string()))
+                    .map_err(SetupError::from)?
             }
         };
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
         let listener = TcpListener::bind(own_addr)
             .await
-            .map_err(|e| TlsError::BindFailed(e.to_string()))?;
+            .map_err(|e| SetupError::BindFailed(e.to_string()))?;
         Ok(Self {
             listener,
             tls_acceptor,

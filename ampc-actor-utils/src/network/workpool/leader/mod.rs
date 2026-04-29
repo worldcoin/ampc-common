@@ -226,9 +226,7 @@ pub async fn build_leader_handle(
     let (handle_tx, worker_connected) = if let Some(tls) = args.tls {
         tracing::info!("Building WorkPool Leader with TLS");
 
-        let listener = TlsServer::new(leader_addr, tls)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS server: {}", e)))?;
+        let listener = TlsServer::new(leader_addr, tls).await?;
 
         Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,
@@ -239,9 +237,11 @@ pub async fn build_leader_handle(
     } else {
         tracing::info!("Building WorkPool Leader without TLS");
 
-        let listener = BoxTcpServer(TcpServer::new(leader_addr).await.map_err(|e| {
-            SetupError::ListenFailed(format!("Failed to create TCP server: {}", e))
-        })?);
+        let listener = BoxTcpServer(
+            TcpServer::new(leader_addr)
+                .await
+                .map_err(|e| SetupError::ListenFailed(e.to_string()))?,
+        );
 
         Result::<_, SetupError>::Ok(leader_task::spawn(
             args.leader_id,

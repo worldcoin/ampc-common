@@ -96,6 +96,8 @@ pub enum SetupError {
     InvalidAddress(String),
     #[error("error in TCP stack: {0}")]
     ListenFailed(String),
+    #[error("Failed to bind listener: {0}")]
+    BindFailed(String),
 }
 
 /// Error type for TLS configuration and setup
@@ -112,9 +114,6 @@ pub enum TlsError {
 
     #[error("Failed to configure TLS: {0}")]
     ConfigError(String),
-
-    #[error("Failed to bind listener: {0}")]
-    BindFailed(String),
 }
 
 impl From<TlsError> for SetupError {

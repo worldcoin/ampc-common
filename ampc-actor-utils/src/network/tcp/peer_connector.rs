@@ -18,7 +18,7 @@ use crate::{
 };
 
 #[async_trait]
-pub trait Connector {
+pub trait Connector: Send + Sync {
     async fn connect(&self, peer: Peer) -> Result<Box<dyn NetworkConnection>, ConnectError>;
 }
 
@@ -86,10 +86,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> PeerConnec
     }
 }
 
-pub async fn build_peer_connector<
-    T: NetworkConnection + 'static,
-    C: Client<Output = T> + 'static,
->(
+pub async fn build_peer_connector(
     args: PeerConnectorArgs,
     shutdown_ct: CancellationToken,
 ) -> Result<Box<dyn Connector>, SetupError> {
@@ -121,18 +118,14 @@ pub async fn build_peer_connector<
         let root_certs = tls.clone().root_certs;
 
         tracing::info!("Running in full app TLS mode.");
-        if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(SetupError::BadConfig(
-                "TLS configuration is required for this operation".to_string(),
-            ));
-        }
-        let private_key = tls.private_key.as_ref().ok_or(SetupError::BadConfig(
-            "Private key is required for TLS".to_string(),
-        ))?;
+        let private_key = tls
+            .private_key
+            .as_ref()
+            .ok_or_else(|| SetupError::BadConfig("Private key is required for TLS".to_string()))?;
 
-        let leaf_cert = tls.leaf_cert.as_ref().ok_or(SetupError::BadConfig(
-            "Leaf certificate is required for TLS".to_string(),
-        ))?;
+        let leaf_cert = tls.leaf_cert.as_ref().ok_or_else(|| {
+            SetupError::BadConfig("Leaf certificate is required for TLS".to_string())
+        })?;
 
         let listener = TlsServer::new(
             my_addr,
