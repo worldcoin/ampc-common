@@ -57,6 +57,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> Connector
         connection_id: u32,
     ) -> Result<Box<dyn NetworkConnection>, ConnectError> {
         let err_ct = CancellationToken::new();
+        let _err_ct_guard = err_ct.clone().drop_guard();
         let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct);
         let conn = connect(
             ConnectionId::new(connection_id),

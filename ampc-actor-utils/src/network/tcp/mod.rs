@@ -90,7 +90,7 @@ pub enum TlsServerConfig {
 // used when constructing a worker or leader handle
 #[derive(Error, Debug)]
 pub enum SetupError {
-    #[error("connection error: {0}")]
+    #[error("configuration error: {0}")]
     BadConfig(String),
     #[error("parse error: {0}")]
     InvalidAddress(String),
