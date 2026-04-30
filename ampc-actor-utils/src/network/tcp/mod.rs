@@ -8,6 +8,7 @@ use std::sync::{Arc, Once};
 
 pub mod config;
 pub mod connection;
+pub mod peer_connector;
 pub mod streams;
 pub mod types;
 
@@ -17,6 +18,7 @@ pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{
     Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
 };
+use thiserror::Error;
 use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
 
@@ -83,6 +85,41 @@ pub enum TlsServerConfig {
         /// the server cert
         cert_file: String,
     },
+}
+
+// used when constructing a worker or leader handle
+#[derive(Error, Debug)]
+pub enum SetupError {
+    #[error("configuration error: {0}")]
+    BadConfig(String),
+    #[error("parse error: {0}")]
+    InvalidAddress(String),
+    #[error("error in TCP stack: {0}")]
+    ListenFailed(String),
+    #[error("Failed to bind listener: {0}")]
+    BindFailed(String),
+}
+
+/// Error type for TLS configuration and setup
+#[derive(Error, Debug)]
+pub enum TlsError {
+    #[error("Failed to load or parse certificate: {0}")]
+    CertificateError(String),
+
+    #[error("Failed to validate certificate: {0}")]
+    CertificateValidation(String),
+
+    #[error("Failed to load or parse private key: {0}")]
+    PrivateKeyError(String),
+
+    #[error("Failed to configure TLS: {0}")]
+    ConfigError(String),
+}
+
+impl From<TlsError> for SetupError {
+    fn from(err: TlsError) -> Self {
+        SetupError::BadConfig(err.to_string())
+    }
 }
 
 // allow initialization of TLS from possibly multiple modules, while ensuring that the provider is only installed once

@@ -1,6 +1,6 @@
 use crate::network::tcp::{
     configure_tcp_stream, Client, ConnectError, DynStreamConn, TcpStreamConn, TlsClientConfig,
-    TlsStreamConn,
+    TlsError, TlsStreamConn,
 };
 use async_trait::async_trait;
 use eyre::Result;
@@ -21,13 +21,18 @@ pub struct TlsClient {
 pub struct TcpClient {}
 
 impl TlsClient {
-    pub async fn new(cfg: TlsClientConfig) -> Result<Self> {
+    pub async fn new(cfg: TlsClientConfig) -> Result<Self, TlsError> {
         let mut roots = RootCertStore::empty();
         let client_config = match cfg {
             TlsClientConfig::ServerOnly { root_certs } => {
                 for root_cert in &root_certs {
-                    for cert in CertificateDer::pem_file_iter(root_cert)? {
-                        roots.add(cert?)?;
+                    for cert in CertificateDer::pem_file_iter(root_cert)
+                        .map_err(|e| TlsError::CertificateError(e.to_string()))?
+                    {
+                        let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                        roots
+                            .add(cert)
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
                     }
                 }
                 ClientConfig::builder()
@@ -40,16 +45,25 @@ impl TlsClient {
                 cert_file,
             } => {
                 for root_cert in &root_certs {
-                    for cert in CertificateDer::pem_file_iter(root_cert)? {
-                        roots.add(cert?)?;
+                    for cert in CertificateDer::pem_file_iter(root_cert)
+                        .map_err(|e| TlsError::CertificateError(e.to_string()))?
+                    {
+                        let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                        roots
+                            .add(cert)
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
                     }
                 }
-                let certs =
-                    CertificateDer::pem_file_iter(&cert_file)?.collect::<Result<Vec<_>, _>>()?;
-                let key = PrivateKeyDer::from_pem_file(&key_file)?;
+                let certs = CertificateDer::pem_file_iter(&cert_file)
+                    .map_err(|e| TlsError::CertificateError(e.to_string()))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                let key = PrivateKeyDer::from_pem_file(&key_file)
+                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))?;
                 ClientConfig::builder()
                     .with_root_certificates(roots)
-                    .with_client_auth_cert(certs, key)?
+                    .with_client_auth_cert(certs, key)
+                    .map_err(|e| TlsError::ConfigError(e.to_string()))?
             }
         };
         let tls_connector = TlsConnector::from(Arc::new(client_config));

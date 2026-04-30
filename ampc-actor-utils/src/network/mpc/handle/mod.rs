@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use self::config::TcpConfig;
-use self::network_handle::TcpNetworkHandle;
+use self::config::MpcConfig;
+use self::network_handle::MpcNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
@@ -64,7 +64,7 @@ pub async fn build_network_handle(
     let my_address = &args.addresses[my_index];
     let my_addr = tcp::to_inaddr_any(my_address.parse::<SocketAddr>()?);
 
-    let tcp_config = TcpConfig::new(
+    let tcp_config = MpcConfig::new(
         Duration::from_secs(10),
         args.connection_parallelism,
         args.request_parallelism * args.sessions_per_request,
@@ -78,7 +78,7 @@ pub async fn build_network_handle(
     macro_rules! build_network_handle {
         ($listener:expr, $connector:expr) => {
             Ok(Box::new(
-                TcpNetworkHandle::new(
+                MpcNetworkHandle::new(
                     my_identity,
                     peers,
                     $connector,
@@ -174,16 +174,16 @@ pub mod testing {
         Ok(addresses)
     }
 
-    pub async fn setup_local_tcp_networking(
+    pub async fn setup_local_mpc_networking(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
     ) -> Result<(
-        Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>,
+        Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>,
         Vec<Vec<NetworkSession>>,
     )> {
         let mut handles =
-            get_local_tcp_handles(parties, connection_parallelism, request_parallelism).await?;
+            get_local_mpc_handles(parties, connection_parallelism, request_parallelism).await?;
 
         let results =
             futures::future::join_all(handles.iter_mut().map(|h| h.make_network_sessions())).await;
@@ -193,14 +193,14 @@ pub mod testing {
         Ok((handles, no_ct))
     }
 
-    pub async fn get_local_tcp_handles(
+    pub async fn get_local_mpc_handles(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
-    ) -> Result<Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>> {
+    ) -> Result<Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>> {
         assert_eq!(parties.len(), 3);
 
-        let config = TcpConfig::new(
+        let config = MpcConfig::new(
             Duration::from_secs(30),
             connection_parallelism,
             request_parallelism,
@@ -234,7 +234,7 @@ pub mod testing {
                         .map(|(_, (id, url))| (id.clone(), url.to_string()))
                         .collect::<Vec<_>>();
 
-                    let handle: TcpNetworkHandle<TcpStreamConn, TcpClient> = TcpNetworkHandle::new(
+                    let handle: MpcNetworkHandle<TcpStreamConn, TcpClient> = MpcNetworkHandle::new(
                         id.clone(),
                         peers.into_iter(),
                         connector,
@@ -249,7 +249,7 @@ pub mod testing {
                 }
             });
 
-        let handles: Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
+        let handles: Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
             .await
             .into_iter()
             .collect::<Result<Vec<_>, eyre::Report>>()?;
@@ -346,10 +346,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
-    async fn test_tcp_comms_correct() -> Result<()> {
+    async fn test_mpc_comms_correct() -> Result<()> {
         let identities = generate_local_identities();
         let (_managers, mut sessions) =
-            setup_local_tcp_networking(identities.clone(), 1, 4).await?;
+            setup_local_mpc_networking(identities.clone(), 1, 4).await?;
         sleep(Duration::from_millis(500)).await;
 
         assert_eq!(sessions.len(), 3);

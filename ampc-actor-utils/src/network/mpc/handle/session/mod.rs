@@ -5,7 +5,7 @@ use crate::{
     network::{
         mpc::{
             handle::{
-                config::TcpConfig,
+                config::MpcConfig,
                 data::{InStream, OutStream, OutboundMsg, PeerConnections},
             },
             NetworkValue, Networking,
@@ -29,7 +29,7 @@ pub struct TcpSession {
     identities: Vec<Identity>,
     tx: Vec<OutStream>,
     rx: Vec<InStream>,
-    config: TcpConfig,
+    config: MpcConfig,
 }
 
 impl TcpSession {
@@ -38,7 +38,7 @@ impl TcpSession {
         identities: Vec<Identity>,
         tx: Vec<OutStream>,
         rx: Vec<InStream>,
-        config: TcpConfig,
+        config: MpcConfig,
     ) -> Self {
         assert_eq!(identities.len(), tx.len());
         assert_eq!(identities.len(), rx.len());
@@ -118,7 +118,7 @@ pub struct SessionChannels {
 pub async fn make_sessions<T: NetworkConnection + 'static>(
     connections: PeerConnections<T>,
     connection_state: ConnectionState,
-    config: &TcpConfig,
+    config: &MpcConfig,
     next_session_id: u32,
 ) -> Vec<TcpSession> {
     let sc = make_channels(connections.peer_ids(), config, next_session_id);
@@ -127,7 +127,7 @@ pub async fn make_sessions<T: NetworkConnection + 'static>(
 
 fn make_channels(
     peer_ids: Vec<Identity>,
-    config: &TcpConfig,
+    config: &MpcConfig,
     next_session_id: u32,
 ) -> SessionChannels {
     let mut sc = SessionChannels::default();
@@ -163,7 +163,7 @@ fn make_channels(
 async fn make_sessions_inner<T: NetworkConnection + 'static>(
     connections: PeerConnections<T>,
     connection_state: ConnectionState,
-    config: &TcpConfig,
+    config: &MpcConfig,
     next_session_id: u32,
     mut sc: SessionChannels,
 ) -> Vec<TcpSession> {

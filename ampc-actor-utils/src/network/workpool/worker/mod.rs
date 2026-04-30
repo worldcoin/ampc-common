@@ -1,7 +1,7 @@
 mod worker_task;
 
-use super::{JobId, Payload, SetupError, WorkerId};
-use crate::network::tcp::{Peer, TlsClientConfig};
+use super::{JobId, Payload, WorkerId};
+use crate::network::tcp::{Peer, SetupError, TlsClientConfig};
 use crate::network::workpool::value::NetworkValue;
 use crate::{
     execution::player::Identity,
@@ -69,9 +69,7 @@ pub async fn build_worker_handle(
 
     let job_rx = if let Some(tls) = args.tls {
         tracing::info!("Building WorkPool Worker with TLS");
-        let connector = TlsClient::new(tls)
-            .await
-            .map_err(|e| SetupError::BadConfig(format!("Failed to create TLS client: {}", e)))?;
+        let connector = TlsClient::new(tls).await?;
         worker_task::spawn(args.worker_id, leader, connector, shutdown_ct.clone())
     } else {
         tracing::info!("Building WorkPool Worker without TLS");
