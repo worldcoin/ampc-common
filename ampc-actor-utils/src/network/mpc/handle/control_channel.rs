@@ -7,7 +7,7 @@ use crate::network::mpc::NetworkValue;
 use crate::network::tcp::NetworkConnection;
 
 const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB
-const SYNC_TOKEN_BYTES: &[u8] = &[b'o', b'k'];
+const SYNC_TOKEN_BYTES: &[u8] = b"ok";
 
 /// A synchronization-safe, non-multiplexed channel for MPC control-plane messaging.
 ///
