@@ -1,4 +1,5 @@
 pub mod config;
+pub mod control_channel;
 mod data;
 mod network_handle;
 mod session;
@@ -12,6 +13,7 @@ use self::network_handle::MpcNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
+use crate::network::mpc::handle::control_channel::ControlChannel;
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
@@ -27,8 +29,17 @@ pub trait NetworkHandle: Send + Sync {
     // raise an error due to the connection being closed.
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)>;
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
-    // allows unit and integration tests to wait for MPC instances to finish working before sessions are dropped.
-    async fn sync_peers(&mut self) -> Result<()>;
+    /// Establish a dedicated control-plane channel to each ring neighbour.
+    ///
+    /// Unlike sessions returned by [`make_sessions`], sends on the returned
+    /// [`ControlChannel`] block until the data is flushed to the wire. Use this
+    /// for coordination and phase-transition signalling, not data-plane throughput.
+    ///
+    /// Opens new TCP/TLS connections on every call. Returns an error if connections
+    /// cannot be established. If a connection drops during use, operations on the
+    /// channel return an error immediately — there is no retry; call this method
+    /// again to reconnect.
+    async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>>;
 }
 
 pub struct NetworkHandleArgs {

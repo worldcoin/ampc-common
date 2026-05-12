@@ -8,7 +8,6 @@ use std::sync::{Arc, Once};
 
 pub mod config;
 pub mod connection;
-pub mod peer_connector;
 pub mod streams;
 pub mod types;
 
