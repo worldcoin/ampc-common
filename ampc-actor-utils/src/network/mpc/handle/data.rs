@@ -2,11 +2,8 @@ use crate::{
     execution::{player::Identity, session::SessionId},
     network::{mpc::NetworkValue, tcp::NetworkConnection},
 };
-use eyre::{bail, Result};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 // Re-export shared tcp types
 pub use crate::network::tcp::Peer;
@@ -27,16 +24,6 @@ impl<T: NetworkConnection + 'static> PeerConnections<T> {
         Self { peers, c0, c1 }
     }
 
-    pub async fn sync(&mut self, shutdown_ct: CancellationToken) -> Result<()> {
-        let all_conns = self.c0.iter_mut().chain(self.c1.iter_mut());
-        tokio::select! {
-            _ = shutdown_ct.cancelled() => bail!("shutdown triggered"),
-            r = futures::future::join_all(all_conns.map(send_and_receive)) => r
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>().map(|_| ())
-        }
-    }
-
     pub fn peer_ids(&self) -> Vec<Identity> {
         self.peers.iter().map(|peer| peer.id().clone()).collect()
     }
@@ -53,17 +40,4 @@ impl<T: NetworkConnection + 'static> IntoIterator for PeerConnections<T> {
         ]
         .into_iter()
     }
-}
-
-// ensure all peers are connected to each other.
-async fn send_and_receive<T: NetworkConnection>(conn: &mut T) -> Result<()> {
-    let snd_buf: [u8; 3] = [2, b'o', b'k'];
-    let mut rcv_buf = [0_u8; 3];
-    conn.write_all(&snd_buf).await?;
-    conn.flush().await?;
-    conn.read_exact(&mut rcv_buf).await?;
-    if rcv_buf != snd_buf {
-        bail!("ok failed");
-    }
-    Ok(())
 }

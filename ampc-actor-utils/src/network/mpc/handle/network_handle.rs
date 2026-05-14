@@ -8,7 +8,12 @@ use crate::{
     },
     network::{
         mpc::{
-            handle::{config::MpcConfig, data::PeerConnections, session::TcpSession},
+            handle::{
+                config::MpcConfig,
+                control_channel::{ControlChannel, TcpControlChannel},
+                data::PeerConnections,
+                session::TcpSession,
+            },
             value::NetworkValue,
             NetworkHandle, Networking,
         },
@@ -130,22 +135,41 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         Ok((r, ct))
     }
 
-    async fn sync_peers(&mut self) -> Result<()> {
+    async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>> {
         let err_ct = CancellationToken::new();
-        let _drop_guard = err_ct.clone().drop_guard();
-        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct.clone());
+        let drop_guard = err_ct.clone().drop_guard();
+        let connection_state = ConnectionState::new(self.shutdown_ct.clone(), err_ct);
 
-        let res = self
-            .make_peer_connections(1, connection_state.clone())
-            .await
-            .map_err(|e| eyre!("make_peer_connections failed: {}", e));
-        match res {
-            Ok(mut connections) => connections
-                .sync(connection_state.shutdown_ct())
-                .await
-                .map_err(|e| eyre!("sync connections failed: {}", e)),
-            Err(e) => Err(e),
-        }
+        // One connection per peer; peers[0] → c0[0], peers[1] → c1[0].
+        let (c0, c1) = self.make_connections(1, connection_state).await?;
+        let stream_to_peer0 = c0
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("no connection to peer 0"))?;
+        let stream_to_peer1 = c1
+            .into_iter()
+            .next()
+            .ok_or_else(|| eyre!("no connection to peer 1"))?;
+
+        // Resolve which stream is "next" and which is "prev" using role assignments.
+        let my_role = Role::new(self.party_index);
+        let next_id = self
+            .role_assignments
+            .get(&my_role.next(self.role_assignments.len() as u8))
+            .ok_or_else(|| eyre!("next role not found in role_assignments"))?;
+
+        let (next_stream, prev_stream) = if self.peers[0].id() == next_id {
+            (stream_to_peer0, stream_to_peer1)
+        } else {
+            (stream_to_peer1, stream_to_peer0)
+        };
+
+        drop_guard.disarm();
+        Ok(Box::new(TcpControlChannel::new(
+            next_stream,
+            prev_stream,
+            self.shutdown_ct.clone(),
+        )))
     }
 }
 
