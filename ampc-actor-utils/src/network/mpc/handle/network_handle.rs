@@ -155,7 +155,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         let my_role = Role::new(self.party_index);
         let next_id = self
             .role_assignments
-            .get(&my_role.next(self.peers.len() as u8 + 1))
+            .get(&my_role.next(self.role_assignments.len() as u8))
             .ok_or_else(|| eyre!("next role not found in role_assignments"))?;
 
         let (next_stream, prev_stream) = if self.peers[0].id() == next_id {
