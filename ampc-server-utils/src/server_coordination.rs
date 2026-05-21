@@ -10,7 +10,6 @@ use axum::routing::get;
 use axum::Router;
 use eyre::{ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
-use futures::FutureExt as _;
 use itertools::Itertools as _;
 use reqwest::Response;
 use serde::de::DeserializeOwned;
@@ -500,19 +499,24 @@ pub async fn try_get_endpoint_other_nodes(
         rxs.push(rx);
     }
 
-    let all_handles = try_join_all(handles);
-    let _all_handles_with_timeout = tokio::time::timeout(
+    let results = tokio::time::timeout(
         Duration::from_secs(config.startup_sync_timeout_secs),
-        all_handles,
+        try_join_all(rxs),
     )
     .await;
 
-    let msg = "Error occurred reading response channels";
-    try_join_all(rxs)
-        .now_or_never()
-        .ok_or_else(|| eyre::eyre!(msg))?
-        .inspect_err(|err| {
-            tracing::error!("{}: {}", msg, err);
-        })
-        .wrap_err(msg)
+    // if timeout or one of the channels recv() returned an error, due to a panic
+    // (which would mean that the other tasks could still be running)
+    if results.is_err() || matches!(results, Ok(Err(_))) {
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    let all_responses = results
+        .map_err(|_| eyre::eyre!("Startup sync timed out"))?? // First ? is timeout, second is join_all
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    Ok(all_responses)
 }
