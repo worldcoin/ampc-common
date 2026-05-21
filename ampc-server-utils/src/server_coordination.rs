@@ -475,12 +475,25 @@ pub async fn try_get_endpoint_other_nodes(
         let (tx, rx) = oneshot::channel();
         let client = client.clone();
         let handle = tokio::spawn(async move {
+            let mut attempt: u32 = 0;
             loop {
-                if let Ok(resp) = client.get(&node_url).send().await {
-                    let _ = tx.send(resp);
-                    return;
+                match client.get(&node_url).send().await {
+                    Ok(resp) => {
+                        let _ = tx.send(resp);
+                        return;
+                    }
+                    Err(err) => {
+                        attempt += 1;
+                        tracing::warn!(
+                            "Failed to reach endpoint {} (attempt {}): {}. Retrying in {:?}",
+                            node_url,
+                            attempt,
+                            err,
+                            retry_duration
+                        );
+                        tokio::time::sleep(retry_duration).await;
+                    }
                 }
-                tokio::time::sleep(retry_duration).await;
             }
         });
         handles.push(handle);
