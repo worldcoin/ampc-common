@@ -199,13 +199,16 @@ pub async fn wait_for_others_unready(
     // We use "/health" to check state and verified peers.
     let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
 
+    let body_read_timeout = Duration::from_millis(config.http_query_timeout_ms);
     let mut all_safe = true;
 
     for resp in connected_health_resps {
-        // We must consume the response to get bytes.
-        let bytes = resp
-            .bytes()
+        // Explicit body-read timeout: reqwest's client-level timeout does not
+        // reliably cover body-stream reads on an already-returned `Response`.
+        let peer_url = resp.url().clone();
+        let bytes = tokio::time::timeout(body_read_timeout, resp.bytes())
             .await
+            .map_err(|_| eyre::eyre!("Peer health response body read timed out from {}", peer_url))?
             .wrap_err("Failed to read bytes from health response")?;
         let probe_response: ReadyProbeResponse =
             serde_json::from_slice(&bytes).wrap_err("Failed to deserialize ReadyProbeResponse")?;
@@ -463,11 +466,17 @@ pub async fn try_get_endpoint_other_nodes(
     let mut rxs = Vec::with_capacity(NODE_COUNT - 1);
 
     let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
+    let request_timeout = Duration::from_millis(config.http_query_timeout_ms);
+    let client = reqwest::Client::builder()
+        .timeout(request_timeout)
+        .build()
+        .wrap_err("Failed to build reqwest client for endpoint polling")?;
     for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
+        let client = client.clone();
         let handle = tokio::spawn(async move {
             loop {
-                if let Ok(resp) = reqwest::get(&node_url).await {
+                if let Ok(resp) = client.get(&node_url).send().await {
                     let _ = tx.send(resp);
                     return;
                 }
