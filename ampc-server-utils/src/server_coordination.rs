@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{ensure, Error, Result, WrapErr};
+use eyre::{bail, ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
 use futures::FutureExt as _;
 use itertools::Itertools as _;
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -463,34 +463,47 @@ pub async fn try_get_endpoint_other_nodes(
     let mut rxs = Vec::with_capacity(NODE_COUNT - 1);
 
     let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
+    let Ok(client) = reqwest::Client::builder().timeout(retry_duration).build() else {
+        bail!("failed to build reqwest client");
+    };
     for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
+        let client = client.clone();
         let handle = tokio::spawn(async move {
             loop {
-                if let Ok(resp) = reqwest::get(&node_url).await {
+                let instant = Instant::now();
+                if let Ok(resp) = client.get(&node_url).send().await {
                     let _ = tx.send(resp);
                     return;
                 }
-                tokio::time::sleep(retry_duration).await;
+                let elapsed = instant.elapsed();
+                if let Some(delay) = retry_duration.checked_sub(elapsed) {
+                    tokio::time::sleep(delay).await;
+                }
             }
         });
         handles.push(handle);
         rxs.push(rx);
     }
 
-    let all_handles = try_join_all(handles);
-    let _all_handles_with_timeout = tokio::time::timeout(
+    let results = tokio::time::timeout(
         Duration::from_secs(config.startup_sync_timeout_secs),
-        all_handles,
+        try_join_all(rxs),
     )
     .await;
 
-    let msg = "Error occurred reading response channels";
-    try_join_all(rxs)
-        .now_or_never()
-        .ok_or_else(|| eyre::eyre!(msg))?
-        .inspect_err(|err| {
-            tracing::error!("{}: {}", msg, err);
-        })
-        .wrap_err(msg)
+    // if timeout or one of the channels recv() returned an error, due to a panic
+    // (which would mean that the other tasks could still be running)
+    if results.is_err() || matches!(results, Ok(Err(_))) {
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    let all_responses = results
+        .map_err(|_| eyre::eyre!("Startup sync timed out"))?? // First ? is timeout, second is join_all
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    Ok(all_responses)
 }
