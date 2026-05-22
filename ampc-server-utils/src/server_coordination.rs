@@ -16,6 +16,7 @@ use itertools::Itertools as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::error::Error as _;
 use std::future::IntoFuture;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -58,6 +59,49 @@ async fn log_request(req: Request, next: Next) -> AxumResponse {
         started.elapsed().as_millis()
     );
     response
+}
+
+/// Tag a reqwest error with a short kind for log grepping.
+/// Examples: "connect-refused", "connect-timeout", "connect-reset",
+/// "addr-not-available", "connect-other", "timeout", "body", "decode",
+/// "status", "request", "builder", "other".
+fn classify_reqwest_error(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        return "timeout";
+    }
+    if err.is_connect() {
+        let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
+        while let Some(e) = source {
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                return match io_err.kind() {
+                    std::io::ErrorKind::ConnectionRefused => "connect-refused",
+                    std::io::ErrorKind::TimedOut => "connect-timeout",
+                    std::io::ErrorKind::ConnectionReset => "connect-reset",
+                    std::io::ErrorKind::ConnectionAborted => "connect-aborted",
+                    std::io::ErrorKind::AddrNotAvailable => "addr-not-available",
+                    _ => "connect-other",
+                };
+            }
+            source = e.source();
+        }
+        return "connect";
+    }
+    if err.is_body() {
+        return "body";
+    }
+    if err.is_decode() {
+        return "decode";
+    }
+    if err.is_status() {
+        return "status";
+    }
+    if err.is_request() {
+        return "request";
+    }
+    if err.is_builder() {
+        return "builder";
+    }
+    "other"
 }
 
 /// Awaits until other MPC nodes respond to "ready" queries
@@ -191,11 +235,21 @@ where
                 .await
                 .wrap_err("AMPC coordination server listener bind error")?;
 
+            tracing::info!(
+                "Coordination server listener bound on port {}",
+                health_check_port
+            );
+
             let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
             heartbeat.tick().await; // consume the immediate first tick
 
             let serve_fut = axum::serve(listener, app).into_future();
             tokio::pin!(serve_fut);
+
+            tracing::info!(
+                "Coordination server listener accepting connections on port {}",
+                health_check_port
+            );
 
             loop {
                 tokio::select! {
@@ -215,11 +269,6 @@ where
             Ok::<(), Error>(())
         }
     });
-
-    tracing::info!(
-        "Healthcheck and Readiness server running on port {}.",
-        health_check_port
-    );
 
     (is_ready_flag, verified_peers, uuid)
 }
@@ -515,15 +564,15 @@ pub async fn try_get_endpoint_other_nodes(
                             Ok(Ok(resp)) => resp,
                             Ok(Err(err)) => {
                                 tracing::warn!(
-                            "Failed to reach endpoint {} (attempt {}): {}. Retrying in {:?}",
-                            node_url, attempt, err, retry_duration
+                            "Failed to reach endpoint {} [{}] (attempt {}): {}. Retrying in {:?}",
+                            node_url, classify_reqwest_error(&err), attempt, err, retry_duration
                         );
                                 sleep(retry_duration).await;
                                 continue;
                             }
                             Err(_) => {
                                 tracing::warn!(
-                            "Request to {} timed out after {:?} (attempt {}). Retrying in {:?}",
+                            "Request to {} [send-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
                             node_url, request_timeout, attempt, retry_duration
                         );
                                 sleep(retry_duration).await;
@@ -539,8 +588,9 @@ pub async fn try_get_endpoint_other_nodes(
                         }
                         Ok(Err(err)) => {
                             tracing::warn!(
-                                "Failed to read body from {} (attempt {}): {}. Retrying in {:?}",
+                                "Failed to read body from {} [{}] (attempt {}): {}. Retrying in {:?}",
                                 node_url,
+                                classify_reqwest_error(&err),
                                 attempt,
                                 err,
                                 retry_duration
@@ -548,7 +598,7 @@ pub async fn try_get_endpoint_other_nodes(
                         }
                         Err(_) => {
                             tracing::warn!(
-                            "Body read from {} timed out after {:?} (attempt {}). Retrying in {:?}",
+                            "Body read from {} [body-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
                             node_url, request_timeout, attempt, retry_duration
                         );
                         }
