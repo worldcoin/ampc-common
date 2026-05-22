@@ -4,8 +4,10 @@ use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
 use crate::task_monitor::TaskMonitor;
 use crate::BatchSyncSharedState;
+use axum::extract::Request;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::get;
 use axum::Router;
 use eyre::{ensure, Error, Result, WrapErr};
@@ -14,9 +16,10 @@ use itertools::Itertools as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::future::IntoFuture;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,6 +41,23 @@ where
         .zip(ports.iter())
         .map(|(host, port)| format!("http://{}:{}/{}", host.as_ref(), port.as_ref(), endpoint))
         .collect::<Vec<String>>()
+}
+
+/// Axum middleware that emits one line per request with method, path,
+/// response status, and elapsed time.
+async fn log_request(req: Request, next: Next) -> AxumResponse {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let started = Instant::now();
+    let response = next.run(req).await;
+    tracing::info!(
+        "{} {} -> {} ({} ms)",
+        method,
+        path,
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
 }
 
 /// Awaits until other MPC nodes respond to "ready" queries
@@ -164,12 +184,33 @@ where
                 app = app.merge(extra);
             }
 
+            // Per-request access logging wraps the full route set (extras included).
+            app = app.layer(middleware::from_fn(log_request));
+
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
                 .await
                 .wrap_err("AMPC coordination server listener bind error")?;
-            axum::serve(listener, app)
-                .await
-                .wrap_err("AMPC coordination server listener launch error")?;
+
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+            heartbeat.tick().await; // consume the immediate first tick
+
+            let serve_fut = axum::serve(listener, app).into_future();
+            tokio::pin!(serve_fut);
+
+            loop {
+                tokio::select! {
+                    result = &mut serve_fut => {
+                        result.wrap_err("AMPC coordination server listener launch error")?;
+                        break;
+                    }
+                    _ = heartbeat.tick() => {
+                        tracing::info!(
+                            "Coordination server heartbeat: listening on port {}",
+                            health_check_port
+                        );
+                    }
+                }
+            }
 
             Ok::<(), Error>(())
         }
