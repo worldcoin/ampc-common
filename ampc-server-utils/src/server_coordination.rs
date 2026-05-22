@@ -10,9 +10,7 @@ use axum::routing::get;
 use axum::Router;
 use eyre::{ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
-use futures::FutureExt as _;
 use itertools::Itertools as _;
-use reqwest::Response;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -201,14 +199,9 @@ pub async fn wait_for_others_unready(
 
     let mut all_safe = true;
 
-    for resp in connected_health_resps {
-        // We must consume the response to get bytes.
-        let bytes = resp
-            .bytes()
-            .await
-            .wrap_err("Failed to read bytes from health response")?;
+    for (_status, body) in connected_health_resps {
         let probe_response: ReadyProbeResponse =
-            serde_json::from_slice(&bytes).wrap_err("Failed to deserialize ReadyProbeResponse")?;
+            serde_json::from_slice(&body).wrap_err("Failed to deserialize ReadyProbeResponse")?;
 
         // 1. Add their UUID to our list (so we can prove to them we saw them later)
         my_verified_peers
@@ -394,11 +387,12 @@ where
 
     let connected_and_ready = try_get_endpoint_other_nodes(config, "startup-sync").await?;
 
-    let response_texts_futs: Vec<_> = connected_and_ready
+    let sync_states: Vec<State> = connected_and_ready
         .into_iter()
-        .map(|resp| resp.json())
-        .collect();
-    let sync_states: Vec<State> = try_join_all(response_texts_futs).await?;
+        .map(|(_status, body)| {
+            serde_json::from_slice(&body).wrap_err("Failed to deserialize sync state")
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(sync_states)
 }
@@ -429,7 +423,7 @@ pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<
 
             let all_ready = connected_and_ready
                 .iter()
-                .all(|resp| resp.status().is_success());
+                .all(|(status, _body)| status.is_success());
 
             if all_ready {
                 break 'outer;
@@ -449,7 +443,9 @@ pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<
 pub async fn try_get_endpoint_other_nodes(
     config: &ServerCoordinationConfig,
     endpoint: &str,
-) -> Result<Vec<Response>> {
+) -> Result<Vec<(StatusCode, Vec<u8>)>> {
+    use tokio::time::{sleep, timeout};
+
     const NODE_COUNT: usize = 3;
     let full_urls =
         get_check_addresses(&config.node_hostnames, &config.healthcheck_ports, endpoint);
@@ -463,34 +459,84 @@ pub async fn try_get_endpoint_other_nodes(
     let mut rxs = Vec::with_capacity(NODE_COUNT - 1);
 
     let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
+    let request_timeout = Duration::from_millis(config.http_query_timeout_ms);
+    let client = reqwest::Client::new();
     for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
-        let handle = tokio::spawn(async move {
-            loop {
-                if let Ok(resp) = reqwest::get(&node_url).await {
-                    let _ = tx.send(resp);
-                    return;
+        let client = client.clone();
+        let handle =
+            tokio::spawn(async move {
+                let mut attempt: u32 = 0;
+                loop {
+                    attempt += 1;
+                    let resp =
+                        match timeout(request_timeout, client.get(&node_url).send()).await {
+                            Ok(Ok(resp)) => resp,
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                            "Failed to reach endpoint {} (attempt {}): {}. Retrying in {:?}",
+                            node_url, attempt, err, retry_duration
+                        );
+                                sleep(retry_duration).await;
+                                continue;
+                            }
+                            Err(_) => {
+                                tracing::warn!(
+                            "Request to {} timed out after {:?} (attempt {}). Retrying in {:?}",
+                            node_url, request_timeout, attempt, retry_duration
+                        );
+                                sleep(retry_duration).await;
+                                continue;
+                            }
+                        };
+
+                    let status = resp.status();
+                    match timeout(request_timeout, resp.bytes()).await {
+                        Ok(Ok(body)) => {
+                            let _ = tx.send((status, body.to_vec()));
+                            return;
+                        }
+                        Ok(Err(err)) => {
+                            tracing::warn!(
+                                "Failed to read body from {} (attempt {}): {}. Retrying in {:?}",
+                                node_url,
+                                attempt,
+                                err,
+                                retry_duration
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                            "Body read from {} timed out after {:?} (attempt {}). Retrying in {:?}",
+                            node_url, request_timeout, attempt, retry_duration
+                        );
+                        }
+                    }
+                    sleep(retry_duration).await;
                 }
-                tokio::time::sleep(retry_duration).await;
-            }
-        });
+            });
         handles.push(handle);
         rxs.push(rx);
     }
 
-    let all_handles = try_join_all(handles);
-    let _all_handles_with_timeout = tokio::time::timeout(
+    let results = tokio::time::timeout(
         Duration::from_secs(config.startup_sync_timeout_secs),
-        all_handles,
+        try_join_all(rxs),
     )
     .await;
 
-    let msg = "Error occurred reading response channels";
-    try_join_all(rxs)
-        .now_or_never()
-        .ok_or_else(|| eyre::eyre!(msg))?
-        .inspect_err(|err| {
-            tracing::error!("{}: {}", msg, err);
-        })
-        .wrap_err(msg)
+    // if timeout or one of the channels recv() returned an error, due to a panic
+    // (which would mean that the other tasks could still be running)
+    if results.is_err() || matches!(results, Ok(Err(_))) {
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    let all_responses = results
+        .map_err(|_| eyre::eyre!("Startup sync timed out"))?? // First ? is timeout, second is join_all
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    Ok(all_responses)
 }
