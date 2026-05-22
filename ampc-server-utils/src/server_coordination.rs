@@ -554,58 +554,60 @@ pub async fn try_get_endpoint_other_nodes(
     for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
         let client = client.clone();
-        let handle =
-            tokio::spawn(async move {
-                let mut attempt: u32 = 0;
-                loop {
-                    attempt += 1;
-                    let resp =
-                        match timeout(request_timeout, client.get(&node_url).send()).await {
-                            Ok(Ok(resp)) => resp,
-                            Ok(Err(err)) => {
-                                tracing::warn!(
+        let handle = tokio::spawn(async move {
+            let mut attempt: u32 = 0;
+            loop {
+                attempt += 1;
+                let resp = match timeout(request_timeout, client.get(&node_url).send()).await {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(err)) => {
+                        tracing::warn!(
                             "Failed to reach endpoint {} [{}] (attempt {}): {}. Retrying in {:?}",
-                            node_url, classify_reqwest_error(&err), attempt, err, retry_duration
+                            node_url,
+                            classify_reqwest_error(&err),
+                            attempt,
+                            err,
+                            retry_duration
                         );
-                                sleep(retry_duration).await;
-                                continue;
-                            }
-                            Err(_) => {
-                                tracing::warn!(
+                        sleep(retry_duration).await;
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
                             "Request to {} [send-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
                             node_url, request_timeout, attempt, retry_duration
                         );
-                                sleep(retry_duration).await;
-                                continue;
-                            }
-                        };
+                        sleep(retry_duration).await;
+                        continue;
+                    }
+                };
 
-                    let status = resp.status();
-                    match timeout(request_timeout, resp.bytes()).await {
-                        Ok(Ok(body)) => {
-                            let _ = tx.send((status, body.to_vec()));
-                            return;
-                        }
-                        Ok(Err(err)) => {
-                            tracing::warn!(
-                                "Failed to read body from {} [{}] (attempt {}): {}. Retrying in {:?}",
-                                node_url,
-                                classify_reqwest_error(&err),
-                                attempt,
-                                err,
-                                retry_duration
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
+                let status = resp.status();
+                match timeout(request_timeout, resp.bytes()).await {
+                    Ok(Ok(body)) => {
+                        let _ = tx.send((status, body.to_vec()));
+                        return;
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            "Failed to read body from {} [{}] (attempt {}): {}. Retrying in {:?}",
+                            node_url,
+                            classify_reqwest_error(&err),
+                            attempt,
+                            err,
+                            retry_duration
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
                             "Body read from {} [body-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
                             node_url, request_timeout, attempt, retry_duration
                         );
-                        }
                     }
-                    sleep(retry_duration).await;
                 }
-            });
+                sleep(retry_duration).await;
+            }
+        });
         handles.push(handle);
         rxs.push(rx);
     }
