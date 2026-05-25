@@ -73,12 +73,13 @@ fn classify_reqwest_error(err: &reqwest::Error) -> &'static str {
         let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
         while let Some(e) = source {
             if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                use std::io::ErrorKind::*;
                 return match io_err.kind() {
-                    std::io::ErrorKind::ConnectionRefused => "connect-refused",
-                    std::io::ErrorKind::TimedOut => "connect-timeout",
-                    std::io::ErrorKind::ConnectionReset => "connect-reset",
-                    std::io::ErrorKind::ConnectionAborted => "connect-aborted",
-                    std::io::ErrorKind::AddrNotAvailable => "addr-not-available",
+                    ConnectionRefused => "connect-refused",
+                    TimedOut => "connect-timeout",
+                    ConnectionReset => "connect-reset",
+                    ConnectionAborted => "connect-aborted",
+                    AddrNotAvailable => "addr-not-available",
                     _ => "connect-other",
                 };
             }
