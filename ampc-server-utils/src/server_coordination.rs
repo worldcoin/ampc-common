@@ -4,8 +4,10 @@ use crate::profiling::pprof_routes;
 use crate::shutdown_handler::ShutdownHandler;
 use crate::task_monitor::TaskMonitor;
 use crate::BatchSyncSharedState;
+use axum::extract::Request;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::get;
 use axum::Router;
 use eyre::{ensure, Error, Result, WrapErr};
@@ -14,9 +16,11 @@ use itertools::Itertools as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::error::Error as _;
+use std::future::IntoFuture;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -38,6 +42,67 @@ where
         .zip(ports.iter())
         .map(|(host, port)| format!("http://{}:{}/{}", host.as_ref(), port.as_ref(), endpoint))
         .collect::<Vec<String>>()
+}
+
+/// Axum middleware that emits one line per request with method, path,
+/// response status, and elapsed time.
+async fn log_request(req: Request, next: Next) -> AxumResponse {
+    let method = req.method().clone();
+    let path = req.uri().path().to_string();
+    let started = Instant::now();
+    let response = next.run(req).await;
+    tracing::info!(
+        "{} {} -> {} ({} ms)",
+        method,
+        path,
+        response.status().as_u16(),
+        started.elapsed().as_millis()
+    );
+    response
+}
+
+/// Tag a reqwest error with a short kind for log grepping.
+/// Examples: "connect-refused", "connect-timeout", "connect-reset",
+/// "addr-not-available", "connect-other", "timeout", "body", "decode",
+/// "status", "request", "builder", "other".
+fn classify_reqwest_error(err: &reqwest::Error) -> &'static str {
+    if err.is_timeout() {
+        return "timeout";
+    }
+    if err.is_connect() {
+        let mut source: Option<&(dyn std::error::Error + 'static)> = err.source();
+        while let Some(e) = source {
+            if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                use std::io::ErrorKind::*;
+                return match io_err.kind() {
+                    ConnectionRefused => "connect-refused",
+                    TimedOut => "connect-timeout",
+                    ConnectionReset => "connect-reset",
+                    ConnectionAborted => "connect-aborted",
+                    AddrNotAvailable => "addr-not-available",
+                    _ => "connect-other",
+                };
+            }
+            source = e.source();
+        }
+        return "connect";
+    }
+    if err.is_body() {
+        return "body";
+    }
+    if err.is_decode() {
+        return "decode";
+    }
+    if err.is_status() {
+        return "status";
+    }
+    if err.is_request() {
+        return "request";
+    }
+    if err.is_builder() {
+        return "builder";
+    }
+    "other"
 }
 
 /// Awaits until other MPC nodes respond to "ready" queries
@@ -164,21 +229,47 @@ where
                 app = app.merge(extra);
             }
 
+            // Per-request access logging wraps the full route set (extras included).
+            app = app.layer(middleware::from_fn(log_request));
+
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", health_check_port))
                 .await
                 .wrap_err("AMPC coordination server listener bind error")?;
-            axum::serve(listener, app)
-                .await
-                .wrap_err("AMPC coordination server listener launch error")?;
+
+            tracing::info!(
+                "Coordination server listener bound on port {}",
+                health_check_port
+            );
+
+            let mut heartbeat = tokio::time::interval(Duration::from_secs(60));
+            heartbeat.tick().await; // consume the immediate first tick
+
+            let serve_fut = axum::serve(listener, app).into_future();
+            tokio::pin!(serve_fut);
+
+            tracing::info!(
+                "Coordination server listener accepting connections on port {}",
+                health_check_port
+            );
+
+            loop {
+                tokio::select! {
+                    result = &mut serve_fut => {
+                        result.wrap_err("AMPC coordination server listener launch error")?;
+                        break;
+                    }
+                    _ = heartbeat.tick() => {
+                        tracing::info!(
+                            "Coordination server heartbeat: listening on port {}",
+                            health_check_port
+                        );
+                    }
+                }
+            }
 
             Ok::<(), Error>(())
         }
     });
-
-    tracing::info!(
-        "Healthcheck and Readiness server running on port {}.",
-        health_check_port
-    );
 
     (is_ready_flag, verified_peers, uuid)
 }
@@ -464,57 +555,60 @@ pub async fn try_get_endpoint_other_nodes(
     for node_url in node_urls {
         let (tx, rx) = oneshot::channel();
         let client = client.clone();
-        let handle =
-            tokio::spawn(async move {
-                let mut attempt: u32 = 0;
-                loop {
-                    attempt += 1;
-                    let resp =
-                        match timeout(request_timeout, client.get(&node_url).send()).await {
-                            Ok(Ok(resp)) => resp,
-                            Ok(Err(err)) => {
-                                tracing::warn!(
-                            "Failed to reach endpoint {} (attempt {}): {}. Retrying in {:?}",
-                            node_url, attempt, err, retry_duration
+        let handle = tokio::spawn(async move {
+            let mut attempt: u32 = 0;
+            loop {
+                attempt += 1;
+                let resp = match timeout(request_timeout, client.get(&node_url).send()).await {
+                    Ok(Ok(resp)) => resp,
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            "Failed to reach endpoint {} [{}] (attempt {}): {}. Retrying in {:?}",
+                            node_url,
+                            classify_reqwest_error(&err),
+                            attempt,
+                            err,
+                            retry_duration
                         );
-                                sleep(retry_duration).await;
-                                continue;
-                            }
-                            Err(_) => {
-                                tracing::warn!(
-                            "Request to {} timed out after {:?} (attempt {}). Retrying in {:?}",
-                            node_url, request_timeout, attempt, retry_duration
-                        );
-                                sleep(retry_duration).await;
-                                continue;
-                            }
-                        };
-
-                    let status = resp.status();
-                    match timeout(request_timeout, resp.bytes()).await {
-                        Ok(Ok(body)) => {
-                            let _ = tx.send((status, body.to_vec()));
-                            return;
-                        }
-                        Ok(Err(err)) => {
-                            tracing::warn!(
-                                "Failed to read body from {} (attempt {}): {}. Retrying in {:?}",
-                                node_url,
-                                attempt,
-                                err,
-                                retry_duration
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                            "Body read from {} timed out after {:?} (attempt {}). Retrying in {:?}",
-                            node_url, request_timeout, attempt, retry_duration
-                        );
-                        }
+                        sleep(retry_duration).await;
+                        continue;
                     }
-                    sleep(retry_duration).await;
+                    Err(_) => {
+                        tracing::warn!(
+                            "Request to {} [send-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
+                            node_url, request_timeout, attempt, retry_duration
+                        );
+                        sleep(retry_duration).await;
+                        continue;
+                    }
+                };
+
+                let status = resp.status();
+                match timeout(request_timeout, resp.bytes()).await {
+                    Ok(Ok(body)) => {
+                        let _ = tx.send((status, body.to_vec()));
+                        return;
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(
+                            "Failed to read body from {} [{}] (attempt {}): {}. Retrying in {:?}",
+                            node_url,
+                            classify_reqwest_error(&err),
+                            attempt,
+                            err,
+                            retry_duration
+                        );
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Body read from {} [body-timeout] timed out after {:?} (attempt {}). Retrying in {:?}",
+                            node_url, request_timeout, attempt, retry_duration
+                        );
+                    }
                 }
-            });
+                sleep(retry_duration).await;
+            }
+        });
         handles.push(handle);
         rxs.push(rx);
     }
