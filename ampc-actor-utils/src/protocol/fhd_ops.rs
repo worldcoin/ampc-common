@@ -31,6 +31,7 @@ pub fn translate_threshold_a(t: f64) -> u32 {
 /// - Multiplies with threshold constants B = 2^16 and A = ((1. - 2. * threshold_ratio) * B).
 /// - Compares mask_dist * A > code_dist * B.
 /// - This corresponds to "distance > threshold", that is NOT match.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn fhd_greater_than_threshold(
     session: &mut Session,
     distances: &[DistanceShare<u32>],
@@ -71,6 +72,7 @@ pub async fn cross_mul(
 ///
 /// 1. d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot is computed, which is a numerator of the fraction difference d2.code_dot / d2.mask_dot - d1.code_dot / d1.mask_dot.
 /// 2. The most significant bit of the result is extracted.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn oblivious_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<u32>],
@@ -85,6 +87,7 @@ async fn oblivious_cross_compare(
 ///
 /// 1. d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot is computed, which is a numerator of the fraction difference d2.code_dot / d2.mask_dot - d1.code_dot / d1.mask_dot.
 /// 2. The most significant bit of the result is extracted.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn cross_compare(
     session: &mut Session,
     distances: &[DistancePair<u32>],
@@ -102,6 +105,7 @@ pub async fn cross_compare(
 /// 2. The most significant bit of the result is extracted.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[DistancePair<u32>],
@@ -117,6 +121,7 @@ pub async fn oblivious_cross_compare_lifted(
 /// For every pair of distance fraction shares (d1, d2), this computes the bit d2 < d1 uses it to return the lower of the two distances.
 ///
 /// Input values are assumed to be 16-bit shares that have been lifted to 32 bits.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn min_of_pair_batch(
     session: &mut Session,
     distances: &[DistancePair<u32>],

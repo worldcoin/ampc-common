@@ -4,7 +4,7 @@ use crate::{
         session::{NetworkSession, Session, SessionId},
     },
     network::mpc::{
-        handle::testing::{interleave_vecs, setup_local_tcp_networking},
+        handle::testing::{interleave_vecs, setup_local_mpc_networking},
         LocalNetworkingStore, NetworkType,
     },
     protocol::{
@@ -103,7 +103,7 @@ impl LocalRuntime {
                 connection_parallelism,
                 request_parallelism,
             } => {
-                let (handles, network_sessions) = setup_local_tcp_networking(
+                let (handles, network_sessions) = setup_local_mpc_networking(
                     identities.clone(),
                     connection_parallelism,
                     request_parallelism,

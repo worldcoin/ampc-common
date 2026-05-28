@@ -2,6 +2,7 @@ use eyre::{bail, Result};
 use itertools::Itertools;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
+use tracing::instrument;
 
 use crate::{
     constants::N_PARTIES,
@@ -92,6 +93,7 @@ fn shuffle_triplets<T: IntRing2k>(
 /// = pi_12(pi_20(pi_01(A + B + C)))
 /// = pi(A + B + C)
 /// = pi(distances)
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn random_shuffle_batch<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     distances: Vec<Vec<IdDistance<T>>>,

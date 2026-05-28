@@ -59,6 +59,15 @@ pub struct AnonStatsServerConfig {
     /// Number of buckets to use in 2D anon stats computation for reauth.
     pub n_buckets_2d_reauth: usize,
 
+    #[serde(default = "default_nhd_threshold_ratio")]
+    /// Upper threshold for NHD anon-stats bucket histogram range (1D and 2D).
+    /// Independent from the FHD threshold (which uses `ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO`).
+    /// NHD shifts the imposter score distribution upward relative to FHD, so this is typically
+    /// wider than the FHD threshold to capture the upper-shifted distribution.
+    /// Reauth and Recovery operations use `MATCH_THRESHOLD_RATIO_REAUTH` regardless of this setting.
+    /// Env var: `ANON_STATS__NHD_THRESHOLD_RATIO`.
+    pub nhd_threshold_ratio: f64,
+
     #[serde(default = "default_min_1d_job_size")]
     /// Minimum job size for 1D anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
@@ -71,6 +80,10 @@ pub struct AnonStatsServerConfig {
     #[serde(default = "default_min_1d_job_size_recovery")]
     /// Minimum job size for RECOVERY 1D anon stats computation.
     pub min_1d_job_size_recovery: usize,
+
+    #[serde(default = "default_min_1d_job_size_mirror")]
+    /// Minimum job size for MIRROR 1D anon stats computation.
+    pub min_1d_job_size_mirror: usize,
 
     #[serde(default = "default_min_2d_job_size")]
     /// Minimum job size for 2D anon stats computation.
@@ -89,6 +102,10 @@ pub struct AnonStatsServerConfig {
     #[serde(default = "default_min_2d_job_size_recovery")]
     /// Minimum job size for RECOVERY 2D anon stats computation.
     pub min_2d_job_size_recovery: usize,
+
+    #[serde(default = "default_min_2d_job_size_mirror")]
+    /// Minimum job size for MIRROR 2D anon stats computation.
+    pub min_2d_job_size_mirror: usize,
 
     #[serde(default = "default_max_rows_per_job_1d")]
     /// Maximum number of rows (bundles) to fetch from DB for a single 1D anon stats job.
@@ -158,6 +175,12 @@ fn default_n_buckets_2d_reauth() -> usize {
     15
 }
 
+fn default_nhd_threshold_ratio() -> f64 {
+    // Wider than FHD's 0.375 to capture the upper-shifted NHD distribution.
+    // See POP-3904.
+    0.4
+}
+
 fn default_min_1d_job_size() -> usize {
     1000
 }
@@ -178,11 +201,19 @@ fn default_min_1d_job_size_recovery() -> usize {
     default_min_1d_job_size()
 }
 
+fn default_min_1d_job_size_mirror() -> usize {
+    default_min_1d_job_size()
+}
+
 fn default_min_2d_job_size_reauth() -> usize {
     default_min_2d_job_size()
 }
 
 fn default_min_2d_job_size_recovery() -> usize {
+    default_min_2d_job_size()
+}
+
+fn default_min_2d_job_size_mirror() -> usize {
     default_min_2d_job_size()
 }
 
@@ -224,12 +255,19 @@ impl AnonStatsServerConfig {
             n_buckets_1d_reauth: default_n_buckets_1d_reauth(),
             n_buckets_2d: default_n_buckets_2d(),
             n_buckets_2d_reauth: default_n_buckets_2d_reauth(),
+            // Test fixtures compute ground-truth NHD buckets using
+            // `ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO`. Preserve that
+            // value here so existing tests pass without each one overriding the field.
+            // Production deploys read `default_nhd_threshold_ratio()` (currently 0.4).
+            nhd_threshold_ratio: ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO,
             min_1d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_1d_job_size_recovery: 0,
+            min_1d_job_size_mirror: 0,
             min_2d_job_size: 0,
             min_2d_job_size_reauth: 0,
             min_2d_job_size_recovery: 0,
+            min_2d_job_size_mirror: 0,
             min_face_job_size: 0,
             max_rows_per_job_1d: 0,
             max_rows_per_job_2d: 0,
@@ -288,27 +326,31 @@ impl AnonStatsServerConfig {
         if self.max_rows_per_job_1d < self.min_1d_job_size
             || self.max_rows_per_job_1d < self.min_1d_job_size_reauth
             || self.max_rows_per_job_1d < self.min_1d_job_size_recovery
+            || self.max_rows_per_job_1d < self.min_1d_job_size_mirror
             || self.max_rows_per_job_1d < self.min_face_job_size
         {
             bail!(
-                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {})",
+                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {}, {})",
                 self.max_rows_per_job_1d,
                 self.min_1d_job_size,
                 self.min_1d_job_size_reauth,
                 self.min_1d_job_size_recovery,
+                self.min_1d_job_size_mirror,
                 self.min_face_job_size
             );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
             || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
             || self.max_rows_per_job_2d < self.min_2d_job_size_recovery
+            || self.max_rows_per_job_2d < self.min_2d_job_size_mirror
         {
             bail!(
-                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {})",
+                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {})",
                 self.max_rows_per_job_2d,
                 self.min_2d_job_size,
                 self.min_2d_job_size_reauth,
-                self.min_2d_job_size_recovery
+                self.min_2d_job_size_recovery,
+                self.min_2d_job_size_mirror
             );
         }
         Ok(())

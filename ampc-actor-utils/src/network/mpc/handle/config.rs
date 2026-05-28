@@ -1,7 +1,7 @@
 use std::{cmp, time::Duration};
 
 #[derive(Default, Clone, Debug)]
-pub struct TcpConfig {
+pub struct MpcConfig {
     pub timeout_duration: Duration,
     // the number of sessions managed at once
     pub num_sessions: u32,
@@ -9,7 +9,7 @@ pub struct TcpConfig {
     pub num_connections: u32,
 }
 
-impl TcpConfig {
+impl MpcConfig {
     pub fn new(timeout_duration: Duration, num_connections: usize, num_sessions: usize) -> Self {
         // don't allow fewer requests than connections...
         let connection_parallelism = cmp::min(num_connections, num_sessions);

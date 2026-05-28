@@ -30,8 +30,8 @@ pub async fn run<T: NetworkConnection>(
     inbound_forwarder: HashMap<SessionId, UnboundedSender<NetworkValue>>,
     outbound_rx: UnboundedReceiver<OutboundMsg>,
 ) {
-    let shutdown_ct = connection_state.shutdown_ct().await;
-    let err_ct = connection_state.err_ct().await;
+    let shutdown_ct = connection_state.shutdown_ct();
+    let err_ct = connection_state.err_ct();
 
     let (reader, writer) = tokio::io::split(stream);
     let reader = BufReader::new(reader);
@@ -70,12 +70,12 @@ pub async fn run<T: NetworkConnection>(
 
     match evt {
         Event::Shutdown => {
-            if connection_state.set_exited().await {
+            if connection_state.set_exited() {
                 tracing::info!("shutting down TCP/TLS networking stack");
             }
         }
         Event::Error => {
-            if connection_state.set_cancelled().await {
+            if connection_state.set_cancelled() {
                 tracing::info!("closing TCP/TLS connections");
             }
         }

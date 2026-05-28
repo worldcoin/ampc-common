@@ -443,6 +443,7 @@ where
 ///
 /// Rounds 1 and 2 can be computed in parallel.
 /// The resulting communication complexity is 2 rounds with each party sending 1 element of T per input bit.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn bit_inject<T>(
     session: &mut Session,
     input: VecShare<Bit>,
@@ -784,6 +785,7 @@ fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShare<Rin
 }
 
 /// Lifts the given shares of u16 to shares of u32.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
 pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecShare<u32>> {
     let len = shares.len();
@@ -847,6 +849,7 @@ pub async fn lift(session: &mut Session, shares: VecShare<u16>) -> Result<VecSha
 }
 
 /// Lifts the given shares of u16 to shares of Ring48.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
 pub async fn lift_to_ring48(
     session: &mut Session,
@@ -950,6 +953,7 @@ pub async fn lift_to_ring48(
 /// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel each other out resulting in:
 ///
 /// `a + b + c = x_i`
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn two_way_split<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShare<T>,
@@ -1087,6 +1091,7 @@ where
 /// Returns the MSB of the sum of two integers of type T using the binary parallel prefix adder tree.
 /// Input integers are given in binary form.
 #[cfg(not(feature = "ripple_carry_adder"))]
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn binary_add_2_get_msb<T>(
     session: &mut Session,
     x1: Vec<VecShare<T>>,

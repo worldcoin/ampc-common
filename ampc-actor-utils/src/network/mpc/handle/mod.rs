@@ -1,4 +1,5 @@
 pub mod config;
+pub mod control_channel;
 mod data;
 mod network_handle;
 mod session;
@@ -7,14 +8,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use self::config::TcpConfig;
-use self::network_handle::TcpNetworkHandle;
+use self::config::MpcConfig;
+use self::network_handle::MpcNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
+use crate::network::mpc::handle::control_channel::ControlChannel;
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
-use crate::network::tcp::{self, TcpStreamConn, TlsConfig};
+use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -27,8 +29,17 @@ pub trait NetworkHandle: Send + Sync {
     // raise an error due to the connection being closed.
     async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)>;
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
-    // allows unit and integration tests to wait for MPC instances to finish working before sessions are dropped.
-    async fn sync_peers(&mut self) -> Result<()>;
+    /// Establish a dedicated control-plane channel to each ring neighbour.
+    ///
+    /// Unlike sessions returned by [`make_sessions`], sends on the returned
+    /// [`ControlChannel`] block until the data is flushed to the wire. Use this
+    /// for coordination and phase-transition signalling, not data-plane throughput.
+    ///
+    /// Opens new TCP/TLS connections on every call. Returns an error if connections
+    /// cannot be established. If a connection drops during use, operations on the
+    /// channel return an error immediately — there is no retry; call this method
+    /// again to reconnect.
+    async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>>;
 }
 
 pub struct NetworkHandleArgs {
@@ -40,6 +51,8 @@ pub struct NetworkHandleArgs {
     pub connection_parallelism: usize,
     pub request_parallelism: usize,
     pub sessions_per_request: usize,
+    /// assumes that if tls is Some, everything needed for mutual TLS will
+    /// be present
     pub tls: Option<TlsConfig>,
 }
 
@@ -62,7 +75,7 @@ pub async fn build_network_handle(
     let my_address = &args.addresses[my_index];
     let my_addr = tcp::to_inaddr_any(my_address.parse::<SocketAddr>()?);
 
-    let tcp_config = TcpConfig::new(
+    let tcp_config = MpcConfig::new(
         Duration::from_secs(10),
         args.connection_parallelism,
         args.request_parallelism * args.sessions_per_request,
@@ -76,7 +89,7 @@ pub async fn build_network_handle(
     macro_rules! build_network_handle {
         ($listener:expr, $connector:expr) => {
             Ok(Box::new(
-                TcpNetworkHandle::new(
+                MpcNetworkHandle::new(
                     my_identity,
                     peers,
                     $connector,
@@ -116,8 +129,21 @@ pub async fn build_network_handle(
             .as_ref()
             .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
 
-        let listener = TlsServer::new(my_addr, private_key, leaf_cert, &root_certs).await?;
-        let connector = TlsClient::new_with_ca_certs(&root_certs).await?;
+        let listener = TlsServer::new(
+            my_addr,
+            TlsServerConfig::Mutual {
+                root_certs: root_certs.clone(),
+                key_file: private_key.clone(),
+                cert_file: leaf_cert.clone(),
+            },
+        )
+        .await?;
+        let connector = TlsClient::new(TlsClientConfig::Mutual {
+            root_certs,
+            key_file: private_key.clone(),
+            cert_file: leaf_cert.clone(),
+        })
+        .await?;
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(
@@ -159,16 +185,16 @@ pub mod testing {
         Ok(addresses)
     }
 
-    pub async fn setup_local_tcp_networking(
+    pub async fn setup_local_mpc_networking(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
     ) -> Result<(
-        Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>,
+        Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>,
         Vec<Vec<NetworkSession>>,
     )> {
         let mut handles =
-            get_local_tcp_handles(parties, connection_parallelism, request_parallelism).await?;
+            get_local_mpc_handles(parties, connection_parallelism, request_parallelism).await?;
 
         let results =
             futures::future::join_all(handles.iter_mut().map(|h| h.make_network_sessions())).await;
@@ -178,14 +204,14 @@ pub mod testing {
         Ok((handles, no_ct))
     }
 
-    pub async fn get_local_tcp_handles(
+    pub async fn get_local_mpc_handles(
         parties: Vec<Identity>,
         connection_parallelism: usize,
         request_parallelism: usize,
-    ) -> Result<Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>>> {
+    ) -> Result<Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>> {
         assert_eq!(parties.len(), 3);
 
-        let config = TcpConfig::new(
+        let config = MpcConfig::new(
             Duration::from_secs(30),
             connection_parallelism,
             request_parallelism,
@@ -219,7 +245,7 @@ pub mod testing {
                         .map(|(_, (id, url))| (id.clone(), url.to_string()))
                         .collect::<Vec<_>>();
 
-                    let handle: TcpNetworkHandle<TcpStreamConn, TcpClient> = TcpNetworkHandle::new(
+                    let handle: MpcNetworkHandle<TcpStreamConn, TcpClient> = MpcNetworkHandle::new(
                         id.clone(),
                         peers.into_iter(),
                         connector,
@@ -234,7 +260,7 @@ pub mod testing {
                 }
             });
 
-        let handles: Vec<TcpNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
+        let handles: Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>> = join_all(handles_fut)
             .await
             .into_iter()
             .collect::<Result<Vec<_>, eyre::Report>>()?;
@@ -331,10 +357,10 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
-    async fn test_tcp_comms_correct() -> Result<()> {
+    async fn test_mpc_comms_correct() -> Result<()> {
         let identities = generate_local_identities();
         let (_managers, mut sessions) =
-            setup_local_tcp_networking(identities.clone(), 1, 4).await?;
+            setup_local_mpc_networking(identities.clone(), 1, 4).await?;
         sleep(Duration::from_millis(500)).await;
 
         assert_eq!(sessions.len(), 3);

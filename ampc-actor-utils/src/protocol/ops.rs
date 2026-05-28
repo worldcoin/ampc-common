@@ -93,6 +93,7 @@ pub async fn setup_replicated_prf(session: &mut NetworkSession, my_seed: PrfSeed
 /// Setup a shared seed across all three parties.
 /// Each party sends their seed to both neighbors and receives from both.
 /// The final shared seed is the XOR of all three seeds.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn setup_shared_seed(session: &mut NetworkSession, my_seed: PrfSeed) -> Result<PrfSeed> {
     let my_msg = NetworkValue::PrfKey(my_seed);
 
@@ -115,6 +116,7 @@ pub async fn setup_shared_seed(session: &mut NetworkSession, my_seed: PrfSeed) -
 
 /// Convert Galois Ring elements to replicated secret shares (Rep3)
 /// This takes a vector of ring elements and converts them to replicated shares
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn galois_ring_to_rep3(
     session: &mut Session,
     items: Vec<RingElement<u16>>,
@@ -591,6 +593,7 @@ where
 
 /// Lifts a share of a vector (VecShare) of 16-bit values to a share of a vector
 /// (VecShare) of 32-bit values.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn batch_signed_lift(
     session: &mut Session,
     mut pre_lift: VecShare<u16>,
@@ -621,6 +624,7 @@ pub async fn batch_signed_lift_vec(
 
 /// Signed lift from u16 to Ring48. Same logic as batch_signed_lift but
 /// targets 48-bit ring arithmetic.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn batch_signed_lift_ring48(
     session: &mut Session,
     mut pre_lift: VecShare<u16>,
