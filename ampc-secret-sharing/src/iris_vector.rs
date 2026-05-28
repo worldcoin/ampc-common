@@ -312,8 +312,8 @@ mod tests {
                 share_copy.0[i + 2] = element.coefs[2];
                 share_copy.0[i + 3] = element.coefs[3];
             }
-            for j in 0..IRIS_VECTOR_SIZE {
-                reconstructed[j] = reconstructed[j].wrapping_add(share_copy.0[j]);
+            for (j, entry) in reconstructed.iter_mut().enumerate() {
+                *entry = entry.wrapping_add(share_copy.0[j]);
             }
         }
 
