@@ -264,6 +264,11 @@ impl<'de> Deserialize<'de> for IrisSecretSharedVector {
 #[cfg(test)]
 mod tests {
     use super::IrisVector;
+    use super::IRIS_VECTOR_SIZE;
+    use crate::basis;
+    use crate::GaloisRingElement;
+    use crate::PartyID;
+    use crate::ShamirGaloisRingShare;
     use rand::thread_rng;
 
     #[test]
@@ -275,5 +280,49 @@ mod tests {
             let dot = v1.dot(&v2);
             assert!((990..1010).contains(&dot));
         }
+    }
+
+    #[test]
+    fn test_secret_sharing_correctness() {
+        let mut rng = thread_rng();
+        let original = IrisVector::random_normalized(&mut rng);
+        let shares = original.secret_share(&mut rng).unwrap();
+
+        // Simulate reconstruction by using the first two shares.
+        let lagrange_coeffs = [
+            ShamirGaloisRingShare::deg_1_lagrange_polys_at_zero(PartyID::ID0, PartyID::ID1),
+            ShamirGaloisRingShare::deg_1_lagrange_polys_at_zero(PartyID::ID1, PartyID::ID0),
+        ];
+
+        let mut reconstructed = [0u16; IRIS_VECTOR_SIZE];
+        for (id, share) in shares[0..2].iter().enumerate() {
+            let mut share_copy = share.clone();
+
+            for i in (0..share_copy.0.len()).step_by(4) {
+                let element = GaloisRingElement::<basis::Monomial>::from_coefs([
+                    share_copy.0[i],
+                    share_copy.0[i + 1],
+                    share_copy.0[i + 2],
+                    share_copy.0[i + 3],
+                ]);
+                let element: GaloisRingElement<basis::Monomial> = element * lagrange_coeffs[id];
+                let element = element.to_basis_A();
+                share_copy.0[i] = element.coefs[0];
+                share_copy.0[i + 1] = element.coefs[1];
+                share_copy.0[i + 2] = element.coefs[2];
+                share_copy.0[i + 3] = element.coefs[3];
+            }
+            for j in 0..IRIS_VECTOR_SIZE {
+                reconstructed[j] = reconstructed[j].wrapping_add(share_copy.0[j]);
+            }
+        }
+
+        // Convert reconstructed to i8 and compare with original
+        let reconstructed_i8: Vec<i8> = reconstructed
+            .iter()
+            .map(|&x| (x as i16) as i8) // Convert back from u16 to i8
+            .collect();
+
+        assert_eq!(original.0.to_vec(), reconstructed_i8);
     }
 }
