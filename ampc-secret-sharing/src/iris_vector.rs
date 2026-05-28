@@ -2,7 +2,7 @@
 //! This is for the "Deep Identifier" use case, where we want to secret-share iris embedding vectors
 //! instead of iriscodes.
 //!
-//! This module provides `IrisVector` and `IrisSecretSharedVector` types for
+//! This module provides [IrisVector] and [IrisSecretSharedVector] types for
 //! iris embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
@@ -12,7 +12,7 @@ use rand_distr::{Distribution, StandardNormal};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-/// Size of iris embedding vectors (512 elements)
+/// Size of iris embedding vectors (512 elements).
 pub const IRIS_VECTOR_SIZE: usize = 512;
 
 /// A plaintext iris embedding vector of 512 i8 values that can be secret-shared.
@@ -21,7 +21,7 @@ pub const IRIS_VECTOR_SIZE: usize = 512;
 #[derive(Clone)]
 pub struct IrisVector(pub [i8; IRIS_VECTOR_SIZE]);
 
-/// A secret-shared iris emedding vector containing 512 u16 values.
+/// A secret-shared iris embedding vector containing 512 u16 values.
 ///
 /// This represents one share of a secret-shared iris embedding vector.
 #[derive(Clone, Debug)]
@@ -34,7 +34,7 @@ impl Default for IrisSecretSharedVector {
 }
 
 impl IrisVector {
-    /// Create a new IrisEmbedding from an array of 512 i8 values.
+    /// Create a new [IrisVector] from an array of 512 i8 values.
     pub fn new(data: [i8; IRIS_VECTOR_SIZE]) -> Self {
         IrisVector(data)
     }
@@ -103,7 +103,7 @@ impl IrisVector {
     /// Panics if `eps.start >= eps.end`
     ///
     /// # Returns
-    /// A random face vector with dot product in the specified range
+    /// A random iris embedding vector with dot product in the specified range.
     pub fn random_with_dot<R: CryptoRng + Rng>(
         &self,
         dot: i16,
@@ -147,7 +147,7 @@ impl IrisVector {
         }
     }
 
-    /// Create secret shares from this iris embedding vector.
+    /// Generate Shamir secret shares from this iris embedding vector.
     ///
     /// This function creates 3 secret shares, each containing 512 u16 values.
     /// The vector is processed in chunks of 4, where each chunk is converted to
@@ -317,7 +317,7 @@ mod tests {
             }
         }
 
-        // Convert reconstructed to i8 and compare with original
+        // Convert reconstructed to i8 and compare with original.
         let reconstructed_i8: Vec<i8> = reconstructed
             .iter()
             .map(|&x| (x as i16) as i8) // Convert back from u16 to i8
