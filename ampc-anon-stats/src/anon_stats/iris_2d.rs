@@ -215,7 +215,7 @@ async fn process_2d_anon_stats_score_normalization_inner(
             (config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
         None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
-            (config.n_buckets_2d, MATCH_THRESHOLD_RATIO)
+            (config.n_buckets_2d, config.nhd_threshold_ratio)
         }
     };
     let translated_thresholds =
