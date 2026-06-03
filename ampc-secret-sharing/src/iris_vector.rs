@@ -78,7 +78,7 @@ impl IrisVector {
             v.iter_mut().for_each(|x| *x /= norm);
             let v = Self::quantize(v);
             let v_dot_v = v.dot(&v);
-            if 2000 <= v_dot_v && v_dot_v <= 3000 {
+            if (2000..=3000).contains(&v_dot_v) {
                 return v;
             }
         }
@@ -314,7 +314,7 @@ mod tests {
             let mut rng = thread_rng();
             let v = IrisVector::random_normalized(&mut rng);
             let v_dot_v = v.dot(&v);
-            assert!(2000 <= v_dot_v && v_dot_v <= 3000);
+            assert!((2000..=3000).contains(&v_dot_v));
         }
     }
 
