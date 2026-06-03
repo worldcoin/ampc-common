@@ -65,14 +65,23 @@ impl IrisVector {
     /// This generates a vector with values sampled from a standard normal distribution,
     /// normalized to unit length, and then quantized to i8 values.
     ///
+    /// Rejection sampling is used to ensure that the resulting vector has a dot product with itself
+    /// that is in the range [2000, 3000].
+    ///
     /// This is useful for testing and generating realistic embedding vectors.
     pub fn random_normalized<R: CryptoRng + Rng>(rng: &mut R) -> Self {
-        let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
-            .map(|_| StandardNormal.sample(rng))
-            .collect();
-        let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
-        v.iter_mut().for_each(|x| *x /= norm);
-        Self::quantize(v)
+        loop {
+            let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
+                .map(|_| StandardNormal.sample(rng))
+                .collect();
+            let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+            let v = Self::quantize(v);
+            let v_dot_v = v.dot(&v);
+            if 2000 <= v_dot_v && v_dot_v <= 3000 {
+                return v;
+            }
+        }
     }
 
     /// Quantize a floating-point vector to i8 values.
@@ -300,6 +309,16 @@ mod tests {
     use rand::thread_rng;
 
     #[test]
+    fn test_random_normalized() {
+        for _ in 0..1000 {
+            let mut rng = thread_rng();
+            let v = IrisVector::random_normalized(&mut rng);
+            let norm = v.dot(&v);
+            assert!(norm > 2000);
+        }
+    }
+
+    #[test]
     fn test_random_normalized_with_dot() {
         for i in 0..1000 {
             if i % 100 == 0 {
@@ -323,6 +342,7 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn test_secret_sharing_correctness() {
         let mut rng = thread_rng();
