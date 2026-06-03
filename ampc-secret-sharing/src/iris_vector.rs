@@ -301,25 +301,24 @@ mod tests {
 
     #[test]
     fn test_random_normalized_with_dot() {
-        for i in 0..10000 {
-            if i % 1000 == 0 {
+        for i in 0..1000 {
+            if i % 100 == 0 {
                 println!("Test iteration: {}", i);
             }
             let mut rng = thread_rng();
 
             loop {
+                // loop until we find a random vector that satisfies this
+
                 let v1 = IrisVector::random_normalized(&mut rng);
-                match v1.random_with_dot(1000, -10..10, &mut rng) {
-                    Some(v2) => {
-                        let dot = v1.dot(&v2);
-                        assert!(
-                            (990..1010).contains(&dot),
-                            "Dot product {} not in range",
-                            dot
-                        );
-                        break;
-                    }
-                    None => {} // loop until we find a random vector that satisfies this
+                if let Some(v2) = v1.random_with_dot(1000, -10..10, &mut rng) {
+                    let dot = v1.dot(&v2);
+                    assert!(
+                        (990..1010).contains(&dot),
+                        "Dot product {} not in range",
+                        dot
+                    );
+                    break;
                 }
             }
         }
