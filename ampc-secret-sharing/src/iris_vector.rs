@@ -313,8 +313,8 @@ mod tests {
         for _ in 0..1000 {
             let mut rng = thread_rng();
             let v = IrisVector::random_normalized(&mut rng);
-            let norm = v.dot(&v);
-            assert!(norm > 2000);
+            let v_dot_v = v.dot(&v);
+            assert!(2000 <= v_dot_v && v_dot_v <= 3000);
         }
     }
 
