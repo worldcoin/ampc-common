@@ -151,7 +151,6 @@ impl IrisVector {
             z.iter_mut()
                 .zip(&v1)
                 .for_each(|(z_val, &v_val)| *z_val -= dot_z_v1 * v_val);
-
             let z_norm = (z.iter().map(|x| x * x).sum::<f64>()).sqrt();
             z.iter_mut().for_each(|x| *x /= z_norm);
 
