@@ -10,6 +10,7 @@ use eyre::bail;
 use rand::{CryptoRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::ops::Range;
 
 /// Size of iris embedding vectors (512 elements).
@@ -64,14 +65,23 @@ impl IrisVector {
     /// This generates a vector with values sampled from a standard normal distribution,
     /// normalized to unit length, and then quantized to i8 values.
     ///
+    /// Rejection sampling is used to ensure that the resulting vector has a dot product with itself
+    /// that is in the range [2000, 3000].
+    ///
     /// This is useful for testing and generating realistic embedding vectors.
     pub fn random_normalized<R: CryptoRng + Rng>(rng: &mut R) -> Self {
-        let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
-            .map(|_| StandardNormal.sample(rng))
-            .collect();
-        let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
-        v.iter_mut().for_each(|x| *x /= norm);
-        Self::quantize(v)
+        loop {
+            let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
+                .map(|_| StandardNormal.sample(rng))
+                .collect();
+            let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+            let v = Self::quantize(v);
+            let v_dot_v = v.dot(&v);
+            if (2000..=3000).contains(&v_dot_v) {
+                return v;
+            }
+        }
     }
 
     /// Quantize a floating-point vector to i8 values.
@@ -104,18 +114,21 @@ impl IrisVector {
     ///
     /// # Returns
     /// A random iris embedding vector with dot product in the specified range.
+    /// If it fails to find a suitable vector after max_attempts number of attempts
+    /// it returns None. It is up to the caller to give another input.
     pub fn random_with_dot<R: CryptoRng + Rng>(
         &self,
         dot: i16,
         eps: Range<i16>,
         rng: &mut R,
-    ) -> Self {
+    ) -> Option<Self> {
         assert!(
             eps.start < eps.end,
             "Invalid range: start must be less than end"
         );
 
         let dot_float = (dot as f64 / self.dot(self) as f64).clamp(-1.0, 1.0);
+        let max_attempts = 2000;
 
         // Dequantize
         let mut v1: Vec<f64> = self.0.iter().map(|&x| x as f64).collect();
@@ -123,10 +136,17 @@ impl IrisVector {
         v1.iter_mut().for_each(|x| *x /= norm);
 
         // Rejection sampling
+        let mut attempt_counter = 0;
+
         loop {
+            if attempt_counter > max_attempts {
+                return None;
+            }
+
             let mut z: Vec<f64> = (0..IRIS_VECTOR_SIZE)
                 .map(|_| StandardNormal.sample(rng))
                 .collect();
+
             let dot_z_v1: f64 = z.iter().zip(&v1).map(|(a, b)| a * b).sum();
             z.iter_mut()
                 .zip(&v1)
@@ -141,9 +161,12 @@ impl IrisVector {
                 .collect();
 
             let v2 = Self::quantize(v2);
-            if self.dot(&v2) >= (dot + eps.start) && self.dot(&v2) < (dot + eps.end) {
-                return v2;
+            let actual = self.dot(&v2);
+
+            if actual >= (dot + eps.start) && actual < (dot + eps.end) {
+                return Some(v2);
             }
+            attempt_counter += 1;
         }
     }
 
@@ -191,6 +214,19 @@ impl IrisVector {
         }
 
         Ok(shares)
+    }
+}
+
+impl fmt::Display for IrisVector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, value) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        write!(f, "]")
     }
 }
 
@@ -272,13 +308,37 @@ mod tests {
     use rand::thread_rng;
 
     #[test]
-    fn test_random_normalized_with_dot() {
-        for _ in 0..100 {
+    fn test_random_normalized() {
+        for _ in 0..1000 {
             let mut rng = thread_rng();
-            let v1 = IrisVector::random_normalized(&mut rng);
-            let v2 = v1.random_with_dot(1000, -10..10, &mut rng);
-            let dot = v1.dot(&v2);
-            assert!((990..1010).contains(&dot));
+            let v = IrisVector::random_normalized(&mut rng);
+            let v_dot_v = v.dot(&v);
+            assert!((2000..=3000).contains(&v_dot_v));
+        }
+    }
+
+    #[test]
+    fn test_random_normalized_with_dot() {
+        for i in 0..1000 {
+            if i % 100 == 0 {
+                println!("Test iteration: {}", i);
+            }
+            let mut rng = thread_rng();
+
+            loop {
+                // loop until we find a random vector that satisfies this
+
+                let v1 = IrisVector::random_normalized(&mut rng);
+                if let Some(v2) = v1.random_with_dot(1000, -10..10, &mut rng) {
+                    let dot = v1.dot(&v2);
+                    assert!(
+                        (990..1010).contains(&dot),
+                        "Dot product {} not in range",
+                        dot
+                    );
+                    break;
+                }
+            }
         }
     }
 
