@@ -14,8 +14,6 @@ use rand::{thread_rng, Rng};
 use reqwest::Client;
 use sodiumoxide::crypto::box_::{curve25519xsalsa20poly1305, PublicKey, SecretKey, Seed};
 
-const PUBLIC_KEY_S3_OBJECT_PREFIX: &str = "public-key";
-
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "key-manager")]
 #[command(about = "Key manager CLI", long_about = None)]
@@ -42,6 +40,11 @@ struct KeyManagerCli {
 
     #[arg(short, long, env, default_value = "wf-smpcv2-stage-public-keys")]
     public_key_bucket_name: String,
+
+    /// Prefix for the public-key S3 object name. Final object key is `{prefix}-{node_id}`.
+    /// Allows colocating public keys for multiple services in the same bucket without collision.
+    #[arg(long, env, default_value = "public-key")]
+    public_key_object_name_prefix: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,7 +79,7 @@ async fn main() -> Result<()> {
     let region_provider = S3Region::new(region.clone());
     let shared_config = aws_config::from_env().region(region_provider).load().await;
 
-    let object_name = format!("{}-{}", PUBLIC_KEY_S3_OBJECT_PREFIX, args.node_id);
+    let object_name = format!("{}-{}", args.public_key_object_name_prefix, args.node_id);
     let private_key_secret_id: String = format!(
         "{}/{}/ecdh-private-key-{}",
         args.env, args.app_name, args.node_id

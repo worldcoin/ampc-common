@@ -33,7 +33,8 @@ kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
   --env <environment> \
   --region <aws-region> \
   --app-name <app-name> \
-  --public-key-bucket-name <bucket-name>
+  --public-key-bucket-name <bucket-name> \
+  --public-key-object-name-prefix <prefix> \
   rotate \
   --dry-run false
 ```
@@ -43,7 +44,8 @@ kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
 - `--env` (default: `stage`): Environment name
 - `--region` (default: `eu-north-1`): AWS region
 - `--app-name` (default: `iris-mpc`): Application name used in secret IDs
-- `--public-key-bucket-name`: S3 bucket name for public keys (optional, defaults to `wf-smpcv2-stage-public-keys`)
+- `--public-key-bucket-name` (default: `wf-smpcv2-stage-public-keys`): S3 bucket name for public keys
+- `--public-key-object-name-prefix` (default: `public-key`): Prefix for the public-key S3 object name. The final object key is `{prefix}-{node-id}`. Override when colocating multiple services' public keys in the same bucket to avoid collisions (e.g. `deep-identifier-public-key` when sharing a bucket with `iris-mpc`'s default `public-key`).
 - `--dry-run`: If set, generates keys but doesn't upload them
 
 Delete the temporary pod:
