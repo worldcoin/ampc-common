@@ -155,8 +155,7 @@ async fn validate_keys(
         // Otherwise, get the latest one from S3 using HTTPS.
         // Use the bucket-region override if provided, otherwise fall back to the main region.
         let s3_region = bucket_region.unwrap_or(region);
-        let user_pubkey_string =
-            download_key_from_s3(bucket_name, object_name, s3_region).await?;
+        let user_pubkey_string = download_key_from_s3(bucket_name, object_name, s3_region).await?;
         let user_pubkey = STANDARD.decode(user_pubkey_string.as_bytes()).unwrap();
         match PublicKey::from_slice(&user_pubkey) {
             Some(key) => key,
@@ -400,10 +399,7 @@ mod test {
             "true",
         ])
         .expect("CLI should parse with provided bucket region");
-        assert_eq!(
-            cli.public_key_bucket_region,
-            Some("eu-north-1".to_string())
-        );
+        assert_eq!(cli.public_key_bucket_region, Some("eu-north-1".to_string()));
     }
 
     #[test]
