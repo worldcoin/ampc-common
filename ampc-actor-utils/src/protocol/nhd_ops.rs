@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 
 use ampc_secret_sharing::{
-    shares::{bit::Bit, DistanceShare, Ring48, VecShare},
-    Share,
+    shares::{bit::Bit, DistanceShare, Ring48, VecShareReplicated},
+    ReplicatedShare,
 };
 use eyre::Result;
 use tracing::instrument;
@@ -39,7 +39,7 @@ const NHD_CORRECTION: u64 = 73728;
 pub async fn nhd_cross_mul(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
-) -> Result<Vec<Share<Ring48>>> {
+) -> Result<Vec<ReplicatedShare<Ring48>>> {
     let n = distances.len();
 
     // ---- Round 1: interactive multiply to get product_i = md_i * linear_i ----
@@ -57,7 +57,7 @@ pub async fn nhd_cross_mul(
     .await?;
 
     // Reconstruct nmr_i = product_i - 73728*cd_i
-    let nmrs: Vec<(Share<Ring48>, Share<Ring48>)> = (0..n)
+    let nmrs: Vec<(ReplicatedShare<Ring48>, ReplicatedShare<Ring48>)> = (0..n)
         .map(|i| {
             let nmr1 = products[2 * i] - distances[i].0.code_dot * Ring48(NHD_CORRECTION);
             let nmr2 = products[2 * i + 1] - distances[i].1.code_dot * Ring48(NHD_CORRECTION);
@@ -90,7 +90,7 @@ pub async fn nhd_cross_compare(
 pub async fn nhd_oblivious_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
-) -> Result<Vec<Share<Bit>>> {
+) -> Result<Vec<ReplicatedShare<Bit>>> {
     let diff = nhd_cross_mul(session, distances).await?;
     extract_msb_batch(session, &diff).await
 }
@@ -101,9 +101,9 @@ pub async fn nhd_oblivious_cross_compare(
 pub async fn nhd_oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[DistancePair<Ring48>],
-) -> Result<Vec<Share<Ring48>>> {
+) -> Result<Vec<ReplicatedShare<Ring48>>> {
     let bits = nhd_oblivious_cross_compare(session, distances).await?;
-    Ok(bit_inject(session, VecShare { shares: bits })
+    Ok(bit_inject(session, VecShareReplicated { shares: bits })
         .await?
         .inner())
 }
@@ -122,7 +122,7 @@ pub async fn nhd_min_of_pair_batch(
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn nhd_lift_distances(
     session: &mut Session,
-    pre_lift: Vec<Share<u16>>,
+    pre_lift: Vec<ReplicatedShare<u16>>,
 ) -> Result<Vec<DistanceShare<Ring48>>> {
     let lifted = batch_signed_lift_vec_ring48(session, pre_lift).await?;
     Ok(lifted
@@ -143,21 +143,21 @@ pub async fn nhd_greater_than_threshold(
     session: &mut Session,
     distances: &[DistanceShare<Ring48>],
     threshold_ratio: f64,
-) -> Result<Vec<Share<Bit>>> {
+) -> Result<Vec<ReplicatedShare<Bit>>> {
     // Constant A used in the NHD threshold comparison.
     let a = Ring48(774_144_u64) - Ring48((25.0 * B as f64 * threshold_ratio) as u64);
     let n = distances.len();
 
     // We check: [md * (50*cd - 5*md)] - A*md + 368640*cd < 0
     // The bracketed term requires one interactive multiplication round.
-    let products = reshare_products(session, n, |i| {
+    let products: Vec<ReplicatedShare<Ring48>> = reshare_products(session, n, |i| {
         let d = &distances[i];
         let linear = d.code_dot * Ring48(50) - d.mask_dot * Ring48(5);
         d.mask_dot * linear
     })
     .await?;
 
-    let results: Vec<Share<Ring48>> = products
+    let results: Vec<ReplicatedShare<Ring48>> = products
         .into_iter()
         .enumerate()
         .map(|(i, product)| {
@@ -185,7 +185,7 @@ mod tests {
     use super::*;
     use crate::{
         constants::MATCH_THRESHOLD_RATIO, execution::local::LocalRuntime,
-        protocol::test_utils::create_array_sharing,
+        protocol::test_utils::create_array_sharing_replicated,
     };
     use aes_prng::AesRng;
     use rand::SeedableRng;
@@ -286,7 +286,7 @@ mod tests {
             .iter()
             .flat_map(|(cd, md, _)| [*cd, *md])
             .collect();
-        let flat_shares = create_array_sharing(&mut rng, &flat_values);
+        let flat_shares = create_array_sharing_replicated(&mut rng, &flat_values);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();
@@ -365,7 +365,7 @@ mod tests {
             .iter()
             .flat_map(|(cd1, md1, cd2, md2, _)| [*cd1, *md1, *cd2, *md2])
             .collect();
-        let flat_shares = create_array_sharing(&mut rng, &flat_values);
+        let flat_shares = create_array_sharing_replicated(&mut rng, &flat_values);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();

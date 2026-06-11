@@ -3,10 +3,10 @@ use ampc_actor_utils::execution::local::LocalRuntime;
 use ampc_actor_utils::protocol::ops::{
     conditionally_select_distance, conditionally_swap_distances, DistancePair,
 };
-use ampc_actor_utils::protocol::test_utils::create_array_sharing;
+use ampc_actor_utils::protocol::test_utils::create_array_sharing_replicated;
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
-use ampc_secret_sharing::Share;
+use ampc_secret_sharing::ReplicatedShare;
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion};
 use itertools::Itertools;
 use rand::SeedableRng;
@@ -23,7 +23,7 @@ fn bench_select_distance(c: &mut Criterion) {
         // plus one control bit per pair.
         let mut rng = AesRng::seed_from_u64(42);
         let vals: Vec<u32> = (0..(4 * n + n) as u32).collect();
-        let shares = create_array_sharing(&mut rng, &vals);
+        let shares = create_array_sharing_replicated(&mut rng, &vals);
 
         group.bench_function(BenchmarkId::new("e2e", n), |b| {
             b.iter_batched(
@@ -44,7 +44,7 @@ fn bench_select_distance(c: &mut Criterion) {
                                     )
                                 })
                                 .collect();
-                            let control_bits: Vec<Share<u32>> =
+                            let control_bits: Vec<ReplicatedShare<u32>> =
                                 (0..n).map(|j| s[4 * n + j]).collect();
                             (session, distances, control_bits)
                         })
@@ -89,10 +89,10 @@ fn bench_swap_distances(c: &mut Criterion) {
 
         // Each list entry: (id, code_dot, mask_dot) = 3 values per entry
         let vals: Vec<u32> = (0..(3 * list_size) as u32).collect();
-        let shares = create_array_sharing(&mut rng, &vals);
+        let shares = create_array_sharing_replicated(&mut rng, &vals);
 
         let bit_vals: Vec<Bit> = (0..num_pairs).map(|i| Bit::new(i % 2 == 0)).collect();
-        let bit_shares = create_array_sharing(&mut rng, &bit_vals);
+        let bit_shares = create_array_sharing_replicated(&mut rng, &bit_vals);
 
         let indices: Vec<(usize, usize)> = (0..list_size).tuples().collect();
 
@@ -107,7 +107,8 @@ fn bench_swap_distances(c: &mut Criterion) {
                         .enumerate()
                         .map(|(i, session)| {
                             let s = shares.of_party(i).clone();
-                            let distances: Vec<(Share<u32>, DistanceShare<u32>)> = (0..list_size)
+                            let distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)> = (0
+                                ..list_size)
                                 .map(|j| {
                                     (
                                         s[j],

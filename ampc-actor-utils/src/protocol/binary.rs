@@ -294,7 +294,7 @@ where
         izip!(chunk_sizes.iter(), x2.iter().map(VecShareReplicated::len))
     {
         if *chunk_size1 != chunk_size2 {
-            bail!("VecShare lengths are not equal");
+            bail!("VecShareReplicated lengths are not equal");
         }
     }
 

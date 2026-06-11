@@ -191,15 +191,7 @@ impl<T: IntRing2k> Mul<Self> for &ReplicatedShare<T> {
     }
 }
 
-impl<T: IntRing2k> Mul<Self> for Share<T> {
-    type Output = RingElement<T>;
-
-    fn mul(self, rhs: Self) -> Self::Output {
-        self.a * rhs.a + self.b * rhs.a + self.a * rhs.b
-    }
-}
-
-impl<T: IntRing2k> Mul<Self> for Share<T> {
+impl<T: IntRing2k> Mul<Self> for ReplicatedShare<T> {
     type Output = RingElement<T>;
 
     fn mul(self, rhs: Self) -> Self::Output {

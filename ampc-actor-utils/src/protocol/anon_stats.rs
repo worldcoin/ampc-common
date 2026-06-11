@@ -44,7 +44,7 @@ pub async fn nhd_compare_against_thresholds_batched(
     session: &mut Session,
     threshold_a_terms: &[f64],
     distances: &[DistanceShare<Ring48>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let mut msbs = Vec::with_capacity(threshold_a_terms.len() * distances.len());
     for &t in threshold_a_terms {
         let results = nhd_greater_than_threshold(session, distances, t).await?;
@@ -52,29 +52,7 @@ pub async fn nhd_compare_against_thresholds_batched(
     }
 
     tracing::info!("compare_threshold_buckets diffs length: {}", msbs.len());
-    let msbs = VecShare::new_vec(msbs);
-    tracing::info!("msbs extracted, now bit_injecting");
-    // bit_inject all MSBs into u32 to be able to add them up
-    let sums = bit_inject(session, msbs).await?;
-    Ok(sums.inner())
-}
-
-/// Compares the distance between two iris pairs to a list of thresholds, represented as t_i/B, with B = 2^16.
-/// Use the [translate_threshold_a](crate::protocol::fhd_ops::translate_threshold_a) function to compute the A term of the threshold comparison.
-/// The result of the comparisons is a flat vector of `Share<u32>`, where each group of `distances.len()` bits injected into a u32 share corresponds to the results of comparing one threshold against all distances.
-pub async fn nhd_compare_against_thresholds_batched(
-    session: &mut Session,
-    threshold_a_terms: &[f64],
-    distances: &[DistanceShare<Ring48>],
-) -> Result<Vec<Share<u32>>> {
-    let mut msbs = Vec::with_capacity(threshold_a_terms.len() * distances.len());
-    for &t in threshold_a_terms {
-        let results = nhd_greater_than_threshold(session, distances, t).await?;
-        msbs.extend(results.into_iter().map(|x| !(&x)));
-    }
-
-    tracing::info!("compare_threshold_buckets diffs length: {}", msbs.len());
-    let msbs = VecShare::new_vec(msbs);
+    let msbs = VecShareReplicated::new_vec(msbs);
     tracing::info!("msbs extracted, now bit_injecting");
     // bit_inject all MSBs into u32 to be able to add them up
     let sums = bit_inject(session, msbs).await?;
@@ -109,7 +87,7 @@ pub async fn nhd_compare_threshold_buckets(
     session: &mut Session,
     threshold_a_terms: &[f64],
     distances: &[DistanceShare<Ring48>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let sums =
         nhd_compare_against_thresholds_batched(session, threshold_a_terms, distances).await?;
     tracing::info!("bit_inject done, now summing");
@@ -233,7 +211,7 @@ pub async fn compare_min_threshold_buckets_score_normalization(
     session: &mut Session,
     threshold_score_normalization_terms: &[f64],
     distances: &[Vec<DistanceShare<Ring48>>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     let reduced_distances = nhd_reduce_to_min_distance_batch(session, distances).await?;
     // Now we have a single distance for each group, we can compare it to the thresholds
     let buckets = nhd_compare_threshold_buckets(

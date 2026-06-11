@@ -1,6 +1,6 @@
 use ampc_secret_sharing::{
-    shares::{bit::Bit, DistanceShare, VecShare},
-    Share,
+    shares::{bit::Bit, DistanceShare, VecShareReplicated},
+    ReplicatedShare,
 };
 use eyre::Result;
 use tracing::instrument;
@@ -36,9 +36,9 @@ pub async fn fhd_greater_than_threshold(
     session: &mut Session,
     distances: &[DistanceShare<u32>],
     threshold_ratio: f64,
-) -> Result<Vec<Share<Bit>>> {
+) -> Result<Vec<ReplicatedShare<Bit>>> {
     let a = translate_threshold_a(threshold_ratio);
-    let diffs: Vec<Share<u32>> = distances
+    let diffs: Vec<ReplicatedShare<u32>> = distances
         .iter()
         .map(|d| {
             let x = d.mask_dot * a;
@@ -58,7 +58,7 @@ pub async fn fhd_greater_than_threshold(
 pub async fn cross_mul(
     session: &mut Session,
     distances: &[DistancePair<u32>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     reshare_products(session, distances.len(), |i| {
         let (d1, d2) = distances[i];
         d2.code_dot * d1.mask_dot - d1.code_dot * d2.mask_dot
@@ -76,7 +76,7 @@ pub async fn cross_mul(
 async fn oblivious_cross_compare(
     session: &mut Session,
     distances: &[DistancePair<u32>],
-) -> Result<Vec<Share<Bit>>> {
+) -> Result<Vec<ReplicatedShare<Bit>>> {
     let diff = cross_mul(session, distances).await?;
     extract_msb_batch(session, &diff).await
 }
@@ -109,11 +109,11 @@ pub async fn cross_compare(
 pub async fn oblivious_cross_compare_lifted(
     session: &mut Session,
     distances: &[DistancePair<u32>],
-) -> Result<Vec<Share<u32>>> {
+) -> Result<Vec<ReplicatedShare<u32>>> {
     // compute the secret-shared bits d2 < d1
     let bits = oblivious_cross_compare(session, distances).await?;
     // inject bits to T shares
-    Ok(bit_inject(session, VecShare { shares: bits })
+    Ok(bit_inject(session, VecShareReplicated { shares: bits })
         .await?
         .inner())
 }
@@ -141,7 +141,7 @@ mod tests {
             local::{generate_local_identities, LocalRuntime},
             session::SessionHandles,
         },
-        protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing},
+        protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing_replicated},
     };
 
     use super::*;
@@ -155,7 +155,10 @@ mod tests {
     use tracing::instrument;
 
     #[instrument(level = "trace", target = "searcher::network", skip_all)]
-    async fn open_single(session: &mut Session, x: Share<u32>) -> Result<RingElement<u32>> {
+    async fn open_single(
+        session: &mut Session,
+        x: ReplicatedShare<u32>,
+    ) -> Result<RingElement<u32>> {
         let network = &mut session.network_session;
         network.send_next(NetworkValue::RingElement32(x.b)).await?;
         let missing_share = match network.receive_prev().await {
@@ -171,7 +174,7 @@ mod tests {
         let mut rng = AesRng::seed_from_u64(0_u64);
         let four_items = vec![1, 2, 3, 4];
 
-        let four_shares = create_array_sharing(&mut rng, &four_items);
+        let four_shares = create_array_sharing_replicated(&mut rng, &four_items);
 
         let num_parties = 3;
         let identities = generate_local_identities();
@@ -281,7 +284,7 @@ mod tests {
             .iter()
             .flat_map(|(cd, md, _)| [*cd, *md])
             .collect();
-        let flat_shares = create_array_sharing(&mut rng, &flat_values);
+        let flat_shares = create_array_sharing_replicated(&mut rng, &flat_values);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();

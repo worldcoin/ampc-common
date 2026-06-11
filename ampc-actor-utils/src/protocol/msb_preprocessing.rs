@@ -20,7 +20,7 @@ use crate::protocol::{
 };
 use crate::{
     execution::session::{NetworkSession, Session, SessionHandles},
-    network::value::{NetworkInt, NetworkValue},
+    network::mpc::{NetworkInt, NetworkValue},
     protocol::{prf::PrfRng, Prf, PrfSeed},
 };
 // Precomputed offline randomness for extract_msb_rand: a share<T> element 'r', its per-bit boolean

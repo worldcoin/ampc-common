@@ -17,7 +17,7 @@ use rand_distr::{Distribution, Standard};
 use tracing::instrument;
 
 pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
-pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
+pub type IdDistance<T> = (ReplicatedShare<T>, DistanceShare<T>);
 
 pub const B_BITS: u64 = 16;
 pub const B: u32 = 1 << B_BITS;
@@ -40,7 +40,7 @@ pub async fn reshare_products<T, F>(
     session: &mut Session,
     n: usize,
     mut expr: F,
-) -> Result<Vec<Share<T>>>
+) -> Result<Vec<ReplicatedShare<T>>>
 where
     T: NetworkInt + RingRandFillable,
     F: FnMut(usize) -> RingElement<T>,
@@ -64,7 +64,7 @@ where
     Ok(round_a
         .into_iter()
         .zip(round_b)
-        .map(|(a, b)| Share::new(a, b))
+        .map(|(a, b)| ReplicatedShare::new(a, b))
         .collect())
 }
 
@@ -276,12 +276,12 @@ async fn reshare_mux<T, F>(
     session: &mut Session,
     n_elements: usize,
     fields_per_element: usize,
-    control_bits: &[Share<T>],
+    control_bits: &[ReplicatedShare<T>],
     mut get_field: F,
-) -> Result<Vec<Share<T>>>
+) -> Result<Vec<ReplicatedShare<T>>>
 where
     T: NetworkInt + RingRandFillable,
-    F: FnMut(usize, usize) -> (Share<T>, Share<T>),
+    F: FnMut(usize, usize) -> (ReplicatedShare<T>, ReplicatedShare<T>),
 {
     if fields_per_element == 0 {
         bail!("reshare_mux: fields_per_element must be greater than zero");
@@ -343,7 +343,7 @@ pub async fn conditionally_select_distances_with_plain_ids<T>(
     session: &mut Session,
     left_distances: Vec<(u32, DistanceShare<T>)>,
     right_distances: Vec<(u32, DistanceShare<T>)>,
-    control_bits: Vec<Share<T>>,
+    control_bits: Vec<ReplicatedShare<T>>,
 ) -> Result<Vec<IdDistance<T>>>
 where
     T: NetworkInt + RingRandFillable + From<u32>,
@@ -391,7 +391,7 @@ pub async fn conditionally_select_distances_with_shared_ids<T>(
     session: &mut Session,
     left_distances: Vec<IdDistance<T>>,
     right_distances: Vec<IdDistance<T>>,
-    control_bits: Vec<Share<T>>,
+    control_bits: Vec<ReplicatedShare<T>>,
 ) -> Result<Vec<IdDistance<T>>>
 where
     T: NetworkInt + RingRandFillable,
@@ -438,7 +438,7 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances_plain_ids<T>(
     session: &mut Session,
-    swap_when_zero_bits: Vec<Share<Bit>>,
+    swap_when_zero_bits: Vec<ReplicatedShare<Bit>>,
     list: &[(u32, DistanceShare<T>)],
     indices: &[(usize, usize)],
 ) -> Result<Vec<IdDistance<T>>>
@@ -467,15 +467,17 @@ where
     let mut swapped_list = list
         .iter()
         .map(|(id, d)| {
-            let shared_index = Share::from_const(T::from(*id), role);
+            let shared_index = ReplicatedShare::from_const(T::from(*id), role);
             (shared_index, *d)
         })
         .collect::<Vec<_>>();
     // Lift swap bits to T shares
-    let swap_bits_lifted: Vec<Share<T>> =
-        bit_inject(session, VecShare::<Bit>::new_vec(swap_when_zero_bits))
-            .await?
-            .inner();
+    let swap_bits_lifted: Vec<ReplicatedShare<T>> = bit_inject(
+        session,
+        VecShareReplicated::<Bit>::new_vec(swap_when_zero_bits),
+    )
+    .await?
+    .inner();
 
     let distances_to_swap = indices
         .iter()
@@ -530,7 +532,7 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn conditionally_swap_distances<T>(
     session: &mut Session,
-    swap_when_zero_bits: Vec<Share<Bit>>,
+    swap_when_zero_bits: Vec<ReplicatedShare<Bit>>,
     list: &[IdDistance<T>],
     indices: &[(usize, usize)],
 ) -> Result<Vec<IdDistance<T>>>
@@ -553,10 +555,12 @@ where
         }
     }
     // Lift bits to T shares
-    let swap_bits_lifted: Vec<Share<T>> =
-        bit_inject(session, VecShare::<Bit>::new_vec(swap_when_zero_bits))
-            .await?
-            .inner();
+    let swap_bits_lifted: Vec<ReplicatedShare<T>> = bit_inject(
+        session,
+        VecShareReplicated::<Bit>::new_vec(swap_when_zero_bits),
+    )
+    .await?
+    .inner();
 
     let selected = reshare_mux(session, indices.len(), 3, &swap_bits_lifted, |j, f| {
         let (left_id, left_dist) = &list[indices[j].0];
@@ -660,7 +664,7 @@ pub async fn batch_signed_lift_vec_ring48(
 mod tests {
     use super::*;
     use crate::execution::local::{generate_local_identities, LocalRuntime};
-    use crate::protocol::test_utils::create_array_sharing;
+    use crate::protocol::test_utils::create_array_sharing_replicated;
     use aes_prng::AesRng;
     use rand::RngCore;
     use rand::SeedableRng;
@@ -780,7 +784,7 @@ mod tests {
             &control_vals[..],
         ]
         .concat();
-        let shares = create_array_sharing(&mut rng, &all_vals);
+        let shares = create_array_sharing_replicated(&mut rng, &all_vals);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();
@@ -809,7 +813,8 @@ mod tests {
                         )
                     })
                     .collect();
-                let control_bits: Vec<Share<u32>> = (0..n).map(|j| shares_i[4 * n + j]).collect();
+                let control_bits: Vec<ReplicatedShare<u32>> =
+                    (0..n).map(|j| shares_i[4 * n + j]).collect();
 
                 let result = conditionally_select_distances_with_plain_ids(
                     &mut session,
@@ -821,9 +826,11 @@ mod tests {
                 .unwrap();
 
                 // Open id, code_dot, mask_dot for each result
-                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
-                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
-                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+                let ids: Vec<ReplicatedShare<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.mask_dot).collect();
 
                 let opened_ids = open_ring(&mut session, &ids).await.unwrap();
                 let opened_codes = open_ring(&mut session, &codes).await.unwrap();
@@ -864,7 +871,7 @@ mod tests {
             40, 400, 800, // right[1]
             0, 1, // control bits
         ];
-        let shares = create_array_sharing(&mut rng, &vals);
+        let shares = create_array_sharing_replicated(&mut rng, &vals);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();
@@ -893,9 +900,11 @@ mod tests {
                 .await
                 .unwrap();
 
-                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
-                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
-                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+                let ids: Vec<ReplicatedShare<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.mask_dot).collect();
 
                 let opened_ids = open_ring(&mut session, &ids).await.unwrap();
                 let opened_codes = open_ring(&mut session, &codes).await.unwrap();
@@ -934,10 +943,10 @@ mod tests {
         let mask_vals: Vec<u32> = vec![500, 600, 700, 800];
 
         let all_vals: Vec<u32> = [&code_vals[..], &mask_vals[..]].concat();
-        let shares = create_array_sharing(&mut rng, &all_vals);
+        let shares = create_array_sharing_replicated(&mut rng, &all_vals);
 
         let bit_vals: Vec<Bit> = vec![Bit::new(false), Bit::new(true)];
-        let bit_shares = create_array_sharing(&mut rng, &bit_vals);
+        let bit_shares = create_array_sharing_replicated(&mut rng, &bit_vals);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();
@@ -960,9 +969,11 @@ mod tests {
                         .await
                         .unwrap();
 
-                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
-                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
-                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+                let ids: Vec<ReplicatedShare<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.mask_dot).collect();
 
                 let opened_ids = open_ring(&mut session, &ids).await.unwrap();
                 let opened_codes = open_ring(&mut session, &codes).await.unwrap();
@@ -1005,9 +1016,9 @@ mod tests {
             20, 200, 600, // item 1
             30, 300, 700, // item 2
         ];
-        let shares = create_array_sharing(&mut rng, &vals);
+        let shares = create_array_sharing_replicated(&mut rng, &vals);
         let bit_vals: Vec<Bit> = vec![Bit::new(false)];
-        let bit_shares = create_array_sharing(&mut rng, &bit_vals);
+        let bit_shares = create_array_sharing_replicated(&mut rng, &bit_vals);
 
         let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
         let mut jobs = JoinSet::new();
@@ -1029,9 +1040,11 @@ mod tests {
                     .await
                     .unwrap();
 
-                let ids: Vec<Share<u32>> = result.iter().map(|(id, _)| *id).collect();
-                let codes: Vec<Share<u32>> = result.iter().map(|(_, d)| d.code_dot).collect();
-                let masks: Vec<Share<u32>> = result.iter().map(|(_, d)| d.mask_dot).collect();
+                let ids: Vec<ReplicatedShare<u32>> = result.iter().map(|(id, _)| *id).collect();
+                let codes: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.code_dot).collect();
+                let masks: Vec<ReplicatedShare<u32>> =
+                    result.iter().map(|(_, d)| d.mask_dot).collect();
 
                 let opened_ids = open_ring(&mut session, &ids).await.unwrap();
                 let opened_codes = open_ring(&mut session, &codes).await.unwrap();
