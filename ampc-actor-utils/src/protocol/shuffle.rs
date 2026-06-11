@@ -1,15 +1,18 @@
-use eyre::Result;
+use eyre::{bail, Result};
 use itertools::Itertools;
 use rand::Rng;
+use rand_distr::{Distribution, Standard};
+use tracing::instrument;
 
 use crate::{
     constants::N_PARTIES,
     execution::session::{Session, SessionHandles},
+    network::mpc::NetworkInt,
+    protocol::ops::IdDistance,
 };
+use ampc_secret_sharing::shares::int_ring::IntRing2k;
 use ampc_secret_sharing::shares::share::reconstruct_id_distance_vector;
-use ampc_secret_sharing::shares::{
-    ring_impl::VecRingElement, share::DistanceShare, RingElement, ReplicatedShare,
-};
+use ampc_secret_sharing::shares::{ring_impl::VecRingElement, RingElement};
 
 /// Secret shared permutation used in the shuffle protocol
 /// Each party holds two out of three shares of the permutation pi(x) = pi_12(pi_20(pi_01(x))),
@@ -33,11 +36,11 @@ pub type Permutation = (Vec<u32>, Vec<u32>);
 ///
 /// The permutation `perm` is applied to each batch of triplets independently,
 /// resulting in the output data where each i-th triplet in each batch is equal to `a_{perm(i)}, b_{perm(i)}, c_{perm(i)}`.
-fn shuffle_triplets(
+fn shuffle_triplets<T: IntRing2k>(
     perm: Vec<u32>,
-    data: VecRingElement<u32>,
+    data: VecRingElement<T>,
     batch_size: usize,
-) -> VecRingElement<u32> {
+) -> VecRingElement<T> {
     let mut res = VecRingElement::with_capacity(data.len());
     for batch in data.0.chunks(batch_size * 3) {
         for i in perm.iter() {
@@ -52,7 +55,7 @@ fn shuffle_triplets(
 /// Perform a random shuffle of the input distances using the 3-party shuffle protocol
 /// from https://dl.acm.org/doi/abs/10.1145/3460120.3484560.
 ///
-/// `distances` contains secret shared distances as (secret shared id, DistanceShare<u32>) tuples.
+/// `distances` contains secret shared distances as (secret shared id, DistanceShare<T>) tuples.
 ///
 /// Protocol description:
 /// Setup: input distances are shared among 3 parties: party 0 holds (A, B), party 1 holds (B, C), party 2 holds (C, A).
@@ -90,19 +93,23 @@ fn shuffle_triplets(
 /// = pi_12(pi_20(pi_01(A + B + C)))
 /// = pi(A + B + C)
 /// = pi(distances)
-pub async fn random_shuffle_batch(
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn random_shuffle_batch<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>>,
-) -> Result<Vec<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>>> {
+    distances: Vec<Vec<IdDistance<T>>>,
+) -> Result<Vec<Vec<IdDistance<T>>>>
+where
+    Standard: Distribution<RingElement<T>>,
+{
     // check that distances is not empty
     if distances.is_empty() {
-        eyre::bail!("Input distances cannot be empty");
+        bail!("Input distances cannot be empty");
     }
 
     // check that all batches have the same length
     let batch_size = distances[0].len();
     if !distances.iter().all(|batch| batch.len() == batch_size) {
-        eyre::bail!("All batches must have the same length");
+        bail!("All batches must have the same length");
     }
 
     let flattened_distances = distances.into_iter().flatten().collect_vec();
@@ -114,7 +121,7 @@ pub async fn random_shuffle_batch(
         0 => shuffle_party_0(session, flattened_distances, batch_size).await?,
         1 => shuffle_party_1(session, flattened_distances, batch_size).await?,
         2 => shuffle_party_2(session, flattened_distances, batch_size).await?,
-        _ => eyre::bail!("Invalid shuffle role: {}", shuffle_role),
+        _ => bail!("Invalid shuffle role: {}", shuffle_role),
     };
 
     // Reshape flattened_results back into batches
@@ -126,11 +133,14 @@ pub async fn random_shuffle_batch(
     Ok(results)
 }
 
-async fn shuffle_party_0(
+async fn shuffle_party_0<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<IdDistance<T>>>
+where
+    Standard: Distribution<RingElement<T>>,
+{
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
@@ -143,11 +153,11 @@ async fn shuffle_party_0(
             (a, b)
         })
         .unzip();
-    let a: VecRingElement<u32> = a.into_iter().flatten().collect();
-    let b: VecRingElement<u32> = b.into_iter().flatten().collect();
+    let a: VecRingElement<T> = a.into_iter().flatten().collect();
+    let b: VecRingElement<T> = b.into_iter().flatten().collect();
 
-    let (z01, z20): (VecRingElement<u32>, VecRingElement<u32>) = (0..a.len())
-        .map(|_| prf.gen_rands::<RingElement<u32>>())
+    let (z01, z20): (VecRingElement<T>, VecRingElement<T>) = (0..a.len())
+        .map(|_| prf.gen_rands::<RingElement<T>>())
         .unzip();
 
     // X0 = pi_01(A + B + Z_01)
@@ -159,30 +169,33 @@ async fn shuffle_party_0(
 
     // Generate tilde(B) and tilde(A)
     let (tilde_b, tilde_a) = (0..(3 * n))
-        .map(|_| prf.gen_rands::<RingElement<u32>>())
+        .map(|_| prf.gen_rands::<RingElement<T>>())
         .unzip();
     Ok(reconstruct_id_distance_vector(tilde_b, tilde_a))
 }
 
-async fn shuffle_party_1(
+async fn shuffle_party_1<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<IdDistance<T>>>
+where
+    Standard: Distribution<RingElement<T>>,
+{
     let prf = &mut session.prf;
     // Generate shares of a random permutation
     // pi_12 and pi_01
     let (pi_12, pi_01) = prf.gen_permutation((batch_size) as u32)?;
     // extract C
-    let c: VecRingElement<u32> = distances
+    let c: VecRingElement<T> = distances
         .into_iter()
         .flat_map(|(id_share, dist_share)| {
             [id_share.a, dist_share.code_dot.a, dist_share.mask_dot.a]
         })
         .collect();
 
-    let (z12, z01): (VecRingElement<u32>, VecRingElement<u32>) = (0..c.len())
-        .map(|_| prf.gen_rands::<RingElement<u32>>())
+    let (z12, z01): (VecRingElement<T>, VecRingElement<T>) = (0..c.len())
+        .map(|_| prf.gen_rands::<RingElement<T>>())
         .unzip();
 
     // Y0 = pi_01(C - Z_01)
@@ -199,8 +212,8 @@ async fn shuffle_party_1(
     let x2 = shuffle_triplets(pi_12, (x1 + z12)?, batch_size);
 
     // tilde(B) shared with party 0
-    let tilde_b: VecRingElement<u32> = (0..x2.len())
-        .map(|_| prf.get_prev_prf().gen::<RingElement<u32>>())
+    let tilde_b: VecRingElement<T> = (0..x2.len())
+        .map(|_| prf.get_prev_prf().gen::<RingElement<T>>())
         .collect();
     // tilde(C_1) = X2 - tilde(B)
     let tilde_c1 = (x2 - &tilde_b)?;
@@ -219,18 +232,21 @@ async fn shuffle_party_1(
     Ok(reconstruct_id_distance_vector(tilde_c, tilde_b))
 }
 
-async fn shuffle_party_2(
+async fn shuffle_party_2<T: IntRing2k + NetworkInt>(
     session: &mut Session,
-    distances: Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>,
+    distances: Vec<IdDistance<T>>,
     batch_size: usize,
-) -> Result<Vec<(ReplicatedShare<u32>, DistanceShare<u32>)>> {
+) -> Result<Vec<IdDistance<T>>>
+where
+    Standard: Distribution<RingElement<T>>,
+{
     let n = distances.len();
     let prf = &mut session.prf;
     // Generate shares of a random permutation
     let (pi_20, pi_12) = prf.gen_permutation((batch_size) as u32)?;
 
-    let (z20, z12): (VecRingElement<u32>, VecRingElement<u32>) = (0..3 * n)
-        .map(|_| prf.gen_rands::<RingElement<u32>>())
+    let (z20, z12): (VecRingElement<T>, VecRingElement<T>) = (0..3 * n)
+        .map(|_| prf.gen_rands::<RingElement<T>>())
         .unzip();
 
     // ROUND 1
@@ -244,8 +260,8 @@ async fn shuffle_party_2(
     // Y2 = pi_12(Y1 - Z_12)
     let y2 = shuffle_triplets(pi_12, (y1 - z12)?, batch_size);
     // tilde(A) shared with party 0
-    let tilde_a: VecRingElement<u32> = (0..y2.len())
-        .map(|_| prf.get_my_prf().gen::<RingElement<u32>>())
+    let tilde_a: VecRingElement<T> = (0..y2.len())
+        .map(|_| prf.get_my_prf().gen::<RingElement<T>>())
         .collect();
     // tilde(C_2) = Y2 - tilde(A)
     let tilde_c2 = (y2 - &tilde_a)?;

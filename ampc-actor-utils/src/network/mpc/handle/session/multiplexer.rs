@@ -12,8 +12,11 @@ use tokio::{
 use crate::{
     execution::session::SessionId,
     network::{
-        tcp::{connection::ConnectionState, data::OutboundMsg, NetworkConnection},
-        value::{DescriptorByte, NetworkValue},
+        mpc::{
+            handle::data::OutboundMsg,
+            value::{DescriptorByte, NetworkValue},
+        },
+        tcp::{ConnectionState, NetworkConnection},
     },
 };
 
@@ -27,8 +30,8 @@ pub async fn run<T: NetworkConnection>(
     inbound_forwarder: HashMap<SessionId, UnboundedSender<NetworkValue>>,
     outbound_rx: UnboundedReceiver<OutboundMsg>,
 ) {
-    let shutdown_ct = connection_state.shutdown_ct().await;
-    let err_ct = connection_state.err_ct().await;
+    let shutdown_ct = connection_state.shutdown_ct();
+    let err_ct = connection_state.err_ct();
 
     let (reader, writer) = tokio::io::split(stream);
     let reader = BufReader::new(reader);
@@ -67,12 +70,12 @@ pub async fn run<T: NetworkConnection>(
 
     match evt {
         Event::Shutdown => {
-            if connection_state.set_exited().await {
+            if connection_state.set_exited() {
                 tracing::info!("shutting down TCP/TLS networking stack");
             }
         }
         Event::Error => {
-            if connection_state.set_cancelled().await {
+            if connection_state.set_cancelled() {
                 tracing::info!("closing TCP/TLS connections");
             }
         }
@@ -177,6 +180,7 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             DescriptorByte::VecRing16
                 | DescriptorByte::VecRing32
                 | DescriptorByte::VecRing64
+                | DescriptorByte::VecRing48
                 | DescriptorByte::NetworkVec
                 | DescriptorByte::Bytes
         ) {
@@ -184,6 +188,11 @@ async fn handle_inbound_traffic<T: NetworkConnection>(
             buf_offset += 4;
             let payload_len = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
             base_len + payload_len
+        } else if nd == DescriptorByte::VecRingBit {
+            reader.read_exact(&mut buf[1..5]).await?;
+            buf_offset += 4;
+            let bit_count = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            base_len + bit_count.div_ceil(8)
         } else {
             base_len
         };

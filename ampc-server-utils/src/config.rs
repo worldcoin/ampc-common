@@ -68,6 +68,10 @@ pub struct ServerCoordinationConfig {
     #[serde(default = "default_http_query_retry_delay_ms")]
     pub http_query_retry_delay_ms: u64,
 
+    /// Per-attempt HTTP query timeout in milliseconds (covers connect + request)
+    #[serde(default = "default_http_query_timeout_ms")]
+    pub http_query_timeout_ms: u64,
+
     /// Startup sync timeout in seconds
     #[serde(default = "default_startup_sync_timeout_secs")]
     pub startup_sync_timeout_secs: u64,
@@ -91,6 +95,10 @@ fn default_heartbeat_initial_retries() -> u64 {
 
 fn default_http_query_retry_delay_ms() -> u64 {
     1000
+}
+
+fn default_http_query_timeout_ms() -> u64 {
+    10000
 }
 
 fn default_startup_sync_timeout_secs() -> u64 {

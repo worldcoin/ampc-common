@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{eyre, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
@@ -254,12 +254,12 @@ pub async fn get_batch_sync_states(
                         .text()
                         .await
                         .unwrap_or_else(|_| "Unknown error".to_string());
-                    return Err(eyre!(
+                    bail!(
                         "Party {} returned error status {}: {}",
                         host,
                         status,
                         error_body
-                    ));
+                    );
                 }
 
                 let state: BatchSyncState = res.json().await.with_context(|| {
@@ -303,7 +303,7 @@ pub async fn get_batch_sync_states(
                     states.push(state);
                 } else {
                     tracing::error!("Fetched_state is None after successful polling loop from party {}. This is a bug.", host);
-                    return Err(eyre!("Internal logic error fetching state from {}", host));
+                    bail!("Internal logic error fetching state from {}", host);
                 }
             }
             Ok(Err(e)) => {
@@ -312,19 +312,19 @@ pub async fn get_batch_sync_states(
                     host,
                     e
                 );
-                return Err(eyre!(
+                bail!(
                     "Failed to get a consistent batch_id from party {} due to: {:?}",
                     host,
                     e
-                ));
+                );
             }
             Err(_) => {
                 tracing::error!("Timeout polling party {} for batch_id {}. Using potentially stale or default state.", host, reference_batch_id);
-                return Err(eyre!(
+                bail!(
                     "Timeout waiting for party {} to reach batch_id {}",
                     host,
                     reference_batch_id
-                ));
+                );
             }
         }
     }
@@ -397,7 +397,7 @@ pub async fn get_batch_sync_entries(
                     states.push(state);
                 } else {
                     tracing::error!("Fetched_state is None after successful polling loop from party {}. This is a bug.", host);
-                    return Err(eyre!("Internal logic error fetching state from {}", host));
+                    bail!("Internal logic error fetching state from {}", host);
                 }
             }
             Ok(Err(e)) => {
@@ -406,11 +406,11 @@ pub async fn get_batch_sync_entries(
                     host,
                     e
                 );
-                return Err(eyre!(
+                bail!(
                     "Failed to get a consistent batch_hash from party {} due to: {:?}",
                     host,
                     e
-                ));
+                );
             }
             Err(_) => {
                 tracing::error!(
@@ -418,11 +418,11 @@ pub async fn get_batch_sync_entries(
                     host,
                     hex::encode(&own_sync_state.batch_sha[0..4])
                 );
-                return Err(eyre!(
+                bail!(
                     "Timeout waiting for party {} to reach batch hash {}",
                     host,
                     hex::encode(&own_sync_state.batch_sha[0..4])
-                ));
+                );
             }
         }
     }

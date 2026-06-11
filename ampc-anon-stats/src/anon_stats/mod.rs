@@ -1,4 +1,4 @@
-use ampc_actor_utils::protocol::ops::translate_threshold_a;
+use ampc_actor_utils::protocol::fhd_ops::translate_threshold_a;
 // Note: The following imports will need to be resolved when integrating with iris-mpc:
 // - MATCH_THRESHOLD_RATIO from iris_mpc_common::iris_db::iris
 // For now, these remain as iris_mpc_common dependencies
@@ -18,5 +18,14 @@ pub fn calculate_iris_threshold_a(n_buckets: usize, upper_match_threshold_ratio:
         .map(|x: usize| {
             translate_threshold_a(upper_match_threshold_ratio / (n_buckets as f64) * (x as f64))
         })
+        .collect_vec()
+}
+
+pub fn calculate_iris_threshold_score_normalization(
+    n_buckets: usize,
+    upper_match_threshold_ratio: f64,
+) -> Vec<f64> {
+    (1..=n_buckets)
+        .map(|x: usize| upper_match_threshold_ratio / (n_buckets as f64) * (x as f64))
         .collect_vec()
 }

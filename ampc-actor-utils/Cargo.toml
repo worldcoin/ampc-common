@@ -25,10 +25,12 @@ dashmap = "6.1.0"
 itertools.workspace = true
 num-traits.workspace = true
 rand.workspace = true
+thiserror.workspace = true
 aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
 metrics = "0.24.0"
 rand_distr = "0.4.3"
 tracing.workspace = true
+hex.workspace = true
 clap = { version = "4", features = ["derive"] }
 
 [features]
@@ -38,10 +40,19 @@ aes_rng_prf = []
 
 [dev-dependencies]
 tracing-test = "0.2"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 criterion = "0.8.1"
 statrs = "0.17"
+serial_test = "3"
+rcgen = "0.13"
+tempfile = "3.10"
 
 [[bench]]
 name = "bit_inject"
 harness = false
 path = "benches/bit_inject.rs"
+
+[[bench]]
+name = "reshare_mux"
+harness = false
+path = "benches/reshare_mux.rs"

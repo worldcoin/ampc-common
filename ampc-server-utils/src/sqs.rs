@@ -7,7 +7,7 @@
 
 use aws_sdk_sqs::error::ProvideErrorMetadata;
 use aws_sdk_sqs::Client;
-use eyre::{eyre, Context, Result};
+use eyre::{bail, eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -66,10 +66,7 @@ pub async fn get_next_sns_seq_num(
 
     if let Some(msgs) = sqs_snoop_response.messages {
         if msgs.len() != 1 {
-            return Err(eyre!(
-                "Expected exactly one message, but found {}",
-                msgs.len()
-            ));
+            bail!("Expected exactly one message, but found {}", msgs.len());
         }
         let sqs_message = &msgs[0];
         match serde_json::from_str::<SQSMessage>(sqs_message.body().unwrap_or("")) {
@@ -168,10 +165,10 @@ pub async fn delete_messages_until_sequence_num(
 
         if let Some(msgs) = sqs_snoop_response.messages {
             if msgs.len() != 1 {
-                return Err(eyre!(
+                bail!(
                     "Expected exactly one message in the queue, but found {}",
                     msgs.len()
-                ));
+                );
             }
             let msg = &msgs[0];
             let sequence_num: u128 = str::parse(

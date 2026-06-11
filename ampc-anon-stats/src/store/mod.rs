@@ -3,7 +3,7 @@ use crate::{
     anon_stats::face::FaceDistance,
     store::postgres::{AccessMode, PostgresClient},
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -328,11 +328,11 @@ impl AnonStatsStore {
 
             let res = query.build().execute(&mut *tx).await?;
             if res.rows_affected() != chunk.len() as u64 {
-                return Err(eyre::eyre!(
+                bail!(
                     "Expected to insert {} rows, but only inserted {} rows",
                     chunk.len(),
                     res.rows_affected()
-                ));
+                );
             }
         }
         tx.commit().await?;

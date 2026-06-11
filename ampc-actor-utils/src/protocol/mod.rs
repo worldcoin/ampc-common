@@ -1,6 +1,8 @@
 pub mod anon_stats;
 pub mod binary;
+pub mod fhd_ops;
 pub mod msb_preprocessing;
+pub mod nhd_ops;
 pub mod ops;
 pub mod prf;
 pub mod shuffle;

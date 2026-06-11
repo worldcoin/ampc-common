@@ -9,12 +9,10 @@ use aws_sdk_secretsmanager::{
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::{Parser, Subcommand};
-use eyre::Result;
+use eyre::{bail, Result};
 use rand::{thread_rng, Rng};
 use reqwest::Client;
 use sodiumoxide::crypto::box_::{curve25519xsalsa20poly1305, PublicKey, SecretKey, Seed};
-
-const PUBLIC_KEY_S3_OBJECT_PREFIX: &str = "public-key";
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "key-manager")]
@@ -42,6 +40,11 @@ struct KeyManagerCli {
 
     #[arg(short, long, env, default_value = "wf-smpcv2-stage-public-keys")]
     public_key_bucket_name: String,
+
+    /// Prefix for the public-key S3 object name. Final object key is `{prefix}-{node_id}`.
+    /// Allows colocating public keys for multiple services in the same bucket without collision.
+    #[arg(long, env, default_value = "public-key")]
+    public_key_object_name_prefix: String,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,7 +79,7 @@ async fn main() -> Result<()> {
     let region_provider = S3Region::new(region.clone());
     let shared_config = aws_config::from_env().region(region_provider).load().await;
 
-    let object_name = format!("{}-{}", PUBLIC_KEY_S3_OBJECT_PREFIX, args.node_id);
+    let object_name = format!("{}-{}", args.public_key_object_name_prefix, args.node_id);
     let private_key_secret_id: String = format!(
         "{}/{}/ecdh-private-key-{}",
         args.env, args.app_name, args.node_id
@@ -216,9 +219,7 @@ async fn rotate_keys(
         }
         Err(e) => {
             eprintln!("Error uploading private key to Secrets Manager: {:?}", e);
-            return Err(eyre::eyre!(
-                "Error uploading private key to Secrets Manager"
-            ));
+            bail!("Error uploading private key to Secrets Manager");
         }
     }
 
@@ -232,7 +233,7 @@ async fn rotate_keys(
         }
         Err(e) => {
             eprintln!("Error uploading public key to S3: {:?}", e);
-            return Err(eyre::eyre!("Error uploading public key to S3"));
+            bail!("Error uploading public key to S3");
         }
     }
 
@@ -321,6 +322,36 @@ mod test {
         let pub_key_str = STANDARD.encode(public_key);
         let decoded_pub_key = get_public_key(&pub_key_str);
         assert_eq!(public_key, decoded_pub_key);
+    }
+
+    #[test]
+    fn test_public_key_object_name_prefix_defaults() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with defaults");
+        assert_eq!(cli.public_key_object_name_prefix, "public-key");
+    }
+
+    #[test]
+    fn test_public_key_object_name_prefix_provided() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "--public-key-object-name-prefix",
+            "custom-prefix",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with provided prefix");
+        assert_eq!(cli.public_key_object_name_prefix, "custom-prefix");
     }
 
     #[test]

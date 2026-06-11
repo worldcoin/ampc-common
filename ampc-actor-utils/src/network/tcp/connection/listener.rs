@@ -4,7 +4,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{connection::handshake, data::ConnectionId, NetworkConnection, Server},
+    network::tcp::{connection::handshake, ConnectionId, NetworkConnection, Server},
 };
 
 pub struct ConnectionRequest<T: NetworkConnection> {

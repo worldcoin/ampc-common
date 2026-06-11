@@ -10,6 +10,7 @@
 pub mod face_vector;
 pub mod galois;
 pub mod id;
+pub mod iris_vector;
 pub mod shares;
 
 pub use face_vector::{FaceSecretSharedVector, FaceVector, FACE_VECTOR_SIZE};

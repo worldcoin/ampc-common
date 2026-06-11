@@ -191,6 +191,22 @@ impl<T: IntRing2k> Mul<Self> for &ReplicatedShare<T> {
     }
 }
 
+impl<T: IntRing2k> Mul<Self> for Share<T> {
+    type Output = RingElement<T>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.a * rhs.a + self.b * rhs.a + self.a * rhs.b
+    }
+}
+
+impl<T: IntRing2k> Mul<Self> for Share<T> {
+    type Output = RingElement<T>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        self.a * rhs.a + self.b * rhs.a + self.a * rhs.b
+    }
+}
+
 impl<T: IntRing2k> BitXor<Self> for &ReplicatedShare<T> {
     type Output = ReplicatedShare<T>;
 
@@ -418,10 +434,10 @@ pub fn reconstruct_distance_vector(
         .collect_vec()
 }
 
-pub fn reconstruct_id_distance_vector(
-    a: super::ring_impl::VecRingElement<u32>,
-    b: super::ring_impl::VecRingElement<u32>,
-) -> Vec<(ReplicatedShare<u32>, DistanceShare<u32>)> {
+pub fn reconstruct_id_distance_vector<T: IntRing2k>(
+    a: super::ring_impl::VecRingElement<T>,
+    b: super::ring_impl::VecRingElement<T>,
+) -> Vec<(ReplicatedShare<T>, DistanceShare<T>)> {
     izip!(a.0, b.0)
         .map(|(a, b)| ReplicatedShare::new(a, b))
         .tuples()

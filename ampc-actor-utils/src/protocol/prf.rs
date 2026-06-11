@@ -3,13 +3,13 @@ use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
 };
-use eyre::Result;
+use eyre::{bail, Result};
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
     if modulus == 0 {
-        eyre::bail!("modulus must be non-zero");
+        bail!("modulus must be non-zero");
     }
     let modulus_64 = modulus as u64;
     // Rejection sampling to avoid modulo bias
@@ -176,7 +176,7 @@ mod tests {
     // Chi-square test for uniformity with the significance level = 10^-6
     fn chi_squared_test(observed: &[u32], expected: u32) -> Result<bool> {
         if observed.len() < 2 {
-            eyre::bail!("Need at least two bins for chi-squared test");
+            bail!("Need at least two bins for chi-squared test");
         }
         let degrees_of_freedom = observed.len() - 1;
         let expected_f = expected as f64;

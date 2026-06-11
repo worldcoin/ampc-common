@@ -11,6 +11,7 @@ pub enum AnonStatsOperation {
     #[default]
     Uniqueness = 0,
     Reauth = 1,
+    Recovery = 2,
 }
 
 impl From<AnonStatsOperation> for i16 {
@@ -26,6 +27,7 @@ impl TryFrom<i16> for AnonStatsOperation {
         match value {
             0 => Ok(AnonStatsOperation::Uniqueness),
             1 => Ok(AnonStatsOperation::Reauth),
+            2 => Ok(AnonStatsOperation::Recovery),
             other => Err(eyre!("Unknown anon stats operation value {}", other)),
         }
     }
@@ -52,6 +54,25 @@ impl Display for Eye {
         match self {
             Self::Left => write!(f, "left"),
             Self::Right => write!(f, "right"),
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum DistanceFunction {
+    #[default]
+    FHD,
+    NHD,
+    HD,
+}
+
+impl Display for DistanceFunction {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FHD => write!(f, "fhd"),
+            Self::NHD => write!(f, "nhd"),
+            Self::HD => write!(f, "hd"),
         }
     }
 }
@@ -101,6 +122,7 @@ pub enum AnonStatsContext {
     FACE = 2,
 }
 
+#[derive(Clone)]
 pub struct AnonStatsMapping<T> {
     stats: Vec<(i64, T)>,
 }

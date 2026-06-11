@@ -1,7 +1,7 @@
 use crate::fast_metrics::FastHistogram;
 use crate::{
     execution::session::{Session, SessionHandles},
-    network::value::{NetworkInt, NetworkValue},
+    network::mpc::{NetworkInt, NetworkValue},
 };
 use ampc_secret_sharing::shares::vecshare_bittranspose::Transpose64;
 use ampc_secret_sharing::shares::{
@@ -454,6 +454,7 @@ where
 ///
 /// Rounds 1 and 2 can be computed in parallel.
 /// The resulting communication complexity is 2 rounds with each party sending 1 element of T per input bit.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn bit_inject<T>(
     session: &mut Session,
     input: VecShareReplicated<Bit>,
@@ -770,7 +771,6 @@ pub fn mul_lift_2k_to_32<const K: u64>(val: &ReplicatedShare<u16>) -> Replicated
 }
 
 /// Lifts the given shares of u16 to shares of u32 by multiplying them by 2^k.
-#[allow(dead_code)]
 #[inline]
 fn mul_lift_2k_to_32_many<const K: u64>(vals: SliceShare<u16>) -> VecShareReplicated<u32> {
     VecShareReplicated::new_vec(vals.iter().map(mul_lift_2k_to_32::<K>).collect())
@@ -796,6 +796,7 @@ fn mul_lift_2k_to_48_many<const K: usize>(vals: SliceShare<u32>) -> VecShareRepl
 }
 
 /// Lifts the given shares of u16 to shares of u32.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
 pub async fn lift(
     session: &mut Session,
@@ -862,6 +863,7 @@ pub async fn lift(
 }
 
 /// Lifts the given shares of u16 to shares of Ring48.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 #[allow(dead_code)]
 pub async fn lift_to_ring48(
     session: &mut Session,
@@ -965,6 +967,7 @@ pub async fn lift_to_ring48(
 /// Since `r_prev` for `P_i` is the same as `r_next` for `P_{i-1}`, they cancel each other out resulting in:
 ///
 /// `a + b + c = x_i`
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn two_way_split<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     input: VecShareReplicated<T>,
@@ -1102,6 +1105,7 @@ where
 /// Returns the MSB of the sum of two integers of type T using the binary parallel prefix adder tree.
 /// Input integers are given in binary form.
 #[cfg(not(feature = "ripple_carry_adder"))]
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
 async fn binary_add_2_get_msb<T>(
     session: &mut Session,
     x1: Vec<VecShareReplicated<T>>,
@@ -1300,48 +1304,32 @@ where
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn open_bin(session: &mut Session, shares: &[ReplicatedShare<Bit>]) -> Result<Vec<Bit>> {
     let network = &mut session.network_session;
+
+    // Pack the b shares for transmission (8 bits per byte)
     let message = if shares.len() == 1 {
         NetworkValue::RingElementBit(shares[0].b)
     } else {
-        // TODO: could be optimized by packing bits
-        let bits = shares
-            .iter()
-            .map(|x| NetworkValue::RingElementBit(x.b))
-            .collect::<Vec<_>>();
-        NetworkValue::vec_to_network(bits)
+        let b_shares: Vec<_> = shares.iter().map(|x| x.b).collect();
+        NetworkValue::pack_bits(&b_shares)
     };
 
     network.send_next(message).await?;
 
     // Receiving `b` from previous party
-    let b_from_previous = {
-        let other_shares = network
-            .receive_prev()
-            .await
-            .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
-        if shares.len() == 1 {
-            match other_shares {
-                NetworkValue::RingElementBit(message) => Ok(vec![message]),
-                _ => Err(eyre!("Wrong value type is received in open_bin operation")),
-            }
-        } else {
-            match NetworkValue::vec_from_network(other_shares) {
-                Ok(v) => {
-                    if matches!(v[0], NetworkValue::RingElementBit(_)) {
-                        Ok(v.into_iter()
-                            .map(|x| match x {
-                                NetworkValue::RingElementBit(message) => message,
-                                _ => unreachable!(),
-                            })
-                            .collect())
-                    } else {
-                        Err(eyre!("Wrong value type is received in open_bin operation"))
-                    }
-                }
-                Err(e) => Err(eyre!("Error in receiving in open_bin operation: {}", e)),
-            }
-        }
-    }?;
+    let b_from_previous = network
+        .receive_prev()
+        .await
+        .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?
+        .unpack_bits()
+        .map_err(|e| eyre!("Wrong value type received in open_bin operation: {}", e))?;
+
+    if b_from_previous.len() != shares.len() {
+        bail!(
+            "Bit count mismatch in open_bin: expected {} but received {}",
+            shares.len(),
+            b_from_previous.len()
+        );
+    }
 
     // XOR shares with the received shares
     izip!(shares.iter(), b_from_previous.iter())
@@ -1398,8 +1386,7 @@ mod tests {
         assert_eq!(res[1], res[2]);
 
         let mut result_bits = Vec::with_capacity(len);
-        for i in 0..len {
-            let bit = res[0][i];
+        for (i, bit) in res[0].iter().enumerate().take(len) {
             if bit.is_one() {
                 result_bits.push(true.into());
             } else if bit.is_zero() {
@@ -1539,8 +1526,7 @@ mod tests {
         assert_eq!(res[1], res[2]);
 
         let mut result_bits = Vec::with_capacity(len);
-        for i in 0..len {
-            let bit = res[0][i];
+        for bit in res[0].iter().take(len) {
             if bit.is_one() {
                 result_bits.push(true.into());
             } else {

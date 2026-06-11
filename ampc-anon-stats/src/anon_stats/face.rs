@@ -71,6 +71,7 @@ pub async fn process_face_distance_job(
         n_buckets,
         config.party_id,
         None,
+        crate::types::DistanceFunction::HD,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -193,32 +194,8 @@ mod tests {
         let thresholds = (-2000..=5000).step_by(200).collect::<Vec<i16>>();
 
         let config = AnonStatsServerConfig {
-            party_id: 0,
             face_bucket_thresholds: thresholds.clone(),
-            service: None,
-            aws: None,
-            environment: "test".to_string(),
-            results_topic_arn: "foo".to_string(),
-            n_buckets_1d: 0,
-            n_buckets_1d_reauth: 0,
-            min_1d_job_size: 0,
-            min_face_job_size: 0,
-            poll_interval_secs: 10,
-            max_sync_failures_before_reset: 10,
-            db_url: "foo".to_string(),
-            db_schema_name: "foo".to_string(),
-            server_coordination: None,
-            service_ports: Vec::new(),
-            shutdown_last_results_sync_timeout_secs: 10,
-            sns_buffer_bucket_name: "foo".to_string(),
-            n_buckets_2d: 0,
-            n_buckets_2d_reauth: 0,
-            min_2d_job_size: 0,
-            min_1d_job_size_reauth: 0,
-            min_2d_job_size_reauth: 0,
-            max_rows_per_job_1d: 0,
-            max_rows_per_job_2d: 0,
-            tls: None,
+            ..AnonStatsServerConfig::test_default()
         };
         let ground_truth = TestDistances::generate_ground_truth_input(&mut thread_rng(), 10000);
         let ground_truth_buckets = ground_truth.ground_truth_buckets(&thresholds);
