@@ -1,9 +1,14 @@
-use crate::shares::share::AdditiveShare;
+use crate::shares::{
+    primefield::PrimeElement,
+    share::{AdditiveShare, AdditiveSharePrime},
+};
 
 use super::{bit::Bit, int_ring::IntRing2k, ring_impl::RingElement, share::ReplicatedShare};
-use num_traits::Zero;
+use num_traits::{PrimInt, Zero};
 use serde::{Deserialize, Serialize};
-use std::ops::{AddAssign, BitXor, BitXorAssign, Deref, DerefMut, Not, SubAssign};
+use std::ops::{
+    Add, AddAssign, BitXor, BitXorAssign, Deref, DerefMut, Mul, MulAssign, Neg, Not, Sub, SubAssign,
+};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
@@ -82,6 +87,37 @@ impl<T: IntRing2k> VecShareAdditive<T> {
     }
 
     pub fn inner(self) -> Vec<AdditiveShare<T>> {
+        self.shares
+    }
+
+    pub fn len(&self) -> usize {
+        self.shares.len()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VecShareAdditivePrime<T: PrimInt> {
+    pub shares: Vec<AdditiveSharePrime<PrimeElement<T>>>,
+}
+
+impl<T: PrimInt> VecShareAdditivePrime<T> {
+    #[cfg(test)]
+    pub fn new_share(share: AdditiveSharePrime<PrimeElement<T>>) -> Self {
+        let shares = vec![share];
+        Self { shares }
+    }
+
+    /// Access the underlying shares
+    pub fn shares(&self) -> &[AdditiveSharePrime<PrimeElement<T>>] {
+        &self.shares
+    }
+
+    pub fn new_vec(shares: Vec<AdditiveSharePrime<PrimeElement<T>>>) -> Self {
+        Self { shares }
+    }
+
+    pub fn inner(self) -> Vec<AdditiveSharePrime<PrimeElement<T>>> {
         self.shares
     }
 
@@ -390,6 +426,390 @@ impl<'a, T: IntRing2k> Deref for SliceShareMut<'a, T> {
 impl<'a, T: IntRing2k> DerefMut for SliceShareMut<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.shares
+    }
+}
+
+impl<T: IntRing2k> Add<&Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn add(self, rhs: &Self) -> Self::Output {
+        let add_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value + right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: add_shares }
+    }
+}
+
+impl<T: IntRing2k> Add<Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let add_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value + right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: add_shares }
+    }
+}
+
+impl<T: IntRing2k> Sub<Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        let add_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value - right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: add_shares }
+    }
+}
+
+impl<T: IntRing2k> Sub<&Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn sub(self, rhs: &Self) -> Self::Output {
+        let add_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value - right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: add_shares }
+    }
+}
+
+impl<T: IntRing2k> AddAssign<Self> for VecShareAdditive<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value += right_share.value);
+    }
+}
+
+impl<T: IntRing2k> AddAssign<&Self> for VecShareAdditive<T> {
+    fn add_assign(&mut self, rhs: &Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value += right_share.value);
+    }
+}
+
+impl<T: IntRing2k> SubAssign for VecShareAdditive<T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value -= right_share.value);
+    }
+}
+
+impl<T: IntRing2k> SubAssign<&Self> for VecShareAdditive<T> {
+    fn sub_assign(&mut self, rhs: &Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value -= right_share.value);
+    }
+}
+
+impl<T: IntRing2k> Mul<&[RingElement<T>]> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn mul(self, rhs: &[RingElement<T>]) -> Self::Output {
+        let mul_shares = self
+            .shares
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left_share, rhs_mul)| AdditiveShare {
+                value: left_share.value * rhs_mul,
+            })
+            .collect();
+        VecShareAdditive { shares: mul_shares }
+    }
+}
+
+impl<T: IntRing2k> Mul<&[T]> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn mul(self, rhs: &[T]) -> Self::Output {
+        let mul_shares = self
+            .shares
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left_share, rhs_mul)| left_share * *rhs_mul)
+            .collect();
+        VecShareAdditive { shares: mul_shares }
+    }
+}
+
+impl<T: IntRing2k> Mul<Vec<T>> for &VecShareAdditive<T> {
+    type Output = VecShareAdditive<T>;
+
+    fn mul(self, rhs: Vec<T>) -> Self::Output {
+        let mul_shares = self
+            .shares
+            .iter()
+            .zip(rhs.iter())
+            .map(|(left_share, rhs_mul)| left_share * *rhs_mul)
+            .collect();
+        VecShareAdditive { shares: mul_shares }
+    }
+}
+
+impl<T: IntRing2k> MulAssign<Vec<T>> for VecShareAdditive<T> {
+    fn mul_assign(&mut self, rhs: Vec<T>) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.iter())
+            .for_each(|(left_share, rhs_mul)| left_share.value *= rhs_mul);
+    }
+}
+
+impl<T: IntRing2k> BitXor<Self> for &VecShareAdditive<T> {
+    type Output = VecShareAdditive<T>;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        let xor_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value ^ right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: xor_shares }
+    }
+}
+
+impl<T: IntRing2k> BitXor<Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        let xor_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value ^ right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: xor_shares }
+    }
+}
+
+impl<T: IntRing2k> BitXor<&Self> for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn bitxor(self, rhs: &Self) -> Self::Output {
+        let xor_shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(left_share, right_share)| AdditiveShare {
+                value: left_share.value ^ right_share.value,
+            })
+            .collect();
+        VecShareAdditive { shares: xor_shares }
+    }
+}
+
+impl<T: IntRing2k> BitXorAssign<&Self> for VecShareAdditive<T> {
+    fn bitxor_assign(&mut self, rhs: &Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value ^= right_share.value);
+    }
+}
+
+impl<T: IntRing2k> BitXorAssign<Self> for VecShareAdditive<T> {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(left_share, right_share)| left_share.value ^= right_share.value);
+    }
+}
+
+impl<T: IntRing2k> Neg for VecShareAdditive<T> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        let neg_shares = self.shares.iter().map(|share| -share).collect();
+        VecShareAdditive { shares: neg_shares }
+    }
+}
+
+impl<T: IntRing2k> Neg for &VecShareAdditive<T> {
+    type Output = VecShareAdditive<T>;
+
+    fn neg(self) -> Self::Output {
+        let neg_shares = self.shares.iter().map(|share| -share).collect();
+        VecShareAdditive { shares: neg_shares }
+    }
+}
+
+impl<T: PrimInt> Add<&Self> for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn add(self, rhs: &Self) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(lhs, rhs)| *lhs + rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> Add<Self> for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(lhs, rhs)| *lhs + rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> Sub<Self> for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(lhs, rhs)| *lhs - rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> Sub<&Self> for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn sub(self, rhs: &Self) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.shares.iter())
+            .map(|(lhs, rhs)| *lhs - rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> AddAssign<Self> for VecShareAdditivePrime<T> {
+    fn add_assign(&mut self, rhs: Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(lhs, rhs)| lhs.value += rhs.value);
+    }
+}
+
+impl<T: PrimInt> AddAssign<&Self> for VecShareAdditivePrime<T> {
+    fn add_assign(&mut self, rhs: &Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(lhs, rhs)| lhs.value += rhs.value);
+    }
+}
+
+impl<T: PrimInt> SubAssign for VecShareAdditivePrime<T> {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(lhs, rhs)| lhs.value -= rhs.value);
+    }
+}
+
+impl<T: PrimInt> SubAssign<&Self> for VecShareAdditivePrime<T> {
+    fn sub_assign(&mut self, rhs: &Self) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.shares.iter())
+            .for_each(|(lhs, rhs)| lhs.value -= rhs.value);
+    }
+}
+
+impl<T: PrimInt> Mul<Vec<PrimeElement<T>>> for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn mul(self, rhs: Vec<PrimeElement<T>>) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.iter())
+            .map(|(lhs, rhs)| *lhs * *rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> Mul<Vec<PrimeElement<T>>> for &VecShareAdditivePrime<T> {
+    type Output = VecShareAdditivePrime<T>;
+
+    fn mul(self, rhs: Vec<PrimeElement<T>>) -> Self::Output {
+        let shares = self
+            .shares
+            .iter()
+            .zip(rhs.iter())
+            .map(|(lhs, rhs)| *lhs * *rhs)
+            .collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> MulAssign<Vec<PrimeElement<T>>> for VecShareAdditivePrime<T> {
+    fn mul_assign(&mut self, rhs: Vec<PrimeElement<T>>) {
+        self.shares
+            .iter_mut()
+            .zip(rhs.iter())
+            .for_each(|(lhs, rhs)| lhs.value *= *rhs);
+    }
+}
+
+impl<T: PrimInt> Neg for VecShareAdditivePrime<T> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        let shares = self.shares.iter().map(|lhs| -lhs).collect();
+        VecShareAdditivePrime { shares }
+    }
+}
+
+impl<T: PrimInt> Neg for &VecShareAdditivePrime<T> {
+    type Output = VecShareAdditivePrime<T>;
+
+    fn neg(self) -> Self::Output {
+        let shares = self.shares.iter().map(|lhs| -lhs).collect();
+        VecShareAdditivePrime { shares }
     }
 }
 

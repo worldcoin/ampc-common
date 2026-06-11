@@ -2,8 +2,9 @@ use std::ops::{Add, AddAssign, Div, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use num_traits::{Inv, PrimInt};
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
 pub struct PrimeElement<T: PrimInt> {
     modulus: T,
     value: T,

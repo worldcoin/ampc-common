@@ -6,7 +6,7 @@ use crate::network::mpc::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
-use ampc_secret_sharing::shares::share::DistanceShare;
+use ampc_secret_sharing::shares::share::{AdditiveShare, DistanceShare};
 use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
     ring_impl::RingElement, share::ReplicatedShare, IntRing2k, Ring48, VecShareReplicated,
@@ -156,6 +156,34 @@ pub async fn galois_ring_to_rep3(
     Ok(res)
 }
 
+/// Convert Galois Ring elements to additive secret shares (Add3)
+/// This takes a vector of ring elements and converts them to additive shares
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn galois_ring_to_add3(
+    session: &mut Session,
+    items: Vec<RingElement<u16>>,
+) -> Result<Vec<AdditiveShare<u16>>> {
+    let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
+
+    // make sure we mask the input with a zero sharing
+    let masked_items: Vec<_> = izip!(
+        items.into_iter(),
+        prf_my_values.0.into_iter(),
+        prf_prev_values.0.into_iter()
+    )
+    .map(|(x, a, b)| {
+        let zero_share = a - b; // equivalent to gen_zero_share()
+        zero_share + x
+    })
+    .collect();
+
+    let res: Vec<AdditiveShare<u16>> = masked_items
+        .into_iter()
+        .map(|a| AdditiveShare::new(a))
+        .collect();
+    Ok(res)
+}
+
 /// Compares the given distances to zero and reveal the bit "less than zero".
 pub async fn lt_zero_and_open_u16(
     session: &mut Session,
@@ -182,10 +210,39 @@ pub fn sub_pub<T: IntRing2k + NetworkInt>(
     }
 }
 
+/// Subtracts a public ring element from a secret-shared ring element in-place. For additive shares.
+#[inline]
+pub fn sub_pub_additive<T: IntRing2k + NetworkInt>(
+    session: &mut Session,
+    share: &mut AdditiveShare<T>,
+    rhs: RingElement<T>,
+) {
+    match session.own_role().index() {
+        0 => share.value -= rhs,
+        1 | 2 => {}
+        _ => unreachable!(),
+    }
+}
+
 /// For each of the given distance shares returns `true` if it's a share of a non-negative value.
 pub async fn gte_zero_and_open_u16(
     session: &mut Session,
     distances: &[ReplicatedShare<u16>],
+) -> Result<Vec<bool>> {
+    let bits = extract_msb_batch(session, distances).await?;
+
+    // MSB is `1` is `distance < 0`.
+    // MSB is `0` if `distance >= 0`.
+    // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
+    open_bin(session, &bits)
+        .await
+        .map(|v| v.into_iter().map(|x| !x.convert()).collect())
+}
+
+/// For each of the given distance shares returns `true` if it's a share of a non-negative value. For additive shares.
+pub async fn gte_zero_and_open_u16_additive(
+    session: &mut Session,
+    distances: &[AdditiveShare<u16>],
 ) -> Result<Vec<bool>> {
     let bits = extract_msb_batch(session, distances).await?;
 

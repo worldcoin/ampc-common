@@ -27,10 +27,24 @@ use crate::{
     },
 };
 
+pub async fn extract_msb_rand_additive_batch<T: IntRing2k + NetworkInt, K: PrimInt>(
+    session: &mut Session,
+    x_batch: &[AdditiveShare<T>],
+    offline_batch: &[OfflineRandomSharesAdditive3pc<T>],
+    prime_modulus: K,
+) -> Result<Vec<AdditiveShare<T>>, Error> {
+    x_batch
+        .iter()
+        .zip(offline_batch.iter())
+        .map(|(x, offline)| extract_msb_rand_additive(session, x, offline, prime_modulus));
+
+    todo!()
+}
+
 // MSB extraction protocol
 pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     session: &mut Session,
-    x: AdditiveShare<T>,
+    x: &AdditiveShare<T>,
     offline: &OfflineRandomSharesAdditive3pc<T>,
     prime_modulus: K,
 ) -> Result<AdditiveShare<T>, Error> {
@@ -46,7 +60,7 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
 
     // step 1: c' = (x + r) mod 2^{k - 1}
     // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
-    let c_share: AdditiveShare<T> = x + offline.r;
+    let c_share: AdditiveShare<T> = *x + offline.r;
     let c: T = open_additive_share::<T, K>(session, &[c_share]).await?[0];
     let mask: T = T::one() // (100000 - 1) -> 011111 for k = 6 example
         .wrapping_shl((T::K - 1) as u32)
@@ -78,7 +92,7 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     x_prime.add_assign_const_role(c_prime, session.own_role());
     x_prime.sub_assign(r_prime_share);
     // computing [d]_k = [a]_k - [a']_k
-    let d_share = x - x_prime;
+    let d_share = *x - x_prime;
 
     // step 5: computing MSB using b_bit and d_share
     // 5a. scale b_bit by 2^{k - 1}
@@ -295,7 +309,7 @@ mod tests {
                 let mut out = Vec::with_capacity(shares_i.len());
                 for x in shares_i.shares().iter().cloned() {
                     out.push(
-                        extract_msb_rand_additive::<u32, u16>(&mut session, x, &offline, modulus)
+                        extract_msb_rand_additive::<u32, u16>(&mut session, &x, &offline, modulus)
                             .await?,
                     );
                 }

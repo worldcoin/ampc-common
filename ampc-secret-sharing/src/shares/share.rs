@@ -676,7 +676,7 @@ impl<T: IntRing2k> Neg for &AdditiveShare<T> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct AdditiveSharePrime<PrimeElement> {
     pub value: PrimeElement,
 }
