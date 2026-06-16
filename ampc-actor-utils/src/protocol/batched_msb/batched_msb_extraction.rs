@@ -336,7 +336,7 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
 #[cfg(test)]
 mod tests {
     use super::extract_msb_rand_additive_batch;
-    use crate::execution::{local::LocalRuntime, session::SessionHandles};
+    use crate::execution::local::LocalRuntime;
     use crate::protocol::batched_msb::batched_preprocessing::offline_shares_vec_for_role_additive_3pc;
     use crate::protocol::{
         msb_dealer_helpers::open_additive_share, test_utils::create_array_sharing_additive,
@@ -348,34 +348,28 @@ mod tests {
     use tokio::task::JoinSet;
 
     async fn test_extract_msb_batch_rand_u32_additive() -> Result<()> {
-        let modulus = 67; // primefield modulus
+        let modulus = 37; // primefield modulus
         let mut rng = AesRng::from_random_seed();
-        let offline_rng = AesRng::from_random_seed();
+        let mut offline_rng = AesRng::from_random_seed();
         let len = 100usize; // test size
 
         // Random cleartext values + expected MSB bits
-        let ints: Vec<u32> = (0..len).map(|_| rng.gen::<u32>()).collect();
-        let expected: Vec<u32> = ints.iter().map(|x| (*x >> 31) & 1).collect();
+        let ints: Vec<u16> = (0..len).map(|_| rng.gen::<u16>()).collect();
+        let expected: Vec<u16> = ints.iter().map(|x| (*x >> 15) & 1).collect();
 
         // Generate shares for each party and set up sessions
         let shares = create_array_sharing_additive(&mut rng, &ints);
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
-
+        // pick up the pre-generated randomness
+        let offline_all_parties = offline_shares_vec_for_role_additive_3pc(len, &mut offline_rng)?;
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
             let shares_i = VecShareAdditive::new_vec(shares.of_party(i).clone());
-            let mut offline_rng = offline_rng.clone();
+            let offline = offline_all_parties[i].clone();
 
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-
-                // pick up the pre-generated randomness
-                let offline = offline_shares_vec_for_role_additive_3pc(
-                    len,
-                    &session.own_role(),
-                    &mut offline_rng,
-                )?;
 
                 // Run extract_msb_rand for each shared input
                 let out =
@@ -383,7 +377,7 @@ mod tests {
                         .await?;
 
                 // Open result bits
-                open_additive_share::<u32>(&mut session, &out.shares()).await
+                open_additive_share::<u16>(&mut session, &out.shares()).await
             });
         }
 
