@@ -1,5 +1,5 @@
 use ampc_secret_sharing::{
-    shares::{bit::Bit, share::AdditiveShare},
+    shares::{bit::Bit, share::AdditiveShare, vecshare::VecShareAdditive},
     IntRing2k, RingElement, Role,
 };
 use eyre::{bail, Error, Result};
@@ -18,8 +18,8 @@ pub struct OfflineRandomSharesAdditive3pc<T: IntRing2k> {
 }
 
 /// Offline randomness generator
-    /// a. sampling an instance of pre-generated randomness used in the protocol
-    /// b. Returns the per-party view of precomputed randomness as a struct 
+/// a. sampling an instance of pre-generated randomness used in the protocol
+/// b. Returns the per-party view of precomputed randomness as a struct
 pub fn offline_shares_for_role_additive_3pc<T: IntRing2k>(
     role: &impl Role,
     rng: &mut impl Rng,
@@ -28,7 +28,7 @@ where
     Standard: Distribution<T>,
 {
     let rand_bits: Vec<bool> = (0..T::K).map(|_| rng.gen_bool(0.5)).collect(); // sample random bits for r
-    let total_value = rand_bits // compute r 
+    let total_value = rand_bits // compute r
         .iter()
         .rev()
         .enumerate()
@@ -40,7 +40,7 @@ where
             };
             acc + (T::from(*bit) * multiplier)
         });
-    let total_value_shares = create_single_sharing_additive(rng, total_value); // shares of r 
+    let total_value_shares = create_single_sharing_additive(rng, total_value); // shares of r
     let b_bit = rng.gen_bool(0.5); // sample b
     let b_bit_shares = create_single_sharing_additive(rng, T::from(b_bit)); // shares of b
     let rand_bit_shares = rand_bits.iter().map(move |overall_bit| {
@@ -48,8 +48,9 @@ where
         let second_share = !(*overall_bit == first_share);
         (first_share, second_share)
     });
-   
-    match role.index() { // per role instantiate the struct for each party
+
+    match role.index() {
+        // per role instantiate the struct for each party
         0 => Ok(OfflineRandomSharesAdditive3pc {
             r: total_value_shares.0,
             r_bits: rand_bit_shares

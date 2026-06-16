@@ -474,7 +474,7 @@ pub async fn send_binary_shares_to_dealer(
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn send_prime16_shares_to_dealer(
     session: &mut Session,
-    shares: &Vec<AdditiveSharePrime<PrimeElement<u16>>>,
+    shares: &[AdditiveSharePrime<PrimeElement<u16>>],
 ) -> Result<Vec<PrimeElement<u16>>, Error> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {

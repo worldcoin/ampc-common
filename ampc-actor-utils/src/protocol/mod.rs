@@ -1,4 +1,5 @@
 pub mod anon_stats;
+pub mod batched_msb;
 pub mod binary;
 pub mod fhd_ops;
 pub mod msb_dealer_helpers;

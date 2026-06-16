@@ -27,20 +27,6 @@ use crate::{
     },
 };
 
-pub async fn extract_msb_rand_additive_batch<T: IntRing2k + NetworkInt, K: PrimInt>(
-    session: &mut Session,
-    x_batch: &[AdditiveShare<T>],
-    offline_batch: &[OfflineRandomSharesAdditive3pc<T>],
-    prime_modulus: K,
-) -> Result<Vec<AdditiveShare<T>>, Error> {
-    x_batch
-        .iter()
-        .zip(offline_batch.iter())
-        .map(|(x, offline)| extract_msb_rand_additive(session, x, offline, prime_modulus));
-
-    todo!()
-}
-
 // MSB extraction protocol
 pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     session: &mut Session,
