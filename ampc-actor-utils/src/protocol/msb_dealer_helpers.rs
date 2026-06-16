@@ -8,7 +8,7 @@ use ampc_secret_sharing::{
     IntRing2k, RingElement,
 };
 use eyre::{bail, eyre, Error, Result};
-use num_traits::{One, PrimInt, Zero};
+use num_traits::{One, Zero};
 use rand::{Rng, SeedableRng};
 use tracing::instrument;
 
@@ -286,7 +286,7 @@ pub async fn primefield16_to_bin_one_hot(
 // 3. Helper
 // Open additive shares
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn open_additive_share<T: IntRing2k + NetworkInt, K: PrimInt>(
+pub async fn open_additive_share<T: IntRing2k + NetworkInt>(
     session: &mut Session,
     share: &[AdditiveShare<T>],
 ) -> Result<Vec<T>, Error> {

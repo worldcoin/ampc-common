@@ -3,16 +3,21 @@
 
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::mpc::{NetworkInt, NetworkValue};
+use crate::protocol::batched_msb::batched_msb_extraction::extract_msb_rand_additive_batch;
+use crate::protocol::batched_msb::batched_preprocessing::VecOfflineRandomSharesAdditive3pc;
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
+use crate::protocol::msb_dealer_helpers::open_additive_share;
 use crate::protocol::prf::{Prf, PrfSeed};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::{AdditiveShare, DistanceShare};
+use ampc_secret_sharing::shares::vecshare::VecShareAdditive;
 use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
     ring_impl::RingElement, share::ReplicatedShare, IntRing2k, Ring48, VecShareReplicated,
 };
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
+use num_traits::PrimInt;
 use rand_distr::{Distribution, Standard};
 use tracing::instrument;
 
@@ -239,20 +244,30 @@ pub async fn gte_zero_and_open_u16(
         .map(|v| v.into_iter().map(|x| !x.convert()).collect())
 }
 
-// /// For each of the given distance shares returns `true` if it's a share of a non-negative value. For additive shares.
-// pub async fn gte_zero_and_open_u16_additive(
-//     session: &mut Session,
-//     distances: &[AdditiveShare<u16>],
-// ) -> Result<Vec<bool>> {
-//     let bits = extract_msb_batch(session, distances).await?;
+/// For each of the given distance shares returns `true` if it's a share of a non-negative value. For additive shares.
+pub async fn gte_zero_and_open_u16_additive<T: PrimInt>(
+    session: &mut Session,
+    distances: &[AdditiveShare<u16>],
+    offline_shares: &VecOfflineRandomSharesAdditive3pc<u16>,
+    prime_modulus: T,
+) -> Result<Vec<bool>> {
+    let distances_vecshare = VecShareAdditive::new_vec(distances.to_vec());
+    let bits_vecshare = extract_msb_rand_additive_batch(
+        session,
+        &distances_vecshare,
+        offline_shares,
+        prime_modulus,
+    )
+    .await?;
+    let bits = bits_vecshare.shares();
 
-//     // MSB is `1` is `distance < 0`.
-//     // MSB is `0` if `distance >= 0`.
-//     // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
-//     open_bin(session, &bits)
-//         .await
-//         .map(|v| v.into_iter().map(|x| !x.convert()).collect())
-// }
+    // MSB is `1` is `distance < 0`.
+    // MSB is `0` if `distance >= 0`.
+    // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
+    open_additive_share(session, bits)
+        .await
+        .map(|v| v.into_iter().map(|x| !(x != 0)).collect())
+}
 
 /// Open ring shares to reveal the secret value
 /// This is a helper function for opening shares

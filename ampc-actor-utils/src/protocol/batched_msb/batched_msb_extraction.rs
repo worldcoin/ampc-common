@@ -59,7 +59,7 @@ pub async fn extract_msb_rand_additive_batch<T: IntRing2k + NetworkInt, K: PrimI
     // step 1: c' = (x + r) mod 2^{k - 1}
     // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
     let c_share: VecShareAdditive<T> = x + &offline.r;
-    let c_vec: Vec<T> = open_additive_share::<T, K>(session, c_share.shares()).await?;
+    let c_vec: Vec<T> = open_additive_share::<T>(session, c_share.shares()).await?;
     let mask: T = T::one() // (100000 - 1) -> 011111 for k = 6 example
         .wrapping_shl((T::K - 1) as u32)
         .wrapping_sub(&T::one());
@@ -105,7 +105,7 @@ pub async fn extract_msb_rand_additive_batch<T: IntRing2k + NetworkInt, K: PrimI
     b_msb_share = &b_msb_share * two_pow_k_minus_1;
     let e_share = d_share + b_msb_share;
     // e_share: ReplicatedShare<T>
-    let e_open_vec: Vec<T> = open_additive_share::<T, K>(session, e_share.shares()).await?;
+    let e_open_vec: Vec<T> = open_additive_share::<T>(session, e_share.shares()).await?;
     // MSB as bool
     assert_eq!(e_open_vec.len(), offline.b_bit.shares().len());
     let mut msb_vec = Vec::with_capacity(e_open_vec.len());
@@ -383,7 +383,7 @@ mod tests {
                         .await?;
 
                 // Open result bits
-                open_additive_share::<u32, u16>(&mut session, &out.shares()).await
+                open_additive_share::<u32>(&mut session, &out.shares()).await
             });
         }
 

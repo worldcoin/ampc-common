@@ -47,7 +47,7 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     // step 1: c' = (x + r) mod 2^{k - 1}
     // mask input 'x:AdditiveShare<T>' with pre-generated random ring element 'r:AdditiveShare<T>'
     let c_share: AdditiveShare<T> = *x + offline.r;
-    let c: T = open_additive_share::<T, K>(session, &[c_share]).await?[0];
+    let c: T = open_additive_share::<T>(session, &[c_share]).await?[0];
     let mask: T = T::one() // (100000 - 1) -> 011111 for k = 6 example
         .wrapping_shl((T::K - 1) as u32)
         .wrapping_sub(&T::one());
@@ -87,7 +87,7 @@ pub async fn extract_msb_rand_additive<T: IntRing2k + NetworkInt, K: PrimInt>(
     b_msb_share = b_msb_share * two_pow_k_minus_1;
     let e_share = d_share + b_msb_share;
     // e_share: ReplicatedShare<T>
-    let e_open: T = open_additive_share::<T, K>(session, &[e_share]).await?[0];
+    let e_open: T = open_additive_share::<T>(session, &[e_share]).await?[0];
     // MSB as bool
     let e_msb_bool: bool = ((e_open >> (T::K - 1)) & T::one()) == T::one();
 
@@ -301,7 +301,7 @@ mod tests {
                 }
 
                 // Open result bits
-                open_additive_share::<u32, u16>(&mut session, &out).await
+                open_additive_share::<u32>(&mut session, &out).await
             });
         }
 
