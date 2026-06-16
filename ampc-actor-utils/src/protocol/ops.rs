@@ -239,20 +239,20 @@ pub async fn gte_zero_and_open_u16(
         .map(|v| v.into_iter().map(|x| !x.convert()).collect())
 }
 
-/// For each of the given distance shares returns `true` if it's a share of a non-negative value. For additive shares.
-pub async fn gte_zero_and_open_u16_additive(
-    session: &mut Session,
-    distances: &[AdditiveShare<u16>],
-) -> Result<Vec<bool>> {
-    let bits = extract_msb_batch(session, distances).await?;
+// /// For each of the given distance shares returns `true` if it's a share of a non-negative value. For additive shares.
+// pub async fn gte_zero_and_open_u16_additive(
+//     session: &mut Session,
+//     distances: &[AdditiveShare<u16>],
+// ) -> Result<Vec<bool>> {
+//     let bits = extract_msb_batch(session, distances).await?;
 
-    // MSB is `1` is `distance < 0`.
-    // MSB is `0` if `distance >= 0`.
-    // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
-    open_bin(session, &bits)
-        .await
-        .map(|v| v.into_iter().map(|x| !x.convert()).collect())
-}
+//     // MSB is `1` is `distance < 0`.
+//     // MSB is `0` if `distance >= 0`.
+//     // Open the binary shares and negate the value to return `true` if and only if `distance >=0`.
+//     open_bin(session, &bits)
+//         .await
+//         .map(|v| v.into_iter().map(|x| !x.convert()).collect())
+// }
 
 /// Open ring shares to reveal the secret value
 /// This is a helper function for opening shares

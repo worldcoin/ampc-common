@@ -311,7 +311,9 @@ pub async fn open_additive_share<T: IntRing2k + NetworkInt, K: PrimInt>(
         network
             .receive_prev()
             .await
-            .and_then(|v| T::into_vec(v))
+            .and_then(|v| {
+                T::into_vec(v)
+            })
             .map_err(|e| eyre!("Error in receiving in open operation: {}", e))?;
 
     // Receiving share from next party
@@ -379,7 +381,7 @@ pub async fn open_additive_share_bit(
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
 pub async fn send_binary_shares_to_dealer(
     session: &mut Session,
-    shares: &Vec<AdditiveShare<Bit>>,
+    shares: &[AdditiveShare<Bit>],
 ) -> Result<Vec<RingElement<Bit>>, Error> {
     let network = &mut session.network_session;
     let message = if shares.len() == 1 {
@@ -527,6 +529,7 @@ pub async fn send_prime16_shares_to_dealer(
                 .receive_next()
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+
             let values_from_next = if shares.len() == 1 {
                 match share_from_next {
                     NetworkValue::PrimeElement16(message) => Ok(vec![message]),

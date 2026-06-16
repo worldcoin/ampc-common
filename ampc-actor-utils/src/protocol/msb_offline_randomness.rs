@@ -1,5 +1,5 @@
 use ampc_secret_sharing::{
-    shares::{bit::Bit, share::AdditiveShare, vecshare::VecShareAdditive},
+    shares::{bit::Bit, share::AdditiveShare},
     IntRing2k, RingElement, Role,
 };
 use eyre::{bail, Error, Result};
