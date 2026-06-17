@@ -6,10 +6,12 @@
 //! iris embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eyre::bail;
 use rand::{CryptoRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::ops::Range;
 
 /// Size of iris embedding vectors (512 elements).
@@ -64,14 +66,23 @@ impl IrisVector {
     /// This generates a vector with values sampled from a standard normal distribution,
     /// normalized to unit length, and then quantized to i8 values.
     ///
+    /// Rejection sampling is used to ensure that the resulting vector has a dot product with itself
+    /// that is in the range [2000, 3000].
+    ///
     /// This is useful for testing and generating realistic embedding vectors.
     pub fn random_normalized<R: CryptoRng + Rng>(rng: &mut R) -> Self {
-        let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
-            .map(|_| StandardNormal.sample(rng))
-            .collect();
-        let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
-        v.iter_mut().for_each(|x| *x /= norm);
-        Self::quantize(v)
+        loop {
+            let mut v: Vec<f64> = (0..IRIS_VECTOR_SIZE)
+                .map(|_| StandardNormal.sample(rng))
+                .collect();
+            let norm = (v.iter().map(|x| x * x).sum::<f64>()).sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+            let v = Self::quantize(v);
+            let v_dot_v = v.dot(&v);
+            if (2000..=3000).contains(&v_dot_v) {
+                return v;
+            }
+        }
     }
 
     /// Quantize a floating-point vector to i8 values.
@@ -104,18 +115,21 @@ impl IrisVector {
     ///
     /// # Returns
     /// A random iris embedding vector with dot product in the specified range.
+    /// If it fails to find a suitable vector after max_attempts number of attempts
+    /// it returns None. It is up to the caller to give another input.
     pub fn random_with_dot<R: CryptoRng + Rng>(
         &self,
         dot: i16,
         eps: Range<i16>,
         rng: &mut R,
-    ) -> Self {
+    ) -> Option<Self> {
         assert!(
             eps.start < eps.end,
             "Invalid range: start must be less than end"
         );
 
         let dot_float = (dot as f64 / self.dot(self) as f64).clamp(-1.0, 1.0);
+        let max_attempts = 2000;
 
         // Dequantize
         let mut v1: Vec<f64> = self.0.iter().map(|&x| x as f64).collect();
@@ -123,10 +137,17 @@ impl IrisVector {
         v1.iter_mut().for_each(|x| *x /= norm);
 
         // Rejection sampling
+        let mut attempt_counter = 0;
+
         loop {
+            if attempt_counter > max_attempts {
+                return None;
+            }
+
             let mut z: Vec<f64> = (0..IRIS_VECTOR_SIZE)
                 .map(|_| StandardNormal.sample(rng))
                 .collect();
+
             let dot_z_v1: f64 = z.iter().zip(&v1).map(|(a, b)| a * b).sum();
             z.iter_mut()
                 .zip(&v1)
@@ -141,9 +162,12 @@ impl IrisVector {
                 .collect();
 
             let v2 = Self::quantize(v2);
-            if self.dot(&v2) >= (dot + eps.start) && self.dot(&v2) < (dot + eps.end) {
-                return v2;
+            let actual = self.dot(&v2);
+
+            if actual >= (dot + eps.start) && actual < (dot + eps.end) {
+                return Some(v2);
             }
+            attempt_counter += 1;
         }
     }
 
@@ -192,6 +216,44 @@ impl IrisVector {
 
         Ok(shares)
     }
+
+    /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
+    /// Mainly useful for tests, dev tooling, and PCP fixture generation.
+    pub fn to_base64(&self) -> String {
+        let bytes: [u8; IRIS_VECTOR_SIZE] = self.0.map(|v| v as u8);
+        STANDARD.encode(bytes)
+    }
+
+    pub fn from_base64(s: &str) -> eyre::Result<Self> {
+        let bytes = STANDARD
+            .decode(s.as_bytes())
+            .map_err(|e| eyre::eyre!("IrisVector base64 decode failed: {}", e))?;
+        if bytes.len() != IRIS_VECTOR_SIZE {
+            bail!(
+                "Invalid IrisVector base64 length: expected {} bytes, got {}",
+                IRIS_VECTOR_SIZE,
+                bytes.len()
+            );
+        }
+        let mut arr = [0i8; IRIS_VECTOR_SIZE];
+        for (i, b) in bytes.iter().enumerate() {
+            arr[i] = *b as i8;
+        }
+        Ok(IrisVector(arr))
+    }
+}
+
+impl fmt::Display for IrisVector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        for (i, value) in self.0.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", value)?;
+        }
+        write!(f, "]")
+    }
 }
 
 impl IrisSecretSharedVector {
@@ -208,6 +270,39 @@ impl IrisSecretSharedVector {
     /// Convert the share to a Vec<u16>.
     pub fn to_vec(&self) -> Vec<u16> {
         self.0.to_vec()
+    }
+
+    /// Base64-encode the share as standard base64 (with padding). The byte layout
+    /// is the little-endian representation of the underlying `[u16; IRIS_VECTOR_SIZE]`,
+    /// producing `IRIS_VECTOR_SIZE * 2` bytes (1024 for the current 512-element layout).
+    ///
+    /// This is the on-the-wire form orb/mobile encrypt and backend nodes decrypt;
+    /// keep encoder and decoder symmetric by using these helpers on both sides.
+    pub fn to_base64(&self) -> String {
+        let mut bytes = Vec::with_capacity(IRIS_VECTOR_SIZE * 2);
+        for value in &self.0 {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        STANDARD.encode(bytes)
+    }
+
+    pub fn from_base64(s: &str) -> eyre::Result<Self> {
+        let bytes = STANDARD
+            .decode(s.as_bytes())
+            .map_err(|e| eyre::eyre!("IrisSecretSharedVector base64 decode failed: {}", e))?;
+        if bytes.len() != IRIS_VECTOR_SIZE * 2 {
+            bail!(
+                "Invalid IrisSecretSharedVector base64 length: expected {} bytes ({} u16 elements), got {}",
+                IRIS_VECTOR_SIZE * 2,
+                IRIS_VECTOR_SIZE,
+                bytes.len()
+            );
+        }
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+            arr[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        Ok(IrisSecretSharedVector(arr))
     }
 
     /// Multiply this share by Lagrange coefficients for the given party ID.
@@ -263,22 +358,48 @@ impl<'de> Deserialize<'de> for IrisSecretSharedVector {
 
 #[cfg(test)]
 mod tests {
+    use super::IrisSecretSharedVector;
     use super::IrisVector;
     use super::IRIS_VECTOR_SIZE;
     use crate::basis;
     use crate::GaloisRingElement;
     use crate::PartyID;
     use crate::ShamirGaloisRingShare;
+    use base64::Engine as _;
     use rand::thread_rng;
 
     #[test]
-    fn test_random_normalized_with_dot() {
-        for _ in 0..100 {
+    fn test_random_normalized() {
+        for _ in 0..1000 {
             let mut rng = thread_rng();
-            let v1 = IrisVector::random_normalized(&mut rng);
-            let v2 = v1.random_with_dot(1000, -10..10, &mut rng);
-            let dot = v1.dot(&v2);
-            assert!((990..1010).contains(&dot));
+            let v = IrisVector::random_normalized(&mut rng);
+            let v_dot_v = v.dot(&v);
+            assert!((2000..=3000).contains(&v_dot_v));
+        }
+    }
+
+    #[test]
+    fn test_random_normalized_with_dot() {
+        for i in 0..1000 {
+            if i % 100 == 0 {
+                println!("Test iteration: {}", i);
+            }
+            let mut rng = thread_rng();
+
+            loop {
+                // loop until we find a random vector that satisfies this
+
+                let v1 = IrisVector::random_normalized(&mut rng);
+                if let Some(v2) = v1.random_with_dot(1000, -10..10, &mut rng) {
+                    let dot = v1.dot(&v2);
+                    assert!(
+                        (990..1010).contains(&dot),
+                        "Dot product {} not in range",
+                        dot
+                    );
+                    break;
+                }
+            }
         }
     }
 
@@ -324,5 +445,59 @@ mod tests {
             .collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_iris_vector_base64_round_trip() {
+        let mut rng = thread_rng();
+        for _ in 0..50 {
+            let original = IrisVector::random_normalized(&mut rng);
+            let encoded = original.to_base64();
+            let decoded = IrisVector::from_base64(&encoded).expect("decode must succeed");
+            assert_eq!(original.0, decoded.0);
+        }
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_base64_round_trip() {
+        let mut rng = thread_rng();
+        for _ in 0..50 {
+            let original = IrisVector::random_normalized(&mut rng);
+            let shares = original.secret_share(&mut rng).expect("secret_share");
+            for share in &shares {
+                let encoded = share.to_base64();
+                let decoded =
+                    IrisSecretSharedVector::from_base64(&encoded).expect("decode must succeed");
+                assert_eq!(share.0, decoded.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_iris_vector_from_base64_rejects_wrong_length() {
+        let bad = base64::engine::general_purpose::STANDARD.encode([0u8; 100]);
+        assert!(IrisVector::from_base64(&bad).is_err());
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_from_base64_rejects_wrong_length() {
+        let bad = base64::engine::general_purpose::STANDARD.encode([0u8; 100]);
+        assert!(IrisSecretSharedVector::from_base64(&bad).is_err());
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_byte_layout_is_little_endian() {
+        // Pin the wire format: encoding [0x0001, 0x0203, ...] produces the exact
+        // bytes [0x01, 0x00, 0x03, 0x02, ...]. Regression guard against an
+        // accidental endianness flip on either side of the protocol.
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        arr[0] = 0x0001;
+        arr[1] = 0x0203;
+        let share = IrisSecretSharedVector(arr);
+        let encoded = share.to_base64();
+        let decoded_bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .unwrap();
+        assert_eq!(decoded_bytes[0..4], [0x01, 0x00, 0x03, 0x02]);
     }
 }
