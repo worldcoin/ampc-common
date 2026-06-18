@@ -17,7 +17,7 @@ use ampc_secret_sharing::shares::{
 };
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
-use num_traits::PrimInt;
+use num_traits::{PrimInt, Zero};
 use rand_distr::{Distribution, Standard};
 use tracing::instrument;
 
@@ -171,6 +171,7 @@ pub async fn galois_ring_to_add3(
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
 
     // make sure we mask the input with a zero sharing
+    // Convert to 2-of-2 additive shares:
     let masked_items: Vec<_> = izip!(
         items.into_iter(),
         prf_my_values.0.into_iter(),
