@@ -1,15 +1,18 @@
 use ampc_secret_sharing::{
     shares::{bit::Bit, share::AdditiveShare},
-    IntRing2k, RingElement, Role,
+    IntRing2k, RingElement,
 };
-use eyre::{bail, Error, Result};
+use eyre::{Error, Result};
+use itertools::Itertools;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
+use serde::{Deserialize, Serialize};
 
 use crate::protocol::test_utils::create_single_sharing_additive;
 
 // Offline randomness struct
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound = "")]
 pub struct OfflineRandomSharesAdditive3pc<T: IntRing2k> {
     pub r: AdditiveShare<T>,
     // todo: add r' here?
@@ -21,9 +24,8 @@ pub struct OfflineRandomSharesAdditive3pc<T: IntRing2k> {
 /// a. sampling an instance of pre-generated randomness used in the protocol
 /// b. Returns the per-party view of precomputed randomness as a struct
 pub fn offline_shares_for_role_additive_3pc<T: IntRing2k>(
-    role: &impl Role,
     rng: &mut impl Rng,
-) -> Result<OfflineRandomSharesAdditive3pc<T>, Error>
+) -> Result<Vec<OfflineRandomSharesAdditive3pc<T>>, Error>
 where
     Standard: Distribution<T>,
 {
@@ -43,33 +45,46 @@ where
     let total_value_shares = create_single_sharing_additive(rng, total_value); // shares of r
     let b_bit = rng.gen_bool(0.5); // sample b
     let b_bit_shares = create_single_sharing_additive(rng, T::from(b_bit)); // shares of b
-    let rand_bit_shares = rand_bits.iter().map(move |overall_bit| {
-        let first_share = rng.gen_bool(0.5);
-        let second_share = !(*overall_bit == first_share);
-        (first_share, second_share)
-    });
+    let rand_bit_shares = rand_bits
+        .iter()
+        .map(move |overall_bit| {
+            let first_share = rng.gen_bool(0.5);
+            let second_share = !(*overall_bit == first_share);
+            (first_share, second_share)
+        })
+        .collect_vec();
 
-    match role.index() {
-        // per role instantiate the struct for each party
-        0 => Ok(OfflineRandomSharesAdditive3pc {
-            r: total_value_shares.0,
-            r_bits: rand_bit_shares
-                .map(|(b0, _)| AdditiveShare::new(RingElement(Bit::new(b0))))
-                .collect(),
-            b_bit: b_bit_shares.0,
-        }),
-        1 => Ok(OfflineRandomSharesAdditive3pc {
-            r: total_value_shares.1,
-            r_bits: rand_bit_shares
-                .map(|(_, b1)| AdditiveShare::new(RingElement(Bit::new(b1))))
-                .collect(),
-            b_bit: b_bit_shares.1,
-        }),
-        2 => Ok(OfflineRandomSharesAdditive3pc {
-            r: AdditiveShare::zero(),
-            r_bits: rand_bit_shares.map(|_| AdditiveShare::zero()).collect(),
-            b_bit: AdditiveShare::zero(),
-        }),
-        _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
-    }
+    let mut offline_shares = Vec::with_capacity(3);
+    (0..3).for_each(|party_idx| {
+        let offline_struct = match party_idx {
+            // per role instantiate the struct for each party
+            0 => OfflineRandomSharesAdditive3pc {
+                r: total_value_shares.0,
+                r_bits: rand_bit_shares
+                    .iter()
+                    .map(|(b0, _)| AdditiveShare::new(RingElement(Bit::new(*b0))))
+                    .collect(),
+                b_bit: b_bit_shares.0,
+            },
+            1 => OfflineRandomSharesAdditive3pc {
+                r: total_value_shares.1,
+                r_bits: rand_bit_shares
+                    .iter()
+                    .map(|(_, b1)| AdditiveShare::new(RingElement(Bit::new(*b1))))
+                    .collect(),
+                b_bit: b_bit_shares.1,
+            },
+            2 => OfflineRandomSharesAdditive3pc {
+                r: AdditiveShare::<T>::zero(),
+                r_bits: rand_bit_shares
+                    .iter()
+                    .map(|_| AdditiveShare::zero())
+                    .collect(),
+                b_bit: AdditiveShare::zero(),
+            },
+            _ => unreachable!(),
+        };
+        offline_shares.push(offline_struct);
+    });
+    Ok(offline_shares)
 }

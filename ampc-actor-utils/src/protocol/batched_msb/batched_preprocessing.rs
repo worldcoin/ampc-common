@@ -6,7 +6,10 @@ use eyre::{Error, Result};
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
 
-use crate::protocol::test_utils::create_single_sharing_additive;
+use crate::protocol::{
+    msb_offline_randomness::OfflineRandomSharesAdditive3pc,
+    test_utils::create_single_sharing_additive,
+};
 
 // Offline randomness struct
 #[derive(Debug, Clone)]
@@ -15,6 +18,36 @@ pub struct VecOfflineRandomSharesAdditive3pc<T: IntRing2k> {
     // todo: add r' here?
     pub r_bits: Vec<VecShareAdditive<Bit>>, // r_7, ..., r_0
     pub b_bit: VecShareAdditive<T>,
+}
+
+pub fn convert_n_shares_to_batched_offline<T: IntRing2k>(
+    offline_shares: Vec<OfflineRandomSharesAdditive3pc<T>>,
+) -> VecOfflineRandomSharesAdditive3pc<T> {
+    let batch_size = offline_shares.len();
+    let mut rand_bits_k = vec![Vec::with_capacity(batch_size); T::K];
+    let mut r_batch = Vec::with_capacity(batch_size);
+    let mut b_bit_batch = Vec::with_capacity(batch_size);
+
+    offline_shares.into_iter().for_each(|offline_share| {
+        offline_share
+            .r_bits
+            .clone()
+            .into_iter()
+            .enumerate()
+            .for_each(|(idx, r_bit)| {
+                rand_bits_k[idx].push(r_bit);
+            });
+        r_batch.push(offline_share.r.clone());
+        b_bit_batch.push(offline_share.b_bit.clone());
+    });
+    let r_bits = rand_bits_k
+        .into_iter()
+        .map(|vec| VecShareAdditive::new_vec(vec))
+        .collect();
+    let r = VecShareAdditive::new_vec(r_batch);
+    let b_bit = VecShareAdditive::new_vec(b_bit_batch);
+
+    VecOfflineRandomSharesAdditive3pc { r_bits, r, b_bit }
 }
 
 /// Offline randomness generator

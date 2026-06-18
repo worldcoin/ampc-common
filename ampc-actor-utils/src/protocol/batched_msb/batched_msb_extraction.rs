@@ -338,12 +338,14 @@ mod tests {
     use super::extract_msb_rand_additive_batch;
     use crate::execution::local::LocalRuntime;
     use crate::protocol::batched_msb::batched_preprocessing::offline_shares_vec_for_role_additive_3pc;
+    use crate::protocol::msb_offline_randomness::offline_shares_for_role_additive_3pc;
     use crate::protocol::{
         msb_dealer_helpers::open_additive_share, test_utils::create_array_sharing_additive,
     };
     use aes_prng::AesRng;
     use ampc_secret_sharing::shares::vecshare::VecShareAdditive;
     use eyre::Result;
+    use itertools::Itertools;
     use rand::Rng;
     use tokio::task::JoinSet;
 
@@ -361,6 +363,10 @@ mod tests {
         let shares = create_array_sharing_additive(&mut rng, &ints);
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
+        let offline_vec = (0..len)
+            .map(|_| offline_shares_for_role_additive_3pc(&mut offline_rng).unwrap())
+            .collect_vec();
+        let offline_all_parties = offline_vec.iter().map(|offline|)
         // pick up the pre-generated randomness
         let offline_all_parties = offline_shares_vec_for_role_additive_3pc(len, &mut offline_rng)?;
         for (i, session) in sessions.into_iter().enumerate() {

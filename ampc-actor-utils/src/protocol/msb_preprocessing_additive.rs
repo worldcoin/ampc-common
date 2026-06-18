@@ -252,7 +252,7 @@ pub async fn bitlt_3pc<T: IntRing2k + NetworkInt, K: PrimInt>(
 #[cfg(test)]
 mod tests {
     use super::extract_msb_rand_additive;
-    use crate::execution::{local::LocalRuntime, session::SessionHandles};
+    use crate::execution::local::LocalRuntime;
     use crate::protocol::{
         msb_dealer_helpers::open_additive_share,
         msb_offline_randomness::offline_shares_for_role_additive_3pc,
@@ -267,7 +267,7 @@ mod tests {
     async fn test_extract_msb_rand_u32_additive() -> Result<()> {
         let modulus = 67; // primefield modulus
         let mut rng = AesRng::from_random_seed();
-        let offline_rng = AesRng::from_random_seed();
+        let mut offline_rng = AesRng::from_random_seed();
         let len = 100usize; // test size
 
         // Random cleartext values + expected MSB bits
@@ -278,18 +278,16 @@ mod tests {
         let shares = create_array_sharing_additive(&mut rng, &ints);
         let sessions = LocalRuntime::mock_sessions_with_channel().await?;
         let mut jobs = JoinSet::new();
+        let offline_all_parties = offline_shares_for_role_additive_3pc(&mut offline_rng)?;
 
         for (i, session) in sessions.into_iter().enumerate() {
             let session = session.clone();
             let shares_i = VecShareAdditive::new_vec(shares.of_party(i).clone());
-            let mut offline_rng = offline_rng.clone();
+            // pick up the pre-generated randomness
+            let offline = offline_all_parties[i].clone();
 
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-
-                // pick up the pre-generated randomness
-                let offline =
-                    offline_shares_for_role_additive_3pc(&session.own_role(), &mut offline_rng)?;
 
                 // Run extract_msb_rand for each shared input
                 let mut out = Vec::with_capacity(shares_i.len());
