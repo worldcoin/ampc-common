@@ -21,8 +21,13 @@ ENV CARGO_HOME="/root/.cargo"
 # Copy workspace manifests (from repo root)
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 
-# Copy key-manager crate
+# Copy all workspace members — cargo requires every member's manifest to exist
+# even though key-manager doesn't depend on the sibling crates.
 COPY key-manager ./key-manager
+COPY ampc-secret-sharing ./ampc-secret-sharing
+COPY ampc-server-utils ./ampc-server-utils
+COPY ampc-actor-utils ./ampc-actor-utils
+COPY ampc-anon-stats ./ampc-anon-stats
 
 # Build release binary
 RUN cargo build --release --bin key-manager
