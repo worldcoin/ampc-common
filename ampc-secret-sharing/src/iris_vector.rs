@@ -34,6 +34,16 @@ impl Default for IrisSecretSharedVector {
     }
 }
 
+impl IrisSecretSharedVector {
+    pub fn from_pb_share(pb_share: Vec<u32>) -> eyre::Result<Self> {
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        for (i, chunk) in pb_share.iter().enumerate() {
+            arr[i] = (*chunk) as u16;
+        }
+        Ok(IrisSecretSharedVector(arr))
+    }
+}
+
 impl IrisVector {
     /// Create a new [IrisVector] from an array of 512 i8 values.
     pub fn new(data: [i8; IRIS_VECTOR_SIZE]) -> Self {
