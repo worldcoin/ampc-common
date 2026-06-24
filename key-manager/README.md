@@ -33,7 +33,9 @@ kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
   --env <environment> \
   --region <aws-region> \
   --app-name <app-name> \
-  --public-key-bucket-name <bucket-name>
+  --public-key-bucket-name <bucket-name> \
+  --public-key-object-name-prefix <prefix> \
+  --public-key-bucket-region <bucket-region> \
   rotate \
   --dry-run false
 ```
@@ -41,9 +43,11 @@ kubectl exec -n <your-namespace> -it temporary-key-manager -- key-manager \
 **Arguments:**
 - `--node-id` (required): Node identifier, must be `0`, `1`, or `2`
 - `--env` (default: `stage`): Environment name
-- `--region` (default: `eu-north-1`): AWS region
+- `--region` (default: `eu-north-1`): AWS region used for the Secrets Manager client (and the S3 client when `--public-key-bucket-region` is unset)
 - `--app-name` (default: `iris-mpc`): Application name used in secret IDs
-- `--public-key-bucket-name`: S3 bucket name for public keys (optional, defaults to `wf-smpcv2-stage-public-keys`)
+- `--public-key-bucket-name` (default: `wf-smpcv2-stage-public-keys`): S3 bucket name for public keys
+- `--public-key-object-name-prefix` (default: `public-key`): Prefix for the public-key S3 object name. The final object key is `{prefix}-{node-id}`. Override when colocating multiple services' public keys in the same bucket to avoid collisions (e.g. `deep-identifier-public-key` when sharing a bucket with `iris-mpc`'s default `public-key`).
+- `--public-key-bucket-region` (optional, defaults to `--region`): Override for the S3 bucket's region. Use when the bucket lives in a different region from the Secrets Manager secret (e.g. SM in `eu-central-1`, bucket in `eu-north-1`).
 - `--dry-run`: If set, generates keys but doesn't upload them
 
 Delete the temporary pod:

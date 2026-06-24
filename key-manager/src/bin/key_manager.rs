@@ -14,8 +14,6 @@ use rand::{thread_rng, Rng};
 use reqwest::Client;
 use sodiumoxide::crypto::box_::{curve25519xsalsa20poly1305, PublicKey, SecretKey, Seed};
 
-const PUBLIC_KEY_S3_OBJECT_PREFIX: &str = "public-key";
-
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "key-manager")]
 #[command(about = "Key manager CLI", long_about = None)]
@@ -42,6 +40,17 @@ struct KeyManagerCli {
 
     #[arg(short, long, env, default_value = "wf-smpcv2-stage-public-keys")]
     public_key_bucket_name: String,
+
+    /// Prefix for the public-key S3 object name. Final object key is `{prefix}-{node_id}`.
+    /// Allows colocating public keys for multiple services in the same bucket without collision.
+    #[arg(long, env, default_value = "public-key")]
+    public_key_object_name_prefix: String,
+
+    /// Optional override for the S3 bucket's region. When unset, falls back to `--region`.
+    /// Use when the bucket lives in a different region from the Secrets Manager secret
+    /// (e.g. SM in eu-central-1, bucket in eu-north-1).
+    #[arg(long, env, default_value = None)]
+    public_key_bucket_region: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -76,7 +85,7 @@ async fn main() -> Result<()> {
     let region_provider = S3Region::new(region.clone());
     let shared_config = aws_config::from_env().region(region_provider).load().await;
 
-    let object_name = format!("{}-{}", PUBLIC_KEY_S3_OBJECT_PREFIX, args.node_id);
+    let object_name = format!("{}-{}", args.public_key_object_name_prefix, args.node_id);
     let private_key_secret_id: String = format!(
         "{}/{}/ecdh-private-key-{}",
         args.env, args.app_name, args.node_id
@@ -89,6 +98,7 @@ async fn main() -> Result<()> {
                 &private_key_secret_id,
                 dry_run,
                 &args.public_key_bucket_name,
+                args.public_key_bucket_region,
                 args.endpoint_url,
             )
             .await?;
@@ -105,6 +115,7 @@ async fn main() -> Result<()> {
                 &object_name,
                 &args.public_key_bucket_name,
                 region.clone(),
+                args.public_key_bucket_region,
                 args.endpoint_url,
             )
             .await?;
@@ -122,6 +133,7 @@ async fn validate_keys(
     object_name: &str,
     bucket_name: &str,
     region: String,
+    bucket_region: Option<String>,
     endpoint_url: Option<String>,
 ) -> Result<()> {
     let mut sm_config_builder = aws_sdk_secretsmanager::config::Builder::from(sdk_config);
@@ -140,9 +152,10 @@ async fn validate_keys(
             None => panic!("Invalid public key"),
         }
     } else {
-        // Otherwise, get the latest one from S3 using HTTPS
-        let user_pubkey_string =
-            download_key_from_s3(bucket_name, object_name, region.clone()).await?;
+        // Otherwise, get the latest one from S3 using HTTPS.
+        // Use the bucket-region override if provided, otherwise fall back to the main region.
+        let s3_region = bucket_region.unwrap_or(region);
+        let user_pubkey_string = download_key_from_s3(bucket_name, object_name, s3_region).await?;
         let user_pubkey = STANDARD.decode(user_pubkey_string.as_bytes()).unwrap();
         match PublicKey::from_slice(&user_pubkey) {
             Some(key) => key,
@@ -159,12 +172,14 @@ async fn validate_keys(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rotate_keys(
     sdk_config: &SdkConfig,
     object_name: &str,
     private_key_secret_id: &str,
     dry_run: Option<bool>,
     bucket_name: &str,
+    bucket_region: Option<String>,
     endpoint_url: Option<String>,
 ) -> Result<()> {
     let mut rng = thread_rng();
@@ -175,6 +190,12 @@ async fn rotate_keys(
 
     let mut s3_config_builder = aws_sdk_s3::config::Builder::from(sdk_config);
     let mut sm_config_builder = aws_sdk_secretsmanager::config::Builder::from(sdk_config);
+
+    // Override the S3 client's region when the bucket lives in a different region
+    // from the SM secret (e.g. SM in eu-central-1, bucket in eu-north-1).
+    if let Some(br) = bucket_region {
+        s3_config_builder = s3_config_builder.region(S3Region::new(br));
+    }
 
     if let Some(endpoint_url) = endpoint_url.as_ref() {
         s3_config_builder = s3_config_builder.endpoint_url(endpoint_url);
@@ -319,6 +340,66 @@ mod test {
         let pub_key_str = STANDARD.encode(public_key);
         let decoded_pub_key = get_public_key(&pub_key_str);
         assert_eq!(public_key, decoded_pub_key);
+    }
+
+    #[test]
+    fn test_public_key_object_name_prefix_defaults() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with defaults");
+        assert_eq!(cli.public_key_object_name_prefix, "public-key");
+    }
+
+    #[test]
+    fn test_public_key_object_name_prefix_provided() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "--public-key-object-name-prefix",
+            "custom-prefix",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with provided prefix");
+        assert_eq!(cli.public_key_object_name_prefix, "custom-prefix");
+    }
+
+    #[test]
+    fn test_public_key_bucket_region_defaults() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with defaults");
+        assert_eq!(cli.public_key_bucket_region, None);
+    }
+
+    #[test]
+    fn test_public_key_bucket_region_provided() {
+        let cli = KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "0",
+            "--public-key-bucket-region",
+            "eu-north-1",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .expect("CLI should parse with provided bucket region");
+        assert_eq!(cli.public_key_bucket_region, Some("eu-north-1".to_string()));
     }
 
     #[test]
