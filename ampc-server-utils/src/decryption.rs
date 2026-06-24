@@ -261,3 +261,26 @@ pub fn decrypt_share<T: DeserializeOwned>(
 
     Ok(share)
 }
+
+pub fn decrypt_binary_share(
+    share_bytes: Vec<u8>,
+    key_pairs: &SharesEncryptionKeyPairs,
+) -> Result<Vec<u8>, SharesDecodingError> {
+    // Try decrypting with current key pair first, then previous key pair if it exists
+    match key_pairs
+        .current_key_pair
+        .open_sealed_box(share_bytes.clone())
+    {
+        Ok(decrypted_bytes) => Ok(decrypted_bytes),
+        Err(_) => {
+            match if let Some(key_pair) = key_pairs.previous_key_pair.as_ref() {
+                key_pair.open_sealed_box(share_bytes)
+            } else {
+                Err(SharesDecodingError::PreviousKeyNotFound)
+            } {
+                Ok(bytes) => Ok(bytes),
+                Err(_) => Err(SharesDecodingError::SealedBoxOpenError),
+            }
+        }
+    }
+}
