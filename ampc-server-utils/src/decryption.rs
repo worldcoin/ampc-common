@@ -262,6 +262,15 @@ pub fn decrypt_share<T: DeserializeOwned>(
     Ok(share)
 }
 
+/// Decrypt a binary share and return the decrypted bytes
+///
+/// # Arguments
+/// * `share_bytes` - Binary share bytes
+/// * `key_pairs` - Encryption key pairs (current and optionally previous)
+///
+/// # Returns
+/// The decrypted binary share
+#[allow(clippy::result_large_err)]
 pub fn decrypt_binary_share(
     share_bytes: Vec<u8>,
     key_pairs: &SharesEncryptionKeyPairs,
