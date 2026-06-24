@@ -2,7 +2,9 @@ pub mod postgres;
 use crate::{
     anon_stats::face::FaceDistance,
     store::postgres::{AccessMode, PostgresClient},
+    AnonStatsContext,
 };
+use clap::builder::Str;
 use eyre::{bail, Result};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -21,6 +23,7 @@ const ANON_STATS_1D_LIFTED_TABLE: &str = "anon_stats_1d_lifted";
 const ANON_STATS_2D_TABLE: &str = "anon_stats_2d";
 const ANON_STATS_2D_LIFTED_TABLE: &str = "anon_stats_2d_lifted";
 const ANON_STATS_FACE_TABLE: &str = "anon_stats_face";
+const ANON_STATS_2D_TABLE_DI: &str = "anon_stats_2d_di";
 
 impl AnonStatsStore {
     pub async fn new(postgres_client: &PostgresClient) -> Result<Self> {
@@ -364,7 +367,14 @@ impl AnonStatsStore {
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_2D_TABLE, anon_stats, origin, operation)
+        //Default table is original iriscode, unless context is deep identifier
+        let mut db_table = ANON_STATS_2D_TABLE;
+
+        //If it's deep identifier, use the DI table
+        if origin.context == AnonStatsContext::IRIS {
+            db_table = ANON_STATS_2D_TABLE_DI;
+        }
+        self.insert_anon_stats_batch(db_table, anon_stats, origin, operation)
             .await
     }
     pub async fn insert_anon_stats_batch_2d_lifted<T: Serialize>(
