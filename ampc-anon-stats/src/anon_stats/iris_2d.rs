@@ -9,7 +9,7 @@ use ampc_actor_utils::{
         ops::open_ring_element_broadcast,
     },
 };
-use ampc_secret_sharing::RingElement;
+use ampc_secret_sharing::{RingElement, Share};
 use chrono::{DateTime, Utc};
 use eyre::Result;
 use itertools::{izip, Itertools};
@@ -346,6 +346,17 @@ pub async fn process_2d_lifted_anon_stats_score_normalization_job(
         start_timestamp,
     )
     .await
+}
+
+pub async fn process_di_2d_anon_stats_job(
+    session: &mut Session,
+    job: AnonStatsMapping<(Share<u16>, Share<u16>)>,
+    origin: &AnonStatsOrigin,
+    config: &AnonStatsServerConfig,
+    operation: Option<AnonStatsOperation>,
+    start_timestamp: Option<DateTime<Utc>>,
+) -> Result<BucketStatistics2D> {
+    todo!()
 }
 
 pub mod test_helper {
