@@ -245,11 +245,11 @@ pub async fn get_batch_sync_states(
                     }
                 };
 
-                tracing::info!("Response Status: {}", res.status());
+                tracing::debug!("Response Status: {}", res.status());
 
                 // Retry on any non-OK status. A 409 Conflict just means the peer
                 // is on a different batch_id (expected during sync), so log it at
-                // info; other statuses may be transient (e.g. a node still
+                // debug; other statuses may be transient (e.g. a node still
                 // starting up returning 5xx) and are logged at warn.
                 if !res.status().is_success() {
                     let status = res.status();
@@ -258,7 +258,7 @@ pub async fn get_batch_sync_states(
                         .await
                         .unwrap_or_else(|_| "Unknown error".to_string());
                     if status == reqwest::StatusCode::CONFLICT {
-                        tracing::info!(
+                        tracing::debug!(
                             "Party {} returned batch ID mismatch: {}. Retrying in 1 second...",
                             host,
                             error_body
@@ -291,7 +291,7 @@ pub async fn get_batch_sync_states(
                 };
 
                 if state.batch_id < reference_batch_id {
-                    tracing::info!(
+                    tracing::debug!(
                         "Party {} (batch_id {}) is behind own batch_id {}. Retrying in 1 second...",
                         host,
                         state.batch_id,
@@ -449,7 +449,7 @@ pub async fn get_batch_sync_entries(
                 };
 
                 if !state.batch_sha.eq(&own_sync_state.batch_sha) {
-                    tracing::info!(
+                    tracing::debug!(
                         "Party {} (batch_hash {}) differs from own ({}). Retrying in 1 second...",
                         host,
                         hex::encode(&state.batch_sha[0..4]),
