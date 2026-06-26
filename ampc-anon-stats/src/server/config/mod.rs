@@ -130,6 +130,13 @@ pub struct AnonStatsServerConfig {
     /// Example: "[-1000,0,1000,2000]" defines 3 buckets: [-1000,0), [0,1000), [1000,2000)
     pub face_bucket_thresholds: Vec<i16>,
 
+    #[serde(
+        default = "default_di_2d_bucket_thresholds",
+        deserialize_with = "deserialize_yaml_json_i16"
+    )]
+    /// Borders of the 2D buckets for Deep Identifier anon stats (similarity-score scale)
+    pub di_2d_bucket_thresholds: Vec<i16>,
+
     #[serde(default = "default_max_sync_failures_before_reset")]
     /// Number of consecutive sync mismatches before clearing the local queue for an origin.
     pub max_sync_failures_before_reset: usize,
@@ -157,6 +164,16 @@ pub struct AnonStatsServerConfig {
 
 fn default_face_bucket_thresholds() -> Vec<i16> {
     (-2000..4000).step_by(100).collect()
+}
+
+fn default_di_2d_bucket_thresholds() -> Vec<i16> {
+    // Deep Identifier score buckets:
+    //   bucket 0        : score < -1000
+    //   buckets 1..=900 : [-1000, 3500) width 5   (900 buckets)
+    //   last bucket     : score >= 3500
+    let mut thresholds: Vec<i16> = (-1000..=3500).step_by(5).collect();
+    thresholds.push(i16::MAX);
+    thresholds
 }
 
 fn default_n_buckets_1d() -> usize {
@@ -273,6 +290,7 @@ impl AnonStatsServerConfig {
             max_rows_per_job_2d: 0,
             poll_interval_secs: default_poll_interval_secs(),
             face_bucket_thresholds: vec![],
+            di_2d_bucket_thresholds: vec![],
             max_sync_failures_before_reset: default_max_sync_failures_before_reset(),
             db_url: String::new(),
             db_schema_name: default_schema_name(),

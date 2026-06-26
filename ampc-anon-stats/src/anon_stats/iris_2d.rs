@@ -6,9 +6,11 @@ use ampc_actor_utils::{
             compare_against_thresholds_batched, nhd_compare_against_thresholds_batched,
             nhd_reduce_to_min_distance_batch, reduce_to_min_distance_batch,
         },
-        ops::open_ring_element_broadcast,
+        binary::{bit_inject, extract_msb_batch},
+        ops::{open_ring_element_broadcast, sub_pub},
     },
 };
+use ampc_secret_sharing::shares::VecShare;
 use ampc_secret_sharing::{RingElement, Share};
 use chrono::{DateTime, Utc};
 use eyre::Result;
@@ -348,6 +350,27 @@ pub async fn process_2d_lifted_anon_stats_score_normalization_job(
     .await
 }
 
+/// Per-eye threshold comparison
+/// For each threshold (in order) and each distance, emits a bit-injected Share<u32> that is
+/// 1 iff score < threshold
+async fn compare_against_thresholds_di(
+    session: &mut Session,
+    thresholds: &[i16],
+    distances: &[Share<u16>],
+) -> Result<Vec<Share<u32>>> {
+    let mut comparisons = Vec::with_capacity(thresholds.len() * distances.len());
+    for &threshold in thresholds {
+        let mut shifted = distances.to_vec();
+        shifted
+            .iter_mut()
+            .for_each(|share| sub_pub(session, share, RingElement(threshold as u16)));
+        let bits = extract_msb_batch(session, &shifted).await?;
+        let injected = bit_inject(session, VecShare::new_vec(bits)).await?;
+        comparisons.extend(injected.inner());
+    }
+    Ok(comparisons)
+}
+
 pub async fn process_di_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<(Share<u16>, Share<u16>)>,
@@ -356,7 +379,61 @@ pub async fn process_di_2d_anon_stats_job(
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
 ) -> Result<BucketStatistics2D> {
-    todo!()
+    let thresholds = &config.di_2d_bucket_thresholds;
+    let n_buckets = thresholds.len();
+    let job_size = job.len();
+
+    // Each entry is a single (left, right) similarity-share pair
+    // Split the pairs into one similarity vector per eye
+    let job_data = job.into_bundles();
+    let left_distances: Vec<Share<u16>> = job_data.iter().map(|(left, _)| *left).collect();
+    let right_distances: Vec<Share<u16>> = job_data.iter().map(|(_, right)| *right).collect();
+    drop(job_data);
+
+    // Per-eye threshold comparison (MSBs lifted to u32), no sums yet
+    let comparisons_left =
+        compare_against_thresholds_di(session, thresholds, &left_distances).await?;
+    let comparisons_right =
+        compare_against_thresholds_di(session, thresholds, &right_distances).await?;
+
+    // Create buckets * buckets shares of 0 for re randomization
+    let mut bucket_shares = vec![RingElement::<u32>::default(); n_buckets * n_buckets];
+    for bucket in &mut bucket_shares {
+        *bucket += session.prf.gen_zero_share();
+    }
+
+    // do the outer product similar to iris: each cell (i,j) is
+    // share_of_0 + {# shares (l,r): l < threshold_i AND r < threshold_j}
+    let mut bucket_ids = 0;
+    if job_size != 0 {
+        for left_chunk in comparisons_left.chunks(job_size) {
+            for right_chunk in comparisons_right.chunks(job_size) {
+                assert!(left_chunk.len() == right_chunk.len());
+                let product_sum = izip!(left_chunk, right_chunk)
+                    .map(|(left_share, right_share)| left_share * right_share)
+                    .fold(RingElement(0u32), |acc, x| acc + x);
+                bucket_shares[bucket_ids] += product_sum;
+                bucket_ids += 1;
+            }
+        }
+    }
+
+    let buckets = open_ring_element_broadcast(session, &bucket_shares).await?;
+
+    // Convert the cumulative count above to histogram
+
+    let mut anon_stats = BucketStatistics2D::new(
+        job_size,
+        thresholds.len(),
+        config.party_id,
+        crate::types::DistanceFunction::Cosine,
+        AnonStatsResultSource::Aggregator,
+        operation,
+    );
+    anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
+
+    anon_stats.fill_buckets_di(&buckets, thresholds, start_timestamp);
+    Ok(anon_stats)
 }
 
 pub mod test_helper {
