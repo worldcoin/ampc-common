@@ -3,7 +3,7 @@ use crate::{
     anon_stats::face::FaceDistance,
     store::postgres::{AccessMode, PostgresClient},
 };
-use clap::builder::Str;
+
 use eyre::{bail, Result};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};

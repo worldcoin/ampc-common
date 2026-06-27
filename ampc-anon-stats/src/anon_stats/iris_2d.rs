@@ -725,6 +725,103 @@ pub mod test_helper {
             anon_stats
         }
     }
+
+    /// Test for Deep Identifier. Single `(left, right)` similarity-score
+    /// pair per eye. Keep plaintext scores to compute grund truth
+    pub struct TestDiDistances {
+        /// Plaintext `(left_score, right_score)` per row, in the order they are shared.
+        pub scores: Vec<(i16, i16)>,
+        pub shares0: Vec<(Share<u16>, Share<u16>)>,
+        pub shares1: Vec<(Share<u16>, Share<u16>)>,
+        pub shares2: Vec<(Share<u16>, Share<u16>)>,
+    }
+
+    impl TestDiDistances {
+        /// Generate num_pairs random similarity pairs, each rep3-shared across the three
+        /// parties.
+        pub fn generate_shares(
+            rng: &mut impl rand::Rng,
+            num_pairs: usize,
+            value_range: std::ops::Range<i16>,
+        ) -> TestDiDistances {
+            // rep3-share a single i16 value (stored as u16): party i holds (x_i, x_{i-1}).
+            fn share_value(
+                rng: &mut impl rand::Rng,
+                x: i16,
+            ) -> (Share<u16>, Share<u16>, Share<u16>) {
+                let v = x as u16;
+                let s1: u16 = rng.gen();
+                let s2: u16 = rng.gen();
+                let s3: u16 = v.wrapping_sub(s1).wrapping_sub(s2);
+                (
+                    Share {
+                        a: RingElement(s1),
+                        b: RingElement(s3),
+                    },
+                    Share {
+                        a: RingElement(s2),
+                        b: RingElement(s1),
+                    },
+                    Share {
+                        a: RingElement(s3),
+                        b: RingElement(s2),
+                    },
+                )
+            }
+
+            let mut scores = Vec::with_capacity(num_pairs);
+            let mut shares0 = Vec::with_capacity(num_pairs);
+            let mut shares1 = Vec::with_capacity(num_pairs);
+            let mut shares2 = Vec::with_capacity(num_pairs);
+            for _ in 0..num_pairs {
+                let left = rng.gen_range(value_range.clone());
+                let right = rng.gen_range(value_range.clone());
+                scores.push((left, right));
+                let (l0, l1, l2) = share_value(rng, left);
+                let (r0, r1, r2) = share_value(rng, right);
+                shares0.push((l0, r0));
+                shares1.push((l1, r1));
+                shares2.push((l2, r2));
+            }
+            TestDiDistances {
+                scores,
+                shares0,
+                shares1,
+                shares2,
+            }
+        }
+
+        /// Ground-truth histogram, similar to iris MPC:
+        /// 1) per-threshold comparison counts pairs s.t. #{rows : left < t_i AND right < t_j}
+        /// 2) fill_buckets_di calculates the histogram
+        pub fn ground_truth_buckets(
+            &self,
+            thresholds: &[i16],
+            operation: Option<crate::AnonStatsOperation>,
+        ) -> BucketStatistics2D {
+            let n = thresholds.len();
+            let mut cumulative = vec![0u32; n * n];
+            for &(left, right) in &self.scores {
+                for (i, &t_left) in thresholds.iter().enumerate() {
+                    for (j, &t_right) in thresholds.iter().enumerate() {
+                        if left < t_left && right < t_right {
+                            cumulative[i * n + j] += 1;
+                        }
+                    }
+                }
+            }
+            let mut anon_stats = BucketStatistics2D::new(
+                self.scores.len(),
+                n,
+                0,
+                crate::types::DistanceFunction::Cosine,
+                AnonStatsResultSource::Aggregator,
+                operation,
+            );
+            anon_stats.fill_buckets_di(&cumulative, thresholds, None);
+            anon_stats
+        }
+    }
 }
 
 #[cfg(test)]
@@ -735,7 +832,8 @@ mod tests {
     use crate::{
         anon_stats::{
             calculate_iris_threshold_a, calculate_iris_threshold_score_normalization,
-            iris_2d::test_helper::TestDistances, MATCH_THRESHOLD_RATIO_REAUTH,
+            iris_2d::test_helper::{TestDiDistances, TestDistances},
+            MATCH_THRESHOLD_RATIO_REAUTH,
         },
         types::DistanceFunction,
         AnonStatsOperation, AnonStatsOrientation, AnonStatsServerConfig,
@@ -905,6 +1003,128 @@ mod tests {
             assert_eq!(stats.is_mirror_orientation, expected_mirror);
             assert_eq!(stats.distance_function, DistanceFunction::NHD);
         }
+    }
+
+    /// 1) Run process_di_2d_anon_stats_job across three mocked parties over raw similarity-score pairs
+    /// 2) Assert the opened histogram matches the plaintext
+    /// thresholds must be ascending
+    /// value_range must stay inside the i16 window the thresholds live in
+    async fn run_di_2d_test(
+        thresholds: Vec<i16>,
+        operation: Option<AnonStatsOperation>,
+        orientation: AnonStatsOrientation,
+        num_pairs: usize,
+        value_range: std::ops::Range<i16>,
+    ) {
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+
+        let config = AnonStatsServerConfig {
+            di_2d_bucket_thresholds: thresholds.clone(),
+            ..AnonStatsServerConfig::test_default()
+        };
+
+        // Generate the ground truth and populate the test distances struct
+        let ground_truth =
+            TestDiDistances::generate_shares(&mut thread_rng(), num_pairs, value_range);
+        let ground_truth_buckets = ground_truth.ground_truth_buckets(&thresholds, operation);
+        let expected_mirror = matches!(orientation, AnonStatsOrientation::Mirror);
+        let TestDiDistances {
+            scores: _,
+            shares0,
+            shares1,
+            shares2,
+        } = ground_truth;
+
+        let mut tasks = vec![];
+        for (party_id, (shares, net)) in [shares0, shares1, shares2]
+            .into_iter()
+            .zip(sessions.into_iter())
+            .enumerate()
+        {
+            let config = AnonStatsServerConfig {
+                party_id,
+                ..config.clone()
+            };
+            let origin = crate::AnonStatsOrigin {
+                side: None,
+                orientation,
+                context: crate::AnonStatsContext::IRIS,
+            };
+
+            // process jobs async
+            tasks.push(tokio::task::spawn(async move {
+                let mut session = net.lock().await;
+                let shares = shares
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, s)| (idx as i64, s))
+                    .collect();
+                let job = crate::AnonStatsMapping::new(shares);
+
+                crate::anon_stats::iris_2d::process_di_2d_anon_stats_job(
+                    &mut session,
+                    job,
+                    &origin,
+                    &config,
+                    operation,
+                    None,
+                )
+                .await
+                .unwrap()
+            }));
+        }
+
+        // gather results
+        let results = futures_util::future::join_all(tasks).await;
+        for stats in results {
+            let stats = stats.expect("DI bucket computation works");
+            assert_eq!(
+                stats.buckets.len(),
+                ground_truth_buckets.buckets.len(),
+                "Number of (non-empty) buckets mismatch ground truth= {:?}\n stats={:?}",
+                ground_truth_buckets.buckets,
+                stats.buckets
+            );
+            for (i, bucket) in stats.buckets.iter().enumerate() {
+                assert_eq!(
+                    bucket, &ground_truth_buckets.buckets[i],
+                    "Bucket {} mismatch:\n expected {:?},\n got {:?}",
+                    i, ground_truth_buckets.buckets[i], bucket
+                );
+            }
+            assert_eq!(stats.n_buckets_per_side, thresholds.len());
+            assert_eq!(stats.is_mirror_orientation, expected_mirror);
+            assert_eq!(stats.distance_function, DistanceFunction::Cosine);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_di_2d_distances() {
+        let mut thresholds: Vec<i16> = vec![-1400];
+        thresholds.extend((-1000..=3500).step_by(5));
+        thresholds.push(4000);
+        run_di_2d_test(
+            thresholds,
+            Some(AnonStatsOperation::Uniqueness),
+            AnonStatsOrientation::Normal,
+            1000,
+            -1400..3501,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_di_2d_distances_mirror() {
+        run_di_2d_test(
+            vec![
+                -1400, -1000, 0, 500, 505, 510, 520, 530, 542, 1000, 2000, 3000, 4000,
+            ],
+            Some(AnonStatsOperation::Uniqueness),
+            AnonStatsOrientation::Mirror,
+            1000000,
+            -1400..3501,
+        )
+        .await;
     }
 
     #[tokio::test]
