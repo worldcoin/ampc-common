@@ -16,7 +16,7 @@ network/
 
 ## `tcp/` module
 
-The following traits are defined in `tcp/stream.rs`.
+The following traits are defined in `tcp/streams.rs`.
 
 ```text
 +--------------------------------+----------------+----------------------------+-------------------------------------------------------+

@@ -11,7 +11,7 @@ The parties work on batches of jobs over these sessions. The networking stack ne
 
 1. Establish connections between the parties
 2. Set up the communication channels (sessions) over each connection
-3. Indicate if connectivity was lost. This is will cause a job to fail. 
+3. Indicate if connectivity was lost. This will cause a job to fail. 
 4. Allow for re-creation of connections and sessions.
 5. Shutdown gracefully. 
 
