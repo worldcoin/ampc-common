@@ -154,6 +154,30 @@ The `connection/mod.rs` module is structured to make the connection establishmen
 Shared code is in the module root. `leader/` and `worker/` have their own network handles. The workpool does not have multiple sessions per connection, which simplifies the code considerably.
 
 ```text
++---------------------------------------+     +---------+     +---------------------------------------+
+|  LEADER                               |     |         |     |  WORKER                               |
+|  workpool/leader/                     |     |         |     |  workpool/worker/                     |
++---------------------------------------+     |         |     +---------------------------------------+
+|                                       |     |         |     |                                       |
+|  broadcast(payload)               ----|---->|         |---->|----  recv() -> Job                    |
+|  scatter_gather(msgs) -> JobHandle    |     |   TCP   |     |                                       |
+|                                       |     |         |     |  job.take_payload() -> user code      |
+|  await JobHandle -> WorkerRsp     <---|-----|         |<----|----  job.send_result(result)          |
+|                                       |     |         |     |                                       |
++---------------------------------------+     |         |     +---------------------------------------+
+                                              |         |
++---------------------------------------+     |         |     +---------------------------------------+
+|  On reconnect (leader_task.rs):       |     |         |     |  (worker_task.rs)                     |
+|                                       |     |         |     |                                       |
+|  PendingJobsRequest               ----|---->|         |---->|----  pending JobIds                   |
+|  validate_pending_jobs()          <---|-----|         |<----|----  PendingJobsReply                 |
+|                                       |     |         |     |                                       |
++---------------------------------------+     +---------+     +---------------------------------------+
+```
+
+## Implementation Details
+
+```text
 +--------------------+--------------------------------+-------------------------------------------------------------+
 | Component          | Path                           | Description                                                 |
 +--------------------+--------------------------------+-------------------------------------------------------------+
@@ -174,7 +198,7 @@ Shared code is in the module root. `leader/` and `worker/` have their own networ
 +--------------------+--------------------------------+-------------------------------------------------------------+
 ```
 
-# MPC use case and design choices
+# Appendix: MPC use case and design choices
 iris-mpc is processing batches of 96 requests at a time. The resulting number of jobs is BATCH_SIZE * N_EYES * MIRRORED * OVERLAP = BATCH_SIZE * 2 * 2 * 3
 (OVERLAP expresses that instead of processing all +- 15 rotations in a single search, 3 searches over smaller, overlapping ranges are performed)
 
