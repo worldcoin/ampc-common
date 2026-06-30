@@ -7,11 +7,11 @@ The TCP networking stack provides the communication channels needed for the 3-pa
 Each party has an Identity and public address (url:port). Each party must connect to the other and over each connection,
 establish some number of communication channels, called sessions. 
 
-The parties work on batches jobs over these sessions. The networking stack needs to do the following:
+The parties work on batches of jobs over these sessions. The networking stack needs to do the following:
 
 1. Establish connections between the parties
-2. Set up the communication channels (sessions) ove each connection
-3. Indicate if connectivity was lost. This is expected to cause a job to fail. 
+2. Set up the communication channels (sessions) over each connection
+3. Indicate if connectivity was lost. This is will cause a job to fail. 
 4. Allow for re-creation of connections and sessions.
 5. Shutdown gracefully. 
 
