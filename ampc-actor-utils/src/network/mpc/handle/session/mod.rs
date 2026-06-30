@@ -27,6 +27,7 @@ pub struct TcpSession {
     // TcpSession is typically used with 2 peers, with a short Identity String.
     // In this case, it is better to avoid a HashMap.
     identities: Vec<Identity>,
+    // channels to the peers in identities
     tx: Vec<OutStream>,
     rx: Vec<InStream>,
     config: MpcConfig,
