@@ -142,7 +142,7 @@ The `connection/mod.rs` module is structured to make the connection establishmen
 | NetworkHandle         | mpc/handle/network_handle.rs             | Implements the `NetworkHandle` trait; creates Sessions and  |
 | Implementation        |                                          | packages them into NetworkSessions                          |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
-| Session Factory       | mpc/handle/sessions/mod.rs               | Implements `sessions::make_sessions()`, which builds        |
+| Session Factory       | mpc/handle/session/mod.rs                | Implements `session::make_sessions()`, which builds         |
 |                       |                                          | TCP/TLS connections and a set of channels per connection    |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
 | Connection Manager    | mpc/handle/session/multiplexer.rs        | Contains `multiplexer::run()`. Splits `NetworkConnection`   |
