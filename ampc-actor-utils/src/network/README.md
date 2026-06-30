@@ -3,7 +3,6 @@ Notable README files
 - network/mpc/handle/README.md
 - network/workpool/README.md
 
-
 # `network/` layout
 ```text
 network/
@@ -37,7 +36,7 @@ network/
 +--------------------------------+----------------+----------------------------+-------------------------------------------------------+
 ```
 
-### Connect establishment
+### Connection establishment
 
 Connection logic is in `network/tcp/connection/mod.rs`. The `Client` and `Server` traits provide a `connect()` function. The `accept_loop()` for the server is found in `network/tcp/connection/listener.rs`.
 
@@ -134,7 +133,9 @@ The `connection/mod.rs` module is structured to make the connection establishmen
 | Component             | Path                                     | Description                                                 |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
 | Entry Point           | mpc/handle/mod.rs                        | Contains `build_network_handle()`, which returns a          |
-|                       |                                          | NetworkHandle, used to create NetworkSessions               |
+|                       |                                          | NetworkHandle, used to create NetworkSessions.              |
+|                       |                                          | `NetworkSession` is defined in `execution/session.rs` and   |
+|                       |                                          | wraps the channels produced by `make_network_sessions()`    |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
 | NetworkHandle         | mpc/handle/network_handle.rs             | Implements the `NetworkHandle` trait; creates Sessions and  |
 | Implementation        |                                          | packages them into NetworkSessions                          |
@@ -142,7 +143,7 @@ The `connection/mod.rs` module is structured to make the connection establishmen
 | Session Factory       | mpc/handle/sessions/mod.rs               | Implements `sessions::make_sessions()`, which builds        |
 |                       |                                          | TCP/TLS connections and a set of channels per connection    |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
-| Connection Manager    | mpc/handle/sessions/multiplexer.rs       | Contains `multiplexer::run()`. Splits `NetworkConnection`   |
+| Connection Manager    | mpc/handle/session/multiplexer.rs        | Contains `multiplexer::run()`. Splits `NetworkConnection`   |
 |                       |                                          | into read/write halves via `tokio::io::split` and runs a    |
 |                       |                                          | loop selecting on both halves to route traffic.             |
 +-----------------------+------------------------------------------+-------------------------------------------------------------+
@@ -153,24 +154,24 @@ The `connection/mod.rs` module is structured to make the connection establishmen
 Shared code is in the module root. `leader/` and `worker/` have their own network handles. The workpool does not have multiple sessions per connection, which simplifies the code considerably.
 
 ```text
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Component          | Path                      | Description                                                 |
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Leader Entry Point | leader/mod.rs             | Contains `build_leader_handle()`, which returns a           |
-|                    |                           | LeaderHandle. Used to dispatch work to the workpool.        |
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Worker Entry Point | worker/mod.rs             | Contains `build_worker_handle()`, which returns a           |
-|                    |                           | WorkerHandle. Used to receive jobs from the leader.         |
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Leader Logic       | leader/leader_task.rs     | Manages connection lifecycle from the leader's perspective; |
-|                    |                           | maintains a dedicated worker manager for each worker.       |
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Job Tracker        | leader/job_tracker.rs     | Tracks dispatched but uncompleted jobs; reconciles worker-  |
-|                    |                           | reported pending lists to detect dropped jobs.              |
-+--------------------+---------------------------+-------------------------------------------------------------+
-| Worker Logic       | worker/worker_task.rs     | Manages connection lifecycle from the worker's perspective; |
-|                    |                           | tracks pending and completed jobs.                          |
-+--------------------+---------------------------+-------------------------------------------------------------+
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Component          | Path                           | Description                                                 |
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Leader Entry Point | workpool/leader/mod.rs         | Contains `build_leader_handle()`, which returns a           |
+|                    |                                | LeaderHandle. Used to dispatch work to the workpool.        |
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Worker Entry Point | workpool/worker/mod.rs         | Contains `build_worker_handle()`, which returns a           |
+|                    |                                | WorkerHandle. Used to receive jobs from the leader.         |
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Leader Logic       | workpool/leader/leader_task.rs | Manages connection lifecycle from the leader's perspective; |
+|                    |                                | maintains a dedicated worker manager for each worker.       |
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Job Tracker        | workpool/leader/job_tracker.rs | Tracks dispatched but uncompleted jobs; reconciles worker-  |
+|                    |                                | reported pending lists to detect dropped jobs.              |
++--------------------+--------------------------------+-------------------------------------------------------------+
+| Worker Logic       | workpool/worker/worker_task.rs | Manages connection lifecycle from the worker's perspective; |
+|                    |                                | tracks pending and completed jobs.                          |
++--------------------+--------------------------------+-------------------------------------------------------------+
 ```
 
 # MPC use case and design choices
@@ -190,4 +191,5 @@ Send receipts would require a channel or similar atomic synchronization primitiv
 - one task for multiple connections (epoll) - not necessary. Tokio already uses epoll under the hood. Using multiplexed connections is simpler than writing a state machine for epoll and provides similar benefits (by restricting the number of threads available to the Tokio runtime).
 3. Bake the messaging protocol directly into NetworkValue.
 Alternatives, such as using gRPC results in a large message framing overhead: Protobuf + gRPC + HTTP2 are all extra. Serializing the NetworkValue into a length + descriptor byte format allows for fast single-copy deserialization and, for smaller messages, prevents excessive framing overhead.
-4. Abstracting the netowrk connection via Tokio's `AsyncRead` and `AsyncWrite` traits decouples the protocol logic from the transport layer. This allows the networking stack to be initizized with `TCP` for development/testing (simpler, does not require certs) and with `TLS` during production, using the same code paths.
+4. Abstracting the network connection via Tokio's `AsyncRead` and `AsyncWrite` traits decouples the protocol logic from the transport layer. This allows the networking stack to be initialized with `TCP` for development/testing (simpler, does not require certs) and with `TLS` during production, using the same code paths.
+
