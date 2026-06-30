@@ -1007,8 +1007,8 @@ mod tests {
 
     /// 1) Run process_di_2d_anon_stats_job across three mocked parties over raw similarity-score pairs
     /// 2) Assert the opened histogram matches the plaintext
-    /// thresholds must be ascending
-    /// value_range must stay inside the i16 window the thresholds live in
+    ///    thresholds must be ascending
+    ///    value_range must stay inside the i16 window the thresholds live in
     async fn run_di_2d_test(
         thresholds: Vec<i16>,
         operation: Option<AnonStatsOperation>,
