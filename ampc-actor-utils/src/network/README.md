@@ -1,7 +1,7 @@
-
-Notable README files
-- network/mpc/handle/README.md
-- network/workpool/README.md
+Notable README files:  
+- [mpc](mpc/handle/README.md)
+- [workpool](workpool/README.md)
+---
 
 # `network/` layout
 ```text
@@ -15,6 +15,8 @@ network/
 `ampc-actor-utils/src/network` provides two networking stacks: `mpc` and `workpool`. They share `tcp/` which establishes connections.
 
 ## `tcp/` module
+
+The following traits are defined in `tcp/stream.rs`.
 
 ```text
 +--------------------------------+----------------+----------------------------+-------------------------------------------------------+
