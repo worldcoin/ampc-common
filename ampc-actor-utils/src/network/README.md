@@ -156,7 +156,6 @@ Shared code is in the module root. `leader/` and `worker/` have their own networ
 ```text
 +---------------------------------------+     +---------+     +---------------------------------------+
 |  LEADER                               |     |         |     |  WORKER                               |
-|  workpool/leader/                     |     |         |     |  workpool/worker/                     |
 +---------------------------------------+     |         |     +---------------------------------------+
 |                                       |     |         |     |                                       |
 |  broadcast(payload)               ----|---->|         |---->|----  recv() -> Job                    |
