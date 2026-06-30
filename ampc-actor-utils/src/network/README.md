@@ -38,7 +38,7 @@ network/
 
 ### Connection establishment
 
-Connection logic is in `network/tcp/connection/mod.rs`. The `Client` and `Server` traits provide a `connect()` function. The `accept_loop()` for the server is found in `network/tcp/connection/listener.rs`.
+Connection logic is in `network/tcp/connection/mod.rs`. The `Client` and `Server` traits provide `connect()` and `accept()` functions. The `accept_loop()` for the server is found in `network/tcp/connection/listener.rs`.
 
 The `connection/mod.rs` module is structured to make the connection establishment process retryable and cancellable. Connections do not automatically reconnect because for the `mpc` use case, a failed connection will most likely result in a failed job, which will cause the sessions to be recreated. At this point, new connections will be created for the sessions.
 
