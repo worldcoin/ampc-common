@@ -3,26 +3,25 @@
 //! This module provides common connection handling, client/server implementations,
 //! and stream wrappers that can be used by both MPC and workpool modules.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Once};
-
 pub mod config;
 pub mod connection;
 pub mod streams;
 pub mod types;
 
+use crate::execution::player::Identity;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Once};
+use thiserror::Error;
+use tokio::sync::mpsc::UnboundedSender;
+
 // Re-export commonly used types
 pub use config::configure_tcp_stream;
 pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
-use serde::{Deserialize, Deserializer, Serialize};
 pub use streams::{
     Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
 };
-use thiserror::Error;
-use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
-
-use crate::execution::player::Identity;
 
 /// specifies how the connection will be initiated between two parties
 pub enum ConnectionConfig<T: NetworkConnection + 'static> {
