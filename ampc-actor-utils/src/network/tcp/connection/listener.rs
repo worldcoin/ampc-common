@@ -35,25 +35,32 @@ pub async fn accept_loop<T: NetworkConnection, S: Server<Output = T>>(
 
     // Pre-load expected peer leaf certs (as DER bytes) for cert-pinning validation.
     let leaf_cert_cache: Option<HashMap<String, Vec<u8>>> = match &tls {
-        Some(tls_cfg) if !tls_cfg.leaf_certs.is_empty() => {
+        Some(tls_cfg) if !tls_cfg.peers.is_empty() => {
             let mut cache = HashMap::new();
-            #[allow(clippy::iter_over_hash_type)]
-            for (identity, cert_path) in &tls_cfg.leaf_certs {
-                match CertificateDer::pem_file_iter(cert_path) {
+            for (peer_id, root_cert_path) in tls_cfg.peers.iter().zip(tls_cfg.root_certs.iter()) {
+                match CertificateDer::pem_file_iter(root_cert_path) {
                     Err(e) => {
-                        tracing::error!(identity, cert_path, "failed to open leaf cert file: {e}")
+                        tracing::error!(
+                            peer_id,
+                            root_cert_path,
+                            "failed to open root cert file: {e}"
+                        )
                     }
                     Ok(mut iter) => match iter.next() {
                         None => tracing::error!(
-                            identity,
-                            cert_path,
-                            "leaf cert file contains no certificates"
+                            peer_id,
+                            root_cert_path,
+                            "root cert file contains no certificates"
                         ),
                         Some(Err(e)) => {
-                            tracing::error!(identity, cert_path, "failed to parse leaf cert: {e}")
+                            tracing::error!(
+                                peer_id,
+                                root_cert_path,
+                                "failed to parse root cert: {e}"
+                            )
                         }
                         Some(Ok(cert)) => {
-                            cache.insert(identity.clone(), cert.as_ref().to_vec());
+                            cache.insert(peer_id.clone(), cert.as_ref().to_vec());
                         }
                     },
                 }
