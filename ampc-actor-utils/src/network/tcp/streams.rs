@@ -7,9 +7,15 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::Error as RustlsError;
 use tokio_rustls::TlsStream;
 
+pub trait MaybeHasTlsCert {
+    fn maybe_tls_cert(&self) -> Option<&[u8]>;
+}
+
 /// Trait for network connections that can be closed
 #[async_trait]
-pub trait NetworkConnection: AsyncRead + AsyncWrite + Send + Sync + Unpin {
+pub trait NetworkConnection:
+    MaybeHasTlsCert + AsyncRead + AsyncWrite + Send + Sync + Unpin
+{
     async fn close(&mut self);
 }
 
@@ -119,6 +125,12 @@ pub struct TlsStreamConn(pub TlsStream<TcpStream>);
 /// Dynamic stream type for mixed connectors and listeners
 pub type DynStreamConn = Box<dyn NetworkConnection>;
 
+impl MaybeHasTlsCert for DynStreamConn {
+    fn maybe_tls_cert(&self) -> Option<&[u8]> {
+        (**self).maybe_tls_cert()
+    }
+}
+
 #[async_trait]
 impl NetworkConnection for DynStreamConn {
     async fn close(&mut self) {
@@ -160,6 +172,12 @@ impl AsyncWrite for TcpStreamConn {
     }
 }
 
+impl MaybeHasTlsCert for TcpStreamConn {
+    fn maybe_tls_cert(&self) -> Option<&[u8]> {
+        None
+    }
+}
+
 #[async_trait]
 impl NetworkConnection for TcpStreamConn {
     async fn close(&mut self) {
@@ -198,6 +216,15 @@ impl AsyncWrite for TlsStreamConn {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+    }
+}
+
+impl MaybeHasTlsCert for TlsStreamConn {
+    fn maybe_tls_cert(&self) -> Option<&[u8]> {
+        let (_, tls_session) = self.0.get_ref();
+        tls_session
+            .peer_certificates()
+            .and_then(|certs| certs.first().map(|c| c.as_ref()))
     }
 }
 
