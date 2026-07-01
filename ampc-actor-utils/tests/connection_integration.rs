@@ -983,57 +983,7 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
     Ok(())
 }
 
-/// Test ServerOnly connection with cert-pinning disabled (empty peers)
-/// Should succeed even without peer cert pinning
-#[serial]
-#[traced_test]
-#[tokio::test(flavor = "multi_thread")]
-async fn test_tls_connection_config_without_peers() -> Result<()> {
-    let setup = cert_utils::get_client_server_setup().await?;
-    let cert_utils::ClientServerTestSetup {
-        certs,
-        addr,
-        server_id,
-        client_id,
-        peer,
-    } = setup;
-
-    let listener = TlsServer::new(
-        to_inaddr_any(addr),
-        TlsServerConfig::ServerOnly {
-            key_file: certs.server_key_path.clone(),
-            cert_file: certs.server_cert_path.clone(),
-        },
-    )
-    .await?;
-
-    let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
-        private_key: None,
-        leaf_cert: None,
-        root_certs: vec![],
-        peers: vec![], // Empty peers = no pinning
-    };
-
-    let client = Arc::new(
-        TlsClient::new(TlsClientConfig::ServerOnly {
-            root_certs: certs.root_certs(),
-        })
-        .await?,
-    );
-
-    cert_utils::run_tls_server_client_test(
-        listener,
-        server_id,
-        client_id,
-        peer,
-        client,
-        Some(tls_config),
-        true, // expect success
-    )
-    .await
-}
-
-/// Test ServerOnly connection with cert-pinning enabled and correct peers
+/// Test Mutual TLS connection with cert-pinning enabled and correct peers
 /// Should succeed with matching peer IDs and root certs
 #[serial]
 #[traced_test]
@@ -1050,7 +1000,8 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
 
     let listener = TlsServer::new(
         to_inaddr_any(addr),
-        TlsServerConfig::ServerOnly {
+        TlsServerConfig::Mutual {
+            root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
         },
@@ -1060,13 +1011,15 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
         private_key: None,
         leaf_cert: None,
-        root_certs: vec![certs.ca_cert_path.clone()],
-        peers: vec![client_id.0.clone()], // Map client_id to root cert
+        root_certs: vec![certs.client_cert_path.clone()],
+        peers: vec![client_id.0.clone()],
     };
 
     let client = Arc::new(
-        TlsClient::new(TlsClientConfig::ServerOnly {
+        TlsClient::new(TlsClientConfig::Mutual {
             root_certs: certs.root_certs(),
+            key_file: certs.client_key_path.clone(),
+            cert_file: certs.client_cert_path.clone(),
         })
         .await?,
     );
@@ -1083,7 +1036,7 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     .await
 }
 
-/// Test ServerOnly connection with cert-pinning enabled but rotated peers
+/// Test Mutual TLS connection with cert-pinning enabled but rotated peers
 /// Should fail because the peer ID is mapped to the wrong certificate
 #[serial]
 #[traced_test]
@@ -1098,30 +1051,30 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
         peer,
     } = setup;
 
-    // Generate a second certificate bundle to use for rotation test
-    let certs2 = cert_utils::generate_certificates()?;
-
     let listener = TlsServer::new(
         to_inaddr_any(addr),
-        TlsServerConfig::ServerOnly {
+        TlsServerConfig::Mutual {
+            root_certs: certs.root_certs(),
             key_file: certs.server_key_path.clone(),
             cert_file: certs.server_cert_path.clone(),
         },
     )
     .await?;
 
-    // TlsConfig with peer ID mapped to a DIFFERENT root cert (rotation by 1)
-    // This simulates a misconfigured setup where peer IDs and certs don't match
+    // TlsConfig with client_id mapped to the wrong certificate (server cert instead of client cert)
+    // Client will present client_cert but server expects server_cert, so validation fails
     let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
         private_key: None,
         leaf_cert: None,
-        root_certs: vec![certs2.ca_cert_path.clone()], // Wrong cert for this peer!
+        root_certs: vec![certs.server_cert_path.clone()],
         peers: vec![client_id.0.clone()],
     };
 
     let client = Arc::new(
-        TlsClient::new(TlsClientConfig::ServerOnly {
+        TlsClient::new(TlsClientConfig::Mutual {
             root_certs: certs.root_certs(),
+            key_file: certs.client_key_path.clone(),
+            cert_file: certs.client_cert_path.clone(),
         })
         .await?,
     );
