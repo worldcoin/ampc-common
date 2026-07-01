@@ -30,6 +30,7 @@ use tracing_test::traced_test;
 
 /// Test utilities for certificate generation
 mod cert_utils {
+    use ampc_actor_utils::network::tcp::{Client, Server};
     use tempfile::TempDir;
 
     use super::*;
@@ -257,6 +258,79 @@ mod cert_utils {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         port
+    }
+
+    /// Helper to run a complete server + client test for TLS connections
+    /// Handles accept_loop, server echo, client connection, and cleanup
+    pub async fn run_tls_server_client_test(
+        listener: impl Server<Output = TlsStreamConn> + 'static,
+        server_id: Identity,
+        client_id: Identity,
+        peer: Arc<Peer>,
+        client: Arc<dyn Client<Output = TlsStreamConn>>,
+        tls_config: Option<ampc_actor_utils::network::tcp::TlsConfig>,
+        expect_success: bool,
+    ) -> Result<()> {
+        let shutdown_ct = CancellationToken::new();
+
+        // Spawn accept loop
+        let (conn_req_tx, conn_req_rx) =
+            mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
+        let accept_task = {
+            let shutdown = shutdown_ct.clone();
+            tokio::spawn(async move {
+                accept_loop(listener, conn_req_rx, shutdown, tls_config).await;
+            })
+        };
+
+        // Spawn server echo task
+        let server_task = spawn_echo_server(
+            ConnectionId::new(0),
+            server_id.clone(),
+            ConnectionConfig::Server {
+                peer_id: client_id.clone(),
+                conn_cmd_tx: conn_req_tx.clone(),
+            },
+            shutdown_ct.clone(),
+            super::TEST_MESSAGE.len(),
+        )
+        .await;
+
+        // Spawn client task
+        let client_task = spawn_test_client(
+            ConnectionId::new(0),
+            client_id.clone(),
+            ConnectionConfig::Client {
+                peer: peer.clone(),
+                client: client.clone(),
+            },
+            shutdown_ct.clone(),
+            super::TEST_MESSAGE,
+            200,
+        )
+        .await;
+
+        // Wait for completion
+        if expect_success {
+            timeout(super::TEST_TIMEOUT, server_task)
+                .await
+                .expect("server timeout")?
+                .expect("server failed");
+            timeout(super::TEST_TIMEOUT, client_task)
+                .await
+                .expect("client timeout")?
+                .expect("client failed");
+        } else {
+            let client_result = timeout(super::TEST_TIMEOUT, client_task).await;
+            assert!(client_result.is_err(), "connection should fail");
+            timeout(Duration::from_secs(1), server_task).await.ok();
+        }
+
+        // Clean up
+        shutdown_ct.cancel();
+        timeout(Duration::from_secs(1), accept_task).await.ok();
+
+        Ok(())
     }
 
     /// Spawn an echo server task that connects with the given config and echoes data back
@@ -924,7 +998,6 @@ async fn test_tls_connection_config_without_peers() -> Result<()> {
         peer,
     } = setup;
 
-    // Create TLS server with ServerOnly auth
     let listener = TlsServer::new(
         to_inaddr_any(addr),
         TlsServerConfig::ServerOnly {
@@ -934,9 +1007,6 @@ async fn test_tls_connection_config_without_peers() -> Result<()> {
     )
     .await?;
 
-    let shutdown_ct = CancellationToken::new();
-
-    // TlsConfig with empty peers - pinning disabled
     let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
         private_key: None,
         leaf_cert: None,
@@ -944,63 +1014,23 @@ async fn test_tls_connection_config_without_peers() -> Result<()> {
         peers: vec![], // Empty peers = no pinning
     };
 
-    // Spawn accept loop task
-    let (conn_req_tx, conn_req_rx) = mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
-    let accept_task = {
-        let shutdown = shutdown_ct.clone();
-        tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown, Some(tls_config)).await;
-        })
-    };
-
-    // Server-side echo handler
-    let server_task = cert_utils::spawn_echo_server(
-        ConnectionId::new(0),
-        server_id.clone(),
-        ConnectionConfig::Server {
-            peer_id: client_id.clone(),
-            conn_cmd_tx: conn_req_tx.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE.len(),
-    )
-    .await;
-
-    // Client connects using TlsClient with ServerOnly auth
     let client = Arc::new(
         TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
     );
-    let client_task = cert_utils::spawn_test_client(
-        ConnectionId::new(0),
-        client_id.clone(),
-        ConnectionConfig::Client {
-            peer: peer.clone(),
-            client: client.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE,
-        0,
+
+    cert_utils::run_tls_server_client_test(
+        listener,
+        server_id,
+        client_id,
+        peer,
+        client,
+        Some(tls_config),
+        true, // expect success
     )
-    .await;
-
-    // Wait for both tasks to complete
-    timeout(TEST_TIMEOUT, server_task)
-        .await
-        .expect("timeout")?
-        .expect("failed");
-    timeout(TEST_TIMEOUT, client_task)
-        .await
-        .expect("timeout")?
-        .expect("failed");
-
-    // Clean up
-    shutdown_ct.cancel();
-    timeout(Duration::from_secs(1), accept_task).await.ok();
-
-    Ok(())
+    .await
 }
 
 /// Test ServerOnly connection with cert-pinning enabled and correct peers
@@ -1018,7 +1048,6 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
         peer,
     } = setup;
 
-    // Create TLS server with ServerOnly auth
     let listener = TlsServer::new(
         to_inaddr_any(addr),
         TlsServerConfig::ServerOnly {
@@ -1028,9 +1057,6 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     )
     .await?;
 
-    let shutdown_ct = CancellationToken::new();
-
-    // TlsConfig with peers matching client_id and correct root cert
     let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
         private_key: None,
         leaf_cert: None,
@@ -1038,63 +1064,23 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
         peers: vec![client_id.0.clone()], // Map client_id to root cert
     };
 
-    // Spawn accept loop task
-    let (conn_req_tx, conn_req_rx) = mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
-    let accept_task = {
-        let shutdown = shutdown_ct.clone();
-        tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown, Some(tls_config)).await;
-        })
-    };
-
-    // Server-side echo handler
-    let server_task = cert_utils::spawn_echo_server(
-        ConnectionId::new(0),
-        server_id.clone(),
-        ConnectionConfig::Server {
-            peer_id: client_id.clone(),
-            conn_cmd_tx: conn_req_tx.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE.len(),
-    )
-    .await;
-
-    // Client connects using TlsClient with ServerOnly auth
     let client = Arc::new(
         TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
     );
-    let client_task = cert_utils::spawn_test_client(
-        ConnectionId::new(0),
-        client_id.clone(),
-        ConnectionConfig::Client {
-            peer: peer.clone(),
-            client: client.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE,
-        0,
+
+    cert_utils::run_tls_server_client_test(
+        listener,
+        server_id,
+        client_id,
+        peer,
+        client,
+        Some(tls_config),
+        true, // expect success
     )
-    .await;
-
-    // Wait for both tasks to complete
-    timeout(TEST_TIMEOUT, server_task)
-        .await
-        .expect("timeout")?
-        .expect("failed");
-    timeout(TEST_TIMEOUT, client_task)
-        .await
-        .expect("timeout")?
-        .expect("failed");
-
-    // Clean up
-    shutdown_ct.cancel();
-    timeout(Duration::from_secs(1), accept_task).await.ok();
-
-    Ok(())
+    .await
 }
 
 /// Test ServerOnly connection with cert-pinning enabled but rotated peers
@@ -1115,7 +1101,6 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
     // Generate a second certificate bundle to use for rotation test
     let certs2 = cert_utils::generate_certificates()?;
 
-    // Create TLS server with ServerOnly auth using first cert
     let listener = TlsServer::new(
         to_inaddr_any(addr),
         TlsServerConfig::ServerOnly {
@@ -1124,8 +1109,6 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
         },
     )
     .await?;
-
-    let shutdown_ct = CancellationToken::new();
 
     // TlsConfig with peer ID mapped to a DIFFERENT root cert (rotation by 1)
     // This simulates a misconfigured setup where peer IDs and certs don't match
@@ -1136,57 +1119,21 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
         peers: vec![client_id.0.clone()],
     };
 
-    // Spawn accept loop task
-    let (conn_req_tx, conn_req_rx) = mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
-    let accept_task = {
-        let shutdown = shutdown_ct.clone();
-        tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown, Some(tls_config)).await;
-        })
-    };
-
-    // Server-side echo handler
-    let server_task = cert_utils::spawn_echo_server(
-        ConnectionId::new(0),
-        server_id.clone(),
-        ConnectionConfig::Server {
-            peer_id: client_id.clone(),
-            conn_cmd_tx: conn_req_tx.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE.len(),
-    )
-    .await;
-
-    // Client connects using TlsClient with ServerOnly auth
     let client = Arc::new(
         TlsClient::new(TlsClientConfig::ServerOnly {
             root_certs: certs.root_certs(),
         })
         .await?,
     );
-    let client_task = cert_utils::spawn_test_client(
-        ConnectionId::new(0),
-        client_id.clone(),
-        ConnectionConfig::Client {
-            peer: peer.clone(),
-            client: client.clone(),
-        },
-        shutdown_ct.clone(),
-        TEST_MESSAGE,
-        200,
+
+    cert_utils::run_tls_server_client_test(
+        listener,
+        server_id,
+        client_id,
+        peer,
+        client,
+        Some(tls_config),
+        false, // expect failure
     )
-    .await;
-
-    // Connection should fail/timeout due to cert validation failure
-    let client_result = timeout(TEST_TIMEOUT, client_task).await;
-    assert!(
-        client_result.is_err(),
-        "connection should fail due to cert mismatch"
-    );
-
-    shutdown_ct.cancel();
-    timeout(Duration::from_secs(1), accept_task).await.ok();
-    timeout(Duration::from_secs(1), server_task).await.ok();
-    Ok(())
+    .await
 }
