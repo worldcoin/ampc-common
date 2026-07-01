@@ -10,6 +10,7 @@ pub mod types;
 
 use crate::execution::player::Identity;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use thiserror::Error;
@@ -105,6 +106,13 @@ pub struct TlsConfig {
 
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub root_certs: Vec<String>,
+
+    /// Expected leaf certificate for each connecting peer, keyed by peer identity (hostname/IP).
+    /// When non-empty, a connecting peer must present the exact certificate at the specified path.
+    /// Each value is a path to the peer's PEM-encoded certificate file.
+    #[serde(default)]
+    #[arg(skip)]
+    pub leaf_certs: HashMap<String, String>,
 }
 
 // used when constructing a worker or leader handle

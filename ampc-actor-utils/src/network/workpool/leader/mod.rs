@@ -233,6 +233,7 @@ pub async fn build_leader_handle(
             worker_ids,
             listener,
             shutdown_ct.clone(),
+            None,
         ))
     } else {
         tracing::info!("Building WorkPool Leader without TLS");
@@ -248,6 +249,7 @@ pub async fn build_leader_handle(
             worker_ids,
             listener,
             shutdown_ct.clone(),
+            None,
         ))
     }?;
 

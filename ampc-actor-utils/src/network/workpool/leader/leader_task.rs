@@ -20,7 +20,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         accept_loop, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
-        NetworkConnection, Server,
+        NetworkConnection, Server, TlsConfig,
     },
 };
 
@@ -36,6 +36,7 @@ pub fn spawn<S, T>(
     worker_names: Vec<Identity>,
     listener: S,
     shutdown_ct: CancellationToken,
+    tls: Option<TlsConfig>,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,
@@ -47,7 +48,7 @@ where
     let connection_state = ConnectionState::new(shutdown_ct.clone(), CancellationToken::new());
 
     let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
-    tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
+    tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone(), tls));
 
     let mut worker_cmd_txs = Vec::new();
     let (worker_rsp_tx, worker_rsp_rx) = mpsc::unbounded_channel();

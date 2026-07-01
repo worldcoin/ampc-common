@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::execution::scheduler::parallelize;
+use crate::network::tcp::TlsConfig;
 use crate::{
     execution::{
         player::{Identity, Role, RoleAssignment},
@@ -188,6 +189,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
         shutdown_ct: CancellationToken,
         party_index: usize,
         role_assignments: Arc<RoleAssignment>,
+        tls: Option<TlsConfig>, // needed by the accept_loop to validate peers
     ) -> Result<Self>
     where
         I: Iterator<Item = (Identity, String)>,
@@ -205,7 +207,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
         let (conn_cmd_tx, conn_cmd_rx) = mpsc::unbounded_channel::<ConnectionRequest<T>>();
 
         // be sure not to make more than one network handle...
-        tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone()));
+        tokio::spawn(accept_loop(listener, conn_cmd_rx, shutdown_ct.clone(), tls));
 
         Ok(Self {
             my_id,

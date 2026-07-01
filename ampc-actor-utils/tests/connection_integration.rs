@@ -372,7 +372,7 @@ async fn test_server_only_connection_with_server_only_tls() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -459,7 +459,7 @@ async fn test_server_only_connection_with_mutual_tls() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -574,7 +574,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
     let accept_task_a = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_a, conn_req_rx_a, shutdown).await;
+            accept_loop(listener_a, conn_req_rx_a, shutdown, None).await;
         })
     };
 
@@ -584,7 +584,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
     let accept_task_b = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_b, conn_req_rx_b, shutdown).await;
+            accept_loop(listener_b, conn_req_rx_b, shutdown, None).await;
         })
     };
 
@@ -700,7 +700,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     let accept_task_a = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_a, conn_req_rx_a, shutdown).await;
+            accept_loop(listener_a, conn_req_rx_a, shutdown, None).await;
         })
     };
 
@@ -710,7 +710,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     let accept_task_b = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_b, conn_req_rx_b, shutdown).await;
+            accept_loop(listener_b, conn_req_rx_b, shutdown, None).await;
         })
     };
 
@@ -785,7 +785,7 @@ async fn test_client_only_connection_plain_tcp() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -864,7 +864,7 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
