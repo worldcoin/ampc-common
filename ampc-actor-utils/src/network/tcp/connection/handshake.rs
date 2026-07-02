@@ -9,6 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const HANDSHAKE_OK: &[u8] = b"2ok";
 const MAX_PEER_ID_LENGTH: u32 = 128;
 
+/// Serves to exchange peer ids and agree on a session id. Called by the Client.
 pub async fn outbound<T: NetworkConnection>(
     stream: &mut T,
     own_id: &Identity,
@@ -46,6 +47,7 @@ pub async fn outbound<T: NetworkConnection>(
     Ok(())
 }
 
+/// Serves to exchange peer ids and agree on a session id. Called by the Server.
 pub async fn inbound<T: NetworkConnection>(stream: &mut T) -> Result<(Identity, ConnectionId)> {
     let connection_id = match stream.read_u32().await {
         Ok(id) => id,
@@ -78,6 +80,7 @@ pub async fn inbound<T: NetworkConnection>(stream: &mut T) -> Result<(Identity, 
     Ok((peer_id, connection_id.into()))
 }
 
+/// This is needed because the server will drop the connection if it was not told to listen for it. Called by the Client.
 pub async fn outbound_ok<T: NetworkConnection>(stream: &mut T) -> Result<(), ConnectError> {
     let mut rsp = [0; 3];
     let n = stream.read(&mut rsp[..]).await.map_err(|e| {
@@ -94,6 +97,7 @@ pub async fn outbound_ok<T: NetworkConnection>(stream: &mut T) -> Result<(), Con
     }
 }
 
+/// This is needed because the server will drop the connection if it was not told to listen for it. Called by the Server.
 pub async fn inbound_ok<T: NetworkConnection>(stream: &mut T) -> Result<()> {
     stream.write_all(HANDSHAKE_OK).await?;
     Ok(())

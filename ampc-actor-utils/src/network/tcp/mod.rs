@@ -3,25 +3,25 @@
 //! This module provides common connection handling, client/server implementations,
 //! and stream wrappers that can be used by both MPC and workpool modules.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Once};
-
 pub mod config;
 pub mod connection;
 pub mod streams;
 pub mod types;
 
+use crate::execution::player::Identity;
+use serde::{Deserialize, Deserializer, Serialize};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, Once};
+use thiserror::Error;
+use tokio::sync::mpsc::UnboundedSender;
+
 // Re-export commonly used types
-pub use config::{configure_tcp_stream, TlsConfig};
+pub use config::configure_tcp_stream;
 pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{
     Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
 };
-use thiserror::Error;
-use tokio::sync::mpsc::UnboundedSender;
 pub use types::{ConnectionId, Peer};
-
-use crate::execution::player::Identity;
 
 /// specifies how the connection will be initiated between two parties
 pub enum ConnectionConfig<T: NetworkConnection + 'static> {
@@ -50,7 +50,8 @@ pub enum ConnectionConfig<T: NetworkConnection + 'static> {
     },
 }
 
-/// tls configuration for a client
+/// TLS configuration for a client. Used by the workpool networking
+/// stack and is used internally by the MPC networking stack.
 pub enum TlsClientConfig {
     /// only the server is authenticated
     ServerOnly {
@@ -68,7 +69,9 @@ pub enum TlsClientConfig {
     },
 }
 
-/// tls configuration for a server
+/// TLS configuration for a server. Used by the workpool
+/// networking stack and is used internally by the MPC
+/// networking stack.
 pub enum TlsServerConfig {
     ServerOnly {
         /// the server key
@@ -84,6 +87,24 @@ pub enum TlsServerConfig {
         /// the server cert
         cert_file: String,
     },
+}
+
+/// TLS configuration for secure network communication. This gets passed
+/// to build_network_handle() for the MPC networking stack.
+/// It is also used to deserialize inputs from a yaml file.
+#[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
+#[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
+pub struct TlsConfig {
+    #[arg(required = false)]
+    #[serde(default)]
+    pub private_key: Option<String>,
+
+    #[arg(required = false)]
+    #[serde(default)]
+    pub leaf_cert: Option<String>,
+
+    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
+    pub root_certs: Vec<String>,
 }
 
 // used when constructing a worker or leader handle
@@ -142,4 +163,12 @@ pub fn to_inaddr_any(mut socket: SocketAddr) -> SocketAddr {
         socket.set_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
     }
     socket
+}
+
+pub fn deserialize_yaml_json_string<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = Deserialize::deserialize(deserializer)?;
+    serde_json::from_str(&value).map_err(serde::de::Error::custom)
 }

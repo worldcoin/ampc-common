@@ -105,6 +105,10 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> NetworkHan
         self.next_session_id = self
             .next_session_id
             .saturating_add(self.config.num_sessions);
+
+        // the `session` module assumes that session ids are sequential.
+        // if there is not sufficient space to make num_sessions on the next
+        // run, reset next_session_id to zero.
         if self.next_session_id >= u32::MAX - self.config.num_sessions {
             self.next_session_id = 0;
         }
