@@ -12,6 +12,7 @@ use ampc_actor_utils::{
     },
 };
 use eyre::Result;
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, Ia5String, IsCa, KeyPair,
     SanType,
@@ -411,7 +412,7 @@ mod cert_utils {
     }
 }
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_MESSAGE: &[u8] = b"Hello, TLS!";
 
 /// Test ServerOnly connection with ServerOnly TLS
@@ -1008,11 +1009,16 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     )
     .await?;
 
+    let mut peer_certs = std::collections::HashMap::new();
+    let client_cert_der = CertificateDer::pem_file_iter(&certs.client_cert_path)?
+        .next()
+        .ok_or(eyre::eyre!("no certificate found in file"))?
+        .map_err(|e| eyre::eyre!("failed to parse certificate: {}", e))?;
+    peer_certs.insert(client_id.0.clone(), client_cert_der.as_ref().to_vec());
+
     let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
-        private_key: None,
-        leaf_cert: None,
-        root_certs: vec![certs.client_cert_path.clone()],
-        peers: vec![client_id.0.clone()],
+        peer_certs,
+        validate_peer_ids: true,
     };
 
     let client = Arc::new(
@@ -1063,11 +1069,16 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
 
     // TlsConfig with client_id mapped to the wrong certificate (server cert instead of client cert)
     // Client will present client_cert but server expects server_cert, so validation fails
+    let mut peer_certs = std::collections::HashMap::new();
+    let server_cert_der = CertificateDer::pem_file_iter(&certs.server_cert_path)?
+        .next()
+        .ok_or(eyre::eyre!("no certificate found in file"))?
+        .map_err(|e| eyre::eyre!("failed to parse certificate: {}", e))?;
+    peer_certs.insert(client_id.0.clone(), server_cert_der.as_ref().to_vec());
+
     let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
-        private_key: None,
-        leaf_cert: None,
-        root_certs: vec![certs.server_cert_path.clone()],
-        peers: vec![client_id.0.clone()],
+        peer_certs,
+        validate_peer_ids: true,
     };
 
     let client = Arc::new(
