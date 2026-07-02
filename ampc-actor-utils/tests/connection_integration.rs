@@ -12,7 +12,6 @@ use ampc_actor_utils::{
     },
 };
 use eyre::Result;
-use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, Ia5String, IsCa, KeyPair,
     SanType,
@@ -26,6 +25,7 @@ use tokio::{
     sync::mpsc,
     time::{timeout, Duration},
 };
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio_util::sync::CancellationToken;
 use tracing_test::traced_test;
 
