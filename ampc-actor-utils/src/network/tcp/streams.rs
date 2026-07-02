@@ -26,11 +26,22 @@ pub trait Client: Send + Sync {
     async fn connect(&self, url: String) -> Result<Self::Output, ConnectError>;
 }
 
+/// TLS mode exposed by a server
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsMode {
+    None,
+    ServerOnly,
+    Mutual,
+}
+
 /// Trait for accepting incoming connections
 #[async_trait]
 pub trait Server: Send {
     type Output: NetworkConnection;
     async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError>;
+    fn tls_mode(&self) -> TlsMode {
+        TlsMode::None
+    }
 }
 
 /// Error type for network connection operations

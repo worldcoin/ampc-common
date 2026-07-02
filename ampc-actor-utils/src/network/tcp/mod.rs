@@ -10,6 +10,7 @@ pub mod types;
 
 use crate::execution::player::Identity;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use thiserror::Error;
@@ -19,7 +20,8 @@ use tokio::sync::mpsc::UnboundedSender;
 pub use config::configure_tcp_stream;
 pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{
-    Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
+    Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsMode,
+    TlsStreamConn,
 };
 pub use types::{ConnectionId, Peer};
 
@@ -105,12 +107,22 @@ pub struct TlsConfig {
 
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub root_certs: Vec<String>,
+}
 
-    /// if set, check that when the server accepts a TLS connection,
-    /// the peer id corresponds to the idx in root_certs.
-    #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
-    #[arg(skip)]
-    pub peers: Vec<String>,
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeTlsConfig {
+    pub private_key: Option<String>,
+
+    pub leaf_cert: Option<String>,
+
+    pub root_certs: Vec<String>,
+
+    /// Used by the MPC protocol to validate that a peer ID, claimed during the connection setup process,
+    /// matches their root certificate.
+    pub peer_certs: HashMap<String, Vec<u8>>,
+
+    /// If true, use peer_certs to validate incoming peer connections.
+    pub validate_peer_ids: bool,
 }
 
 // used when constructing a worker or leader handle

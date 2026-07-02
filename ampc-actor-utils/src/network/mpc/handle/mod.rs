@@ -16,7 +16,9 @@ use crate::execution::session::{NetworkSession, Session};
 use crate::network::mpc::handle::control_channel::ControlChannel;
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
-use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
+use crate::network::tcp::{
+    self, RuntimeTlsConfig, TcpStreamConn, TlsClientConfig, TlsServerConfig,
+};
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -53,7 +55,7 @@ pub struct NetworkHandleArgs {
     pub sessions_per_request: usize,
     /// assumes that if tls is Some, everything needed for mutual TLS will
     /// be present
-    pub tls: Option<TlsConfig>,
+    pub tls: Option<RuntimeTlsConfig>,
 }
 
 pub async fn build_network_handle(

@@ -20,7 +20,7 @@ use crate::{
     execution::player::Identity,
     network::tcp::{
         accept_loop, ConnectionConfig, ConnectionId, ConnectionRequest, ConnectionState,
-        NetworkConnection, Server, TlsConfig,
+        NetworkConnection, RuntimeTlsConfig, Server,
     },
 };
 
@@ -36,7 +36,7 @@ pub fn spawn<S, T>(
     worker_names: Vec<Identity>,
     listener: S,
     shutdown_ct: CancellationToken,
-    tls: Option<TlsConfig>,
+    tls: Option<RuntimeTlsConfig>,
 ) -> (Sender<Job>, Vec<watch::Receiver<bool>>)
 where
     T: NetworkConnection + 'static,

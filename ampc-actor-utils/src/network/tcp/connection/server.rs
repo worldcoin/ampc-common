@@ -1,6 +1,6 @@
 use crate::network::tcp::{
     configure_tcp_stream, ConnectError, DynStreamConn, Server, SetupError, TcpStreamConn, TlsError,
-    TlsServerConfig, TlsStreamConn,
+    TlsMode, TlsServerConfig, TlsStreamConn,
 };
 use async_trait::async_trait;
 use eyre::Result;
@@ -16,6 +16,7 @@ use tokio_rustls::{TlsAcceptor, TlsStream};
 pub struct TlsServer {
     listener: TcpListener,
     tls_acceptor: TlsAcceptor,
+    tls_mode: TlsMode,
 }
 
 pub struct TcpServer {
@@ -24,6 +25,11 @@ pub struct TcpServer {
 
 impl TlsServer {
     pub async fn new(own_addr: SocketAddr, cfg: TlsServerConfig) -> Result<Self, SetupError> {
+        let tls_mode = match &cfg {
+            TlsServerConfig::ServerOnly { .. } => TlsMode::ServerOnly,
+            TlsServerConfig::Mutual { .. } => TlsMode::Mutual,
+        };
+
         let server_config = match cfg {
             TlsServerConfig::ServerOnly {
                 key_file,
@@ -97,6 +103,7 @@ impl TlsServer {
         Ok(Self {
             listener,
             tls_acceptor,
+            tls_mode,
         })
     }
 }
@@ -117,6 +124,9 @@ impl Server for TlsServer {
             .map_err(|e| ConnectError::TcpConfigFailed(e.to_string()))?;
         let tls_stream = self.tls_acceptor.accept(tcp_stream).await?;
         Ok((peer_addr, TlsStreamConn(TlsStream::Server(tls_stream))))
+    }
+    fn tls_mode(&self) -> TlsMode {
+        self.tls_mode
     }
 }
 

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::execution::scheduler::parallelize;
-use crate::network::tcp::TlsConfig;
+use crate::network::tcp::{RuntimeTlsConfig, TlsConfig};
 use crate::{
     execution::{
         player::{Identity, Role, RoleAssignment},
@@ -31,6 +32,8 @@ use futures::future::join_all;
 use itertools::Itertools;
 use rand::{thread_rng, Rng};
 use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::CertificateDer;
 use tokio_util::sync::CancellationToken;
 
 pub struct MpcNetworkHandle<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> {
@@ -189,12 +192,15 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
         shutdown_ct: CancellationToken,
         party_index: usize,
         role_assignments: Arc<RoleAssignment>,
-        tls: Option<TlsConfig>, // needed by the accept_loop to validate peers
+        tls_cfg: Option<TlsConfig>, // needed by the accept_loop to validate peers
     ) -> Result<Self>
     where
         I: Iterator<Item = (Identity, String)>,
         S: Server<Output = T> + 'static,
     {
+        let p: Vec<_> = peers.map(|(id, _address)| id.0.clone()).collect();
+        let tls = build_runtime_tls_config(tls_cfg, &p, party_index)?;
+
         let my_id = Arc::new(my_id);
         let peers: [Arc<Peer>; 2] = [
             Arc::new(peers.next().expect("expected at least 2 identities").into()),
@@ -300,6 +306,74 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
         }
         Ok(())
     }
+}
+
+// tls_cfg.root_certs has all 3 parties root certs but NetworkHandleArgs.peers may only have 2 identites.
+// need to use party_idx to filter out root_certs so that it matches the length of peers.
+fn build_runtime_tls_config(
+    tls_cfg: Option<TlsConfig>,
+    peers: &[String],
+    party_idx: usize,
+) -> Result<Option<RuntimeTlsConfig>> {
+    let Some(tls_cfg) = tls_cfg else {
+        return Ok(None);
+    };
+    let mut cert_load_errors: Vec<String> = Vec::new();
+    let mut peer_certs = HashMap::new();
+
+    let mut root_certs = tls_cfg.root_certs.clone();
+    root_certs.remove(party_idx);
+    if root_certs.len() != peers.len() {
+        bail!("mismatch between root certs and peer ids");
+    }
+    for (peer_id, root_cert_path) in peers.iter().zip(root_certs.into_iter()) {
+        match CertificateDer::pem_file_iter(&root_cert_path) {
+            Err(e) => {
+                let err_msg = format!(
+                    "failed to open cert file for peer {}: {} (path: {})",
+                    peer_id, e, root_cert_path
+                );
+                tracing::error!("{}", err_msg);
+                cert_load_errors.push(err_msg);
+            }
+            Ok(mut iter) => match iter.next() {
+                None => {
+                    let err_msg = format!(
+                        "cert file for peer {} contains no certificates (path: {})",
+                        peer_id, root_cert_path
+                    );
+                    tracing::error!("{}", err_msg);
+                    cert_load_errors.push(err_msg);
+                }
+                Some(Err(e)) => {
+                    let err_msg = format!(
+                        "failed to parse cert for peer {}: {} (path: {})",
+                        peer_id, e, root_cert_path
+                    );
+                    tracing::error!("{}", err_msg);
+                    cert_load_errors.push(err_msg);
+                }
+                Some(Ok(cert)) => {
+                    peer_certs.insert(peer_id.clone(), cert.as_ref().to_vec());
+                }
+            },
+        }
+    }
+
+    if peer_certs.keys().len() != peers.len() {
+        bail!(
+            "failed to load certs for at least one peer. errors: {:?}",
+            cert_load_errors
+        );
+    }
+
+    Ok(Some(RuntimeTlsConfig {
+        private_key: tls_cfg.private_key,
+        leaf_cert: tls_cfg.leaf_cert,
+        root_certs: tls_cfg.root_certs,
+        validate_peer_ids: true, // if we ever want to use ServerOnly TLS, this could be changed to !peer_certs.is_empty()
+        peer_certs,
+    }))
 }
 
 #[cfg(test)]

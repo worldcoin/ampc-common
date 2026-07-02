@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
-use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{connection::handshake, ConnectionId, NetworkConnection, Server, TlsConfig},
+    network::tcp::{
+        connection::handshake, ConnectionId, NetworkConnection, RuntimeTlsConfig, Server, TlsMode,
+    },
 };
 
 pub struct ConnectionRequest<T: NetworkConnection> {
@@ -28,47 +29,21 @@ pub async fn accept_loop<T: NetworkConnection, S: Server<Output = T>>(
     listener: S,
     mut cmd_ch: UnboundedReceiver<ConnectionRequest<T>>,
     shutdown_ct: CancellationToken,
-    tls: Option<TlsConfig>,
+    tls: Option<RuntimeTlsConfig>,
 ) {
     let mut connection_requests: HashMap<Identity, HashMap<ConnectionId, oneshot::Sender<T>>> =
         HashMap::new();
 
-    // Pre-load expected peer leaf certs (as DER bytes) for cert-pinning validation.
-    let leaf_cert_cache: Option<HashMap<String, Vec<u8>>> = match &tls {
-        Some(tls_cfg) if !tls_cfg.peers.is_empty() => {
-            let mut cache = HashMap::new();
-            for (peer_id, root_cert_path) in tls_cfg.peers.iter().zip(tls_cfg.root_certs.iter()) {
-                match CertificateDer::pem_file_iter(root_cert_path) {
-                    Err(e) => {
-                        tracing::error!(
-                            peer_id,
-                            root_cert_path,
-                            "failed to open root cert file: {e}"
-                        )
-                    }
-                    Ok(mut iter) => match iter.next() {
-                        None => tracing::error!(
-                            peer_id,
-                            root_cert_path,
-                            "root cert file contains no certificates"
-                        ),
-                        Some(Err(e)) => {
-                            tracing::error!(
-                                peer_id,
-                                root_cert_path,
-                                "failed to parse root cert: {e}"
-                            )
-                        }
-                        Some(Ok(cert)) => {
-                            cache.insert(peer_id.clone(), cert.as_ref().to_vec());
-                        }
-                    },
-                }
-            }
-            Some(cache)
+    // Validate that cert-pinning is only used with Mutual TLS
+    if let Some(ref tls_cfg) = tls {
+        if !tls_cfg.validate_peer_ids && listener.tls_mode() != TlsMode::Mutual {
+            tracing::warn!(
+                tls_mode = ?listener.tls_mode(),
+                "Peer ID validation is enabled but TLS mode is not Mutual. \
+                 This will cause all connections to be rejected. Use TlsMode::Mutual."
+            );
         }
-        _ => None,
-    };
+    }
 
     loop {
         let r = tokio::select! {
@@ -98,21 +73,24 @@ pub async fn accept_loop<T: NetworkConnection, S: Server<Output = T>>(
                     }
                 };
 
-                // Cert-pinning: if leaf_certs are configured, verify the peer presented the
+                // If enabled, verify the peer presented the
                 // expected certificate for its claimed identity.
-                if let Some(ref cache) = leaf_cert_cache {
-                    let identity = &peer_id.0;
-                    let valid = cache
-                        .get(identity)
-                        .map(|expected| stream.maybe_tls_cert() == Some(expected.as_slice()))
-                        .unwrap_or(false);
-                    if !valid {
-                        tracing::warn!(
-                            peer_id = identity,
-                            "peer cert validation failed: rejecting connection"
-                        );
-                        stream.close().await;
-                        continue;
+                if let Some(ref tls) = tls {
+                    if tls.validate_peer_ids {
+                        let identity = &peer_id.0;
+                        let valid = tls
+                            .peer_certs
+                            .get(identity)
+                            .map(|expected| stream.maybe_tls_cert() == Some(expected.as_slice()))
+                            .unwrap_or(false);
+                        if !valid {
+                            tracing::warn!(
+                                peer_id = identity,
+                                "peer cert validation failed: rejecting connection"
+                            );
+                            stream.close().await;
+                            continue;
+                        }
                     }
                 }
 

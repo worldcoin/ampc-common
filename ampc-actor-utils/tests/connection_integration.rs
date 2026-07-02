@@ -268,7 +268,7 @@ mod cert_utils {
         client_id: Identity,
         peer: Arc<Peer>,
         client: Arc<dyn Client<Output = TlsStreamConn>>,
-        tls_config: Option<ampc_actor_utils::network::tcp::TlsConfig>,
+        tls_config: Option<ampc_actor_utils::network::tcp::RuntimeTlsConfig>,
         expect_success: bool,
     ) -> Result<()> {
         let shutdown_ct = CancellationToken::new();
@@ -1008,7 +1008,7 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     )
     .await?;
 
-    let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
+    let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
         private_key: None,
         leaf_cert: None,
         root_certs: vec![certs.client_cert_path.clone()],
@@ -1063,7 +1063,7 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
 
     // TlsConfig with client_id mapped to the wrong certificate (server cert instead of client cert)
     // Client will present client_cert but server expects server_cert, so validation fails
-    let tls_config = ampc_actor_utils::network::tcp::TlsConfig {
+    let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
         private_key: None,
         leaf_cert: None,
         root_certs: vec![certs.server_cert_path.clone()],
