@@ -1,4 +1,4 @@
-use ampc_actor_utils::network::tcp::RuntimeTlsConfig;
+use ampc_actor_utils::network::tcp::TlsConfig;
 use ampc_server_utils::config::{AwsConfig, ServiceConfig};
 use ampc_server_utils::ServerCoordinationConfig;
 use clap::Parser;
@@ -152,7 +152,7 @@ pub struct AnonStatsServerConfig {
     pub shutdown_last_results_sync_timeout_secs: u64,
 
     #[serde(default)]
-    pub tls: Option<RuntimeTlsConfig>,
+    pub tls: Option<TlsConfig>,
 }
 
 fn default_face_bucket_thresholds() -> Vec<i16> {

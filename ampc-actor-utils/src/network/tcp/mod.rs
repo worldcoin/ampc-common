@@ -110,13 +110,7 @@ pub struct TlsConfig {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct RuntimeTlsConfig {
-    pub private_key: Option<String>,
-
-    pub leaf_cert: Option<String>,
-
-    pub root_certs: Vec<String>,
-
+pub struct RuntimeTlsConfig {
     /// Used by the MPC protocol to validate that a peer ID, claimed during the connection setup process,
     /// matches their root certificate.
     pub peer_certs: HashMap<String, Vec<u8>>,

@@ -185,7 +185,7 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
     #[allow(clippy::too_many_arguments)]
     pub async fn new<I, S>(
         my_id: Identity,
-        mut peers: I,
+        peers: I,
         connector: C,
         listener: S,
         config: MpcConfig,
@@ -198,8 +198,10 @@ impl<T: NetworkConnection + 'static, C: Client<Output = T> + 'static> MpcNetwork
         I: Iterator<Item = (Identity, String)>,
         S: Server<Output = T> + 'static,
     {
-        let p: Vec<_> = peers.map(|(id, _address)| id.0.clone()).collect();
-        let tls = build_runtime_tls_config(tls_cfg, &p, party_index)?;
+        let peers: Vec<_> = peers.collect();
+        let identities: Vec<_> = peers.iter().map(|(id, _address)| id.0.clone()).collect();
+        let mut peers = peers.into_iter();
+        let tls = build_runtime_tls_config(tls_cfg, &identities, party_index)?;
 
         let my_id = Arc::new(my_id);
         let peers: [Arc<Peer>; 2] = [
@@ -368,9 +370,6 @@ fn build_runtime_tls_config(
     }
 
     Ok(Some(RuntimeTlsConfig {
-        private_key: tls_cfg.private_key,
-        leaf_cert: tls_cfg.leaf_cert,
-        root_certs: tls_cfg.root_certs,
         validate_peer_ids: true, // if we ever want to use ServerOnly TLS, this could be changed to !peer_certs.is_empty()
         peer_certs,
     }))

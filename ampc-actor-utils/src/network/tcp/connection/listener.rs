@@ -36,7 +36,7 @@ pub async fn accept_loop<T: NetworkConnection, S: Server<Output = T>>(
 
     // Validate that cert-pinning is only used with Mutual TLS
     if let Some(ref tls_cfg) = tls {
-        if !tls_cfg.validate_peer_ids && listener.tls_mode() != TlsMode::Mutual {
+        if tls_cfg.validate_peer_ids && listener.tls_mode() != TlsMode::Mutual {
             tracing::warn!(
                 tls_mode = ?listener.tls_mode(),
                 "Peer ID validation is enabled but TLS mode is not Mutual. \
