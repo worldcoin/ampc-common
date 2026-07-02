@@ -6,6 +6,7 @@
 //! iris embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eyre::bail;
 use rand::{CryptoRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
@@ -31,6 +32,23 @@ pub struct IrisSecretSharedVector(pub [u16; IRIS_VECTOR_SIZE]);
 impl Default for IrisSecretSharedVector {
     fn default() -> Self {
         IrisSecretSharedVector([0u16; IRIS_VECTOR_SIZE])
+    }
+}
+
+impl IrisSecretSharedVector {
+    pub fn from_protobuf_share(pb_share: Vec<u32>) -> eyre::Result<Self> {
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        if pb_share.len() != IRIS_VECTOR_SIZE {
+            return Err(eyre::eyre!(
+                "Expected {} elements, got {}",
+                IRIS_VECTOR_SIZE,
+                pb_share.len()
+            ));
+        }
+        for (i, chunk) in pb_share.iter().enumerate() {
+            arr[i] = u16::try_from(*chunk)?;
+        }
+        Ok(IrisSecretSharedVector(arr))
     }
 }
 
@@ -215,6 +233,31 @@ impl IrisVector {
 
         Ok(shares)
     }
+
+    /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
+    /// Mainly useful for tests, dev tooling, and PCP fixture generation.
+    pub fn to_base64(&self) -> String {
+        let bytes: [u8; IRIS_VECTOR_SIZE] = self.0.map(|v| v as u8);
+        STANDARD.encode(bytes)
+    }
+
+    pub fn from_base64(s: &str) -> eyre::Result<Self> {
+        let bytes = STANDARD
+            .decode(s.as_bytes())
+            .map_err(|e| eyre::eyre!("IrisVector base64 decode failed: {}", e))?;
+        if bytes.len() != IRIS_VECTOR_SIZE {
+            bail!(
+                "Invalid IrisVector base64 length: expected {} bytes, got {}",
+                IRIS_VECTOR_SIZE,
+                bytes.len()
+            );
+        }
+        let mut arr = [0i8; IRIS_VECTOR_SIZE];
+        for (i, b) in bytes.iter().enumerate() {
+            arr[i] = *b as i8;
+        }
+        Ok(IrisVector(arr))
+    }
 }
 
 impl fmt::Display for IrisVector {
@@ -244,6 +287,39 @@ impl IrisSecretSharedVector {
     /// Convert the share to a Vec<u16>.
     pub fn to_vec(&self) -> Vec<u16> {
         self.0.to_vec()
+    }
+
+    /// Base64-encode the share as standard base64 (with padding). The byte layout
+    /// is the little-endian representation of the underlying `[u16; IRIS_VECTOR_SIZE]`,
+    /// producing `IRIS_VECTOR_SIZE * 2` bytes (1024 for the current 512-element layout).
+    ///
+    /// This is the on-the-wire form orb/mobile encrypt and backend nodes decrypt;
+    /// keep encoder and decoder symmetric by using these helpers on both sides.
+    pub fn to_base64(&self) -> String {
+        let mut bytes = Vec::with_capacity(IRIS_VECTOR_SIZE * 2);
+        for value in &self.0 {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        STANDARD.encode(bytes)
+    }
+
+    pub fn from_base64(s: &str) -> eyre::Result<Self> {
+        let bytes = STANDARD
+            .decode(s.as_bytes())
+            .map_err(|e| eyre::eyre!("IrisSecretSharedVector base64 decode failed: {}", e))?;
+        if bytes.len() != IRIS_VECTOR_SIZE * 2 {
+            bail!(
+                "Invalid IrisSecretSharedVector base64 length: expected {} bytes ({} u16 elements), got {}",
+                IRIS_VECTOR_SIZE * 2,
+                IRIS_VECTOR_SIZE,
+                bytes.len()
+            );
+        }
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        for (i, chunk) in bytes.chunks_exact(2).enumerate() {
+            arr[i] = u16::from_le_bytes([chunk[0], chunk[1]]);
+        }
+        Ok(IrisSecretSharedVector(arr))
     }
 
     /// Multiply this share by Lagrange coefficients for the given party ID.
@@ -299,12 +375,14 @@ impl<'de> Deserialize<'de> for IrisSecretSharedVector {
 
 #[cfg(test)]
 mod tests {
+    use super::IrisSecretSharedVector;
     use super::IrisVector;
     use super::IRIS_VECTOR_SIZE;
     use crate::basis;
     use crate::GaloisRingElement;
     use crate::PartyID;
     use crate::ShamirGaloisRingShare;
+    use base64::Engine as _;
     use rand::thread_rng;
 
     #[test]
@@ -384,5 +462,59 @@ mod tests {
             .collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_iris_vector_base64_round_trip() {
+        let mut rng = thread_rng();
+        for _ in 0..50 {
+            let original = IrisVector::random_normalized(&mut rng);
+            let encoded = original.to_base64();
+            let decoded = IrisVector::from_base64(&encoded).expect("decode must succeed");
+            assert_eq!(original.0, decoded.0);
+        }
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_base64_round_trip() {
+        let mut rng = thread_rng();
+        for _ in 0..50 {
+            let original = IrisVector::random_normalized(&mut rng);
+            let shares = original.secret_share(&mut rng).expect("secret_share");
+            for share in &shares {
+                let encoded = share.to_base64();
+                let decoded =
+                    IrisSecretSharedVector::from_base64(&encoded).expect("decode must succeed");
+                assert_eq!(share.0, decoded.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_iris_vector_from_base64_rejects_wrong_length() {
+        let bad = base64::engine::general_purpose::STANDARD.encode([0u8; 100]);
+        assert!(IrisVector::from_base64(&bad).is_err());
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_from_base64_rejects_wrong_length() {
+        let bad = base64::engine::general_purpose::STANDARD.encode([0u8; 100]);
+        assert!(IrisSecretSharedVector::from_base64(&bad).is_err());
+    }
+
+    #[test]
+    fn test_iris_secret_shared_vector_byte_layout_is_little_endian() {
+        // Pin the wire format: encoding [0x0001, 0x0203, ...] produces the exact
+        // bytes [0x01, 0x00, 0x03, 0x02, ...]. Regression guard against an
+        // accidental endianness flip on either side of the protocol.
+        let mut arr = [0u16; IRIS_VECTOR_SIZE];
+        arr[0] = 0x0001;
+        arr[1] = 0x0203;
+        let share = IrisSecretSharedVector(arr);
+        let encoded = share.to_base64();
+        let decoded_bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .unwrap();
+        assert_eq!(decoded_bytes[0..4], [0x01, 0x00, 0x03, 0x02]);
     }
 }

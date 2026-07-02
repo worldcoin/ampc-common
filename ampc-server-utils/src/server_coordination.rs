@@ -10,7 +10,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::get;
 use axum::Router;
-use eyre::{ensure, Error, Result, WrapErr};
+use eyre::{bail, ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
 use itertools::Itertools as _;
 use serde::de::DeserializeOwned;
@@ -51,13 +51,14 @@ async fn log_request(req: Request, next: Next) -> AxumResponse {
     let path = req.uri().path().to_string();
     let started = Instant::now();
     let response = next.run(req).await;
-    tracing::info!(
-        "{} {} -> {} ({} ms)",
-        method,
-        path,
-        response.status().as_u16(),
-        started.elapsed().as_millis()
-    );
+    let status = response.status().as_u16();
+    let elapsed = started.elapsed().as_millis();
+    // High-frequency liveness/readiness probes are noise at info level.
+    if path == "/health" || path == "/ready" {
+        tracing::debug!("{} {} -> {} ({} ms)", method, path, status, elapsed);
+    } else {
+        tracing::info!("{} {} -> {} ({} ms)", method, path, status, elapsed);
+    }
     response
 }
 
@@ -633,4 +634,147 @@ pub async fn try_get_endpoint_other_nodes(
         .collect::<Vec<_>>();
 
     Ok(all_responses)
+}
+
+/// Waits until every node has observed every other node during startup.
+///
+/// `wait_for_others_unready` proves that this node saw its peers, but not that
+/// all peers have also observed each other. HNSW startup does heavy loading
+/// immediately after the startup checks, so hold here until cluster visibility
+/// is complete.
+pub async fn wait_until_startup_visibility_is_complete(
+    config: &ServerCoordinationConfig,
+    verified_peers: &Arc<Mutex<HashSet<String>>>,
+    my_uuid: &str,
+) -> Result<()> {
+    tracing::info!("Waiting for full peer visibility during startup");
+
+    let started = Instant::now();
+    let startup_timeout = Duration::from_secs(config.startup_sync_timeout_secs);
+    let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
+    loop {
+        let connected_health_resps = match try_get_endpoint_other_nodes(config, "health").await {
+            Ok(resps) => resps,
+            Err(err) if started.elapsed() < startup_timeout => {
+                tracing::warn!(
+                    "Failed to query peer health while waiting for full startup visibility: {:?}",
+                    err
+                );
+                tokio::time::sleep(retry_duration).await;
+                continue;
+            }
+            Err(err) => {
+                return Err(
+                    err.wrap_err("timed out waiting for full peer visibility during startup")
+                );
+            }
+        };
+
+        let mut peer_responses = Vec::with_capacity(connected_health_resps.len());
+        for (_status, body) in connected_health_resps {
+            let probe_response: ReadyProbeResponse = serde_json::from_slice(&body)
+                .wrap_err("Failed to deserialize ReadyProbeResponse")?;
+            peer_responses.push(probe_response);
+        }
+
+        {
+            let mut verified = verified_peers.lock().await;
+            for probe_response in &peer_responses {
+                verified.insert(probe_response.uuid.clone());
+            }
+        }
+
+        let expected_uuids = current_startup_uuid_set(my_uuid, &peer_responses);
+
+        let mut incomplete_visibility = Vec::new();
+        for probe_response in peer_responses {
+            let missing_uuids = missing_startup_visibility(
+                &expected_uuids,
+                &probe_response.uuid,
+                &probe_response.verified_peers,
+            );
+
+            if !missing_uuids.is_empty() {
+                incomplete_visibility.push((
+                    probe_response.uuid,
+                    probe_response.verified_peers,
+                    missing_uuids,
+                ));
+            }
+        }
+
+        if incomplete_visibility.is_empty() {
+            tracing::info!("All nodes have full peer visibility during startup");
+            return Ok(());
+        }
+
+        if started.elapsed() >= startup_timeout {
+            bail!(
+                "Timed out waiting for full peer visibility during startup: {:?}",
+                incomplete_visibility
+            );
+        }
+
+        tracing::debug!(
+            "Waiting for full peer visibility during startup: {:?}",
+            incomplete_visibility
+        );
+        tokio::time::sleep(retry_duration).await;
+    }
+}
+
+fn current_startup_uuid_set(
+    my_uuid: &str,
+    peer_responses: &[ReadyProbeResponse],
+) -> HashSet<String> {
+    let mut expected_uuids = HashSet::from([my_uuid.to_owned()]);
+    expected_uuids.extend(
+        peer_responses
+            .iter()
+            .map(|probe_response| probe_response.uuid.clone()),
+    );
+    expected_uuids
+}
+
+fn missing_startup_visibility(
+    expected_uuids: &HashSet<String>,
+    peer_uuid: &str,
+    peer_verified_peers: &HashSet<String>,
+) -> Vec<String> {
+    let mut missing_uuids = expected_uuids
+        .iter()
+        .filter(|uuid| uuid.as_str() != peer_uuid)
+        .filter(|uuid| !peer_verified_peers.contains(*uuid))
+        .cloned()
+        .collect::<Vec<_>>();
+    missing_uuids.sort();
+    missing_uuids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn missing_startup_visibility_ignores_peer_own_uuid() {
+        let expected = set(&["node-0", "node-1", "node-2"]);
+        let verified = set(&["node-0"]);
+
+        assert_eq!(
+            missing_startup_visibility(&expected, "node-1", &verified),
+            vec!["node-2".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_startup_visibility_accepts_full_peer_visibility() {
+        let expected = set(&["node-0", "node-1", "node-2"]);
+        let verified = set(&["node-0", "node-2", "stale-node-2"]);
+
+        assert!(missing_startup_visibility(&expected, "node-1", &verified).is_empty());
+    }
 }

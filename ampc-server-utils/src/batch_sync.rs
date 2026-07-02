@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
-use eyre::{bail, eyre, Context, Result};
+use eyre::{bail, eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
@@ -221,58 +221,86 @@ pub async fn get_batch_sync_states(
 
     for host in [next_node, prev_node].iter() {
         let mut fetched_state: Option<BatchSyncState> = None;
+        // Records why the most recent poll attempt did not succeed, so that if
+        // the outer timeout fires we can report the actual cause rather than a
+        // bare "timeout" message.
+        let mut last_observed: Option<String> = None;
 
         match timeout(polling_timeout_duration, async {
+            // Outer timeout bounds all retry logic in this loop
             loop {
                 // Add batch_id as query parameter
                 let url = format!("{}?batch_id={}", host.as_str(), reference_batch_id);
-                let res = reqwest::get(&url).await.with_context(|| {
-                    format!("Failed to fetch batch sync state from party {}", host)
-                })?;
+                let res = match reqwest::get(&url).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to fetch batch sync state from party {}: {:?}. Retrying in 1 second...",
+                            host,
+                            e
+                        );
+                        last_observed = Some(format!("request error: {:?}", e));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
 
-                tracing::info!("Response Status: {}", res.status());
+                tracing::debug!("Response Status: {}", res.status());
 
-                // Check if we got a 409 Conflict response (batch_id mismatch)
-                if res.status() == reqwest::StatusCode::CONFLICT {
-                    let error_body = res
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Unknown error".to_string());
-                    tracing::info!(
-                        "Party {} returned batch ID mismatch: {}. Retrying in 1 second...",
-                        host,
-                        error_body
-                    );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-
-                // Handle other non-OK status codes
+                // Retry on any non-OK status. A 409 Conflict just means the peer
+                // is on a different batch_id (expected during sync), so log it at
+                // debug; other statuses may be transient (e.g. a node still
+                // starting up returning 5xx) and are logged at warn.
                 if !res.status().is_success() {
                     let status = res.status();
                     let error_body = res
                         .text()
                         .await
                         .unwrap_or_else(|_| "Unknown error".to_string());
-                    bail!(
-                        "Party {} returned error status {}: {}",
-                        host,
-                        status,
-                        error_body
-                    );
+                    if status == reqwest::StatusCode::CONFLICT {
+                        tracing::debug!(
+                            "Party {} returned batch ID mismatch: {}. Retrying in 1 second...",
+                            host,
+                            error_body
+                        );
+                    } else {
+                        tracing::warn!(
+                            "Party {} returned error status {}: {}. Retrying in 1 second...",
+                            host,
+                            status,
+                            error_body
+                        );
+                    }
+                    last_observed = Some(format!("HTTP {}: {}", status, error_body));
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
 
-                let state: BatchSyncState = res.json().await.with_context(|| {
-                    format!("Failed to parse batch sync state from party {}", host)
-                })?;
+                let state: BatchSyncState = match res.json().await {
+                    Ok(state) => state,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse batch sync state from party {}: {:?}. Retrying in 1 second...",
+                            host,
+                            e
+                        );
+                        last_observed = Some(format!("failed to parse response body: {:?}", e));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
 
                 if state.batch_id < reference_batch_id {
-                    tracing::info!(
+                    tracing::debug!(
                         "Party {} (batch_id {}) is behind own batch_id {}. Retrying in 1 second...",
                         host,
                         state.batch_id,
                         reference_batch_id
                     );
+                    last_observed = Some(format!(
+                        "peer at batch_id {} is behind reference {}",
+                        state.batch_id, reference_batch_id
+                    ));
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 } else {
                     fetched_state = Some(state);
@@ -319,11 +347,14 @@ pub async fn get_batch_sync_states(
                 );
             }
             Err(_) => {
-                tracing::error!("Timeout polling party {} for batch_id {}. Using potentially stale or default state.", host, reference_batch_id);
+                let cause = last_observed
+                    .unwrap_or_else(|| "no response received".to_string());
+                tracing::error!("Timeout polling party {} for batch_id {} (last observed: {}). Using potentially stale or default state.", host, reference_batch_id, cause);
                 bail!(
-                    "Timeout waiting for party {} to reach batch_id {}",
+                    "Timeout waiting for party {} to reach batch_id {} (last observed: {})",
                     host,
-                    reference_batch_id
+                    reference_batch_id,
+                    cause
                 );
             }
         }
@@ -364,23 +395,71 @@ pub async fn get_batch_sync_entries(
 
     for host in [next_node, prev_node].iter() {
         let mut fetched_state: Option<BatchSyncEntries> = None;
+        // Records why the most recent poll attempt did not succeed, so that if
+        // the outer timeout fires we can report the actual cause rather than a
+        // bare "timeout" message.
+        let mut last_observed: Option<String> = None;
 
         match timeout(polling_timeout_duration, async {
+            // Outer timeout bounds all retry logic in this loop
             loop {
-                let res = reqwest::get(host.as_str()).await.with_context(|| {
-                    format!("Failed to fetch batch sync entries from party {}", host)
-                })?;
-                let state: BatchSyncEntries = res.json().await.with_context(|| {
-                    format!("Failed to parse batch sync entries from party {}", host)
-                })?;
+                let res = match reqwest::get(host.as_str()).await {
+                    Ok(res) => res,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to fetch batch sync entries from party {}: {:?}. Retrying in 1 second...",
+                            host,
+                            e
+                        );
+                        last_observed = Some(format!("request error: {:?}", e));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                if !res.status().is_success() {
+                    let status = res.status();
+                    let error_body = res
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    tracing::warn!(
+                        "Party {} returned error status {}: {}. Retrying in 1 second...",
+                        host,
+                        status,
+                        error_body
+                    );
+                    last_observed = Some(format!("HTTP {}: {}", status, error_body));
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                let state: BatchSyncEntries = match res.json().await {
+                    Ok(state) => state,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse batch sync entries from party {}: {:?}. Retrying in 1 second...",
+                            host,
+                            e
+                        );
+                        last_observed = Some(format!("failed to parse response body: {:?}", e));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
 
                 if !state.batch_sha.eq(&own_sync_state.batch_sha) {
-                    tracing::info!(
+                    tracing::debug!(
                         "Party {} (batch_hash {}) differs from own ({}). Retrying in 1 second...",
                         host,
                         hex::encode(&state.batch_sha[0..4]),
                         hex::encode(&own_sync_state.batch_sha[0..4])
                     );
+                    last_observed = Some(format!(
+                        "peer batch_hash {} differs from own {}",
+                        hex::encode(&state.batch_sha[0..4]),
+                        hex::encode(&own_sync_state.batch_sha[0..4])
+                    ));
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 } else {
@@ -413,15 +492,19 @@ pub async fn get_batch_sync_entries(
                 );
             }
             Err(_) => {
+                let cause = last_observed
+                    .unwrap_or_else(|| "no response received".to_string());
                 tracing::error!(
-                    "Timeout polling party {} for batch sync entries with hash {}",
+                    "Timeout polling party {} for batch sync entries with hash {} (last observed: {})",
                     host,
-                    hex::encode(&own_sync_state.batch_sha[0..4])
+                    hex::encode(&own_sync_state.batch_sha[0..4]),
+                    cause
                 );
                 bail!(
-                    "Timeout waiting for party {} to reach batch hash {}",
+                    "Timeout waiting for party {} to reach batch hash {} (last observed: {})",
                     host,
-                    hex::encode(&own_sync_state.batch_sha[0..4])
+                    hex::encode(&own_sync_state.batch_sha[0..4]),
+                    cause
                 );
             }
         }
