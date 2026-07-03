@@ -323,7 +323,11 @@ mod cert_utils {
                 .expect("client failed");
         } else {
             let client_result = timeout(super::TEST_TIMEOUT, client_task).await;
-            assert!(client_result.is_err(), "connection should fail");
+            let client_succeeded = matches!(client_result, Ok(Ok(Ok(()))));
+            assert!(
+                !client_succeeded,
+                "connection should have been rejected but succeeded"
+            );
             timeout(Duration::from_secs(1), server_task).await.ok();
         }
 

@@ -324,6 +324,9 @@ fn build_runtime_tls_config(
     let mut peer_certs = HashMap::new();
 
     let mut root_certs = tls_cfg.root_certs.clone();
+    if party_idx >= root_certs.len() {
+        bail!("party idx mismatch with root certs");
+    }
     root_certs.remove(party_idx);
     if root_certs.len() != peers.len() {
         bail!("mismatch between root certs and peer ids");
