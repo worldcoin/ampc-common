@@ -334,27 +334,19 @@ fn build_runtime_tls_config(
     for (peer_id, root_cert_path) in peers.iter().zip(root_certs.into_iter()) {
         match CertificateDer::pem_file_iter(&root_cert_path) {
             Err(e) => {
-                let err_msg = format!(
-                    "failed to open cert file for peer {}: {} (path: {})",
-                    peer_id, e, root_cert_path
-                );
+                let err_msg = format!("failed to open cert file for peer {}: {}", peer_id, e);
                 tracing::error!("{}", err_msg);
                 cert_load_errors.push(err_msg);
             }
             Ok(mut iter) => match iter.next() {
                 None => {
-                    let err_msg = format!(
-                        "cert file for peer {} contains no certificates (path: {})",
-                        peer_id, root_cert_path
-                    );
+                    let err_msg =
+                        format!("cert file for peer {} contains no certificates", peer_id);
                     tracing::error!("{}", err_msg);
                     cert_load_errors.push(err_msg);
                 }
                 Some(Err(e)) => {
-                    let err_msg = format!(
-                        "failed to parse cert for peer {}: {} (path: {})",
-                        peer_id, e, root_cert_path
-                    );
+                    let err_msg = format!("failed to parse cert for peer {}: {}", peer_id, e);
                     tracing::error!("{}", err_msg);
                     cert_load_errors.push(err_msg);
                 }
