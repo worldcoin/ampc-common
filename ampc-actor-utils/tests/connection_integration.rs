@@ -1009,12 +1009,14 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     )
     .await?;
 
+    // peer_certs must contain the root CA cert, not the leaf cert.
+    // The listener verifies that the peer's cert chain is anchored to this CA.
     let mut peer_certs = std::collections::HashMap::new();
-    let client_cert_der = CertificateDer::pem_file_iter(&certs.client_cert_path)?
+    let ca_cert_der = CertificateDer::pem_file_iter(&certs.ca_cert_path)?
         .next()
         .ok_or(eyre::eyre!("no certificate found in file"))?
         .map_err(|e| eyre::eyre!("failed to parse certificate: {}", e))?;
-    peer_certs.insert(client_id.0.clone(), client_cert_der.as_ref().to_vec());
+    peer_certs.insert(client_id.0.clone(), ca_cert_der.as_ref().to_vec());
 
     let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
         peer_certs,
@@ -1042,12 +1044,14 @@ async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
     .await
 }
 
-/// Test Mutual TLS connection with cert-pinning enabled but rotated peers
-/// Should fail because the peer ID is mapped to the wrong certificate
+/// Test Mutual TLS connection with cert-pinning enabled but the peer is mapped
+/// to a different (unrelated) root CA. The client presents a cert chain
+/// anchored to the real CA, but the server expects a chain anchored to a
+/// freshly-generated CA that did not sign anything — so validation must fail.
 #[serial]
 #[traced_test]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
+async fn test_tls_connection_config_with_wrong_cert() -> Result<()> {
     let setup = cert_utils::get_client_server_setup().await?;
     let cert_utils::ClientServerTestSetup {
         certs,
@@ -1067,14 +1071,17 @@ async fn test_tls_connection_config_with_rotated_peers() -> Result<()> {
     )
     .await?;
 
-    // TlsConfig with client_id mapped to the wrong certificate (server cert instead of client cert)
-    // Client will present client_cert but server expects server_cert, so validation fails
+    // Generate an unrelated CA cert and map the client identity to it.
+    // The client's cert chain is anchored to the real CA, so chain
+    // verification against this unrelated CA must fail.
+    let wrong_ca_key = KeyPair::generate()?;
+    let mut wrong_ca_params = CertificateParams::default();
+    wrong_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let wrong_ca_cert = wrong_ca_params.self_signed(&wrong_ca_key)?;
+    let wrong_ca_der = wrong_ca_cert.der().as_ref().to_vec();
+
     let mut peer_certs = std::collections::HashMap::new();
-    let server_cert_der = CertificateDer::pem_file_iter(&certs.server_cert_path)?
-        .next()
-        .ok_or(eyre::eyre!("no certificate found in file"))?
-        .map_err(|e| eyre::eyre!("failed to parse certificate: {}", e))?;
-    peer_certs.insert(client_id.0.clone(), server_cert_der.as_ref().to_vec());
+    peer_certs.insert(client_id.0.clone(), wrong_ca_der);
 
     let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
         peer_certs,

@@ -111,8 +111,8 @@ pub struct TlsConfig {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeTlsConfig {
-    /// Used by the MPC protocol to validate that a peer ID, claimed during the connection setup process,
-    /// matches their root certificate.
+    /// Maps each peer identity string to the DER-encoded root CA certificate
+    /// that is expected to anchor that peer's TLS certificate chain.
     pub peer_certs: HashMap<String, Vec<u8>>,
 
     /// If true, use peer_certs to validate incoming peer connections.

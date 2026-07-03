@@ -8,7 +8,13 @@ use tokio_rustls::rustls::Error as RustlsError;
 use tokio_rustls::TlsStream;
 
 pub trait MaybeHasTlsCert {
-    fn maybe_tls_cert(&self) -> Option<&[u8]>;
+    /// Return the full peer certificate chain as raw DER buffers (leaf cert
+    /// first, then any intermediate CA certs). The root CA is not included
+    /// because it is not transmitted in the TLS handshake.
+    ///
+    /// Returns `None` when the connection carries no peer certificate chain
+    /// (e.g. plain TCP or server-only TLS).
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>>;
 }
 
 /// Trait for network connections that can be closed
@@ -137,8 +143,8 @@ pub struct TlsStreamConn(pub TlsStream<TcpStream>);
 pub type DynStreamConn = Box<dyn NetworkConnection>;
 
 impl MaybeHasTlsCert for DynStreamConn {
-    fn maybe_tls_cert(&self) -> Option<&[u8]> {
-        (**self).maybe_tls_cert()
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
+        (**self).maybe_tls_cert_chain()
     }
 }
 
@@ -184,7 +190,7 @@ impl AsyncWrite for TcpStreamConn {
 }
 
 impl MaybeHasTlsCert for TcpStreamConn {
-    fn maybe_tls_cert(&self) -> Option<&[u8]> {
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
         None
     }
 }
@@ -231,11 +237,11 @@ impl AsyncWrite for TlsStreamConn {
 }
 
 impl MaybeHasTlsCert for TlsStreamConn {
-    fn maybe_tls_cert(&self) -> Option<&[u8]> {
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
         let (_, tls_session) = self.0.get_ref();
         tls_session
             .peer_certificates()
-            .and_then(|certs| certs.first().map(|c| c.as_ref()))
+            .map(|certs| certs.iter().map(|c| c.as_ref().to_vec()).collect())
     }
 }
 
