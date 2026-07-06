@@ -172,7 +172,7 @@ fn default_di_2d_bucket_thresholds() -> Vec<i16> {
     //   buckets 1..=900 : [-1000, 3500) width 5   (900 buckets)
     //   last bucket     : score >= 3500
     let mut thresholds: Vec<i16> = (-1000..=3500).step_by(5).collect();
-    thresholds.push(i16::MAX);
+    thresholds.push(4000);
     thresholds
 }
 

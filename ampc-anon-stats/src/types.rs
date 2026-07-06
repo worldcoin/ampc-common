@@ -122,7 +122,7 @@ pub enum AnonStatsContext {
     GPU = 0,
     HNSW = 1,
     FACE = 2,
-    IRIS = 3,
+    DI = 3,
 }
 
 #[derive(Clone)]

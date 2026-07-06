@@ -1048,7 +1048,7 @@ mod tests {
             let origin = crate::AnonStatsOrigin {
                 side: None,
                 orientation,
-                context: crate::AnonStatsContext::IRIS,
+                context: crate::AnonStatsContext::DI,
             };
 
             // process jobs async
