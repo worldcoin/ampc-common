@@ -31,8 +31,8 @@ pub trait NetworkHandle: Send + Sync {
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
     /// Establish a dedicated control-plane channel to each ring neighbour.
     ///
-    /// Unlike sessions returned by [`make_sessions`], sends on the returned
-    /// [`ControlChannel`] block until the data is flushed to the wire. Use this
+    /// Unlike sessions returned by `make_sessions`, sends on the returned
+    /// `ControlChannel` block until the data is flushed to the wire. Use this
     /// for coordination and phase-transition signalling, not data-plane throughput.
     ///
     /// Opens new TCP/TLS connections on every call. Returns an error if connections
