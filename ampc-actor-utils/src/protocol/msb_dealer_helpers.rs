@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use aes_prng::AesRng;
 use ampc_secret_sharing::{
     shares::{
@@ -62,10 +64,16 @@ pub async fn bin_to_primefield16(
     let network = &mut session.network_session;
     let shares = match network.own_role.index() {
         0 => {
+            let t_receive_prev = Instant::now();
             let share_from_previous = network
                 .receive_prev()
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+            tracing::debug!(
+                "Party 0: Time waited to receive from previous party: {:?}",
+                t_receive_prev.elapsed()
+            );
+
             if values.len() == 1 {
                 match share_from_previous {
                     NetworkValue::PrimeElement16(message) => {
@@ -94,10 +102,16 @@ pub async fn bin_to_primefield16(
             }?
         }
         1 => {
+            let t_receive_next = Instant::now();
             let share_from_next = network
                 .receive_next()
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+            tracing::debug!(
+                "Party 1: Time waited to receive from next party: {:?}",
+                t_receive_next.elapsed()
+            );
+
             if values.len() == 1 {
                 match share_from_next {
                     NetworkValue::PrimeElement16(message) => {
@@ -126,6 +140,7 @@ pub async fn bin_to_primefield16(
             }?
         }
         2 => {
+            let t_compute = Instant::now();
             let mut rng = AesRng::from_entropy();
             let (shares_0, shares_1): (
                 Vec<AdditiveSharePrime<PrimeElement<u16>>>,
@@ -143,6 +158,12 @@ pub async fn bin_to_primefield16(
                     )
                 })
                 .unzip();
+            tracing::debug!(
+                "Party 2: Time taken to compute shares: {:?}",
+                t_compute.elapsed()
+            );
+
+            let t_send_next = Instant::now();
             let message_next = if shares_0.len() == 1 {
                 NetworkValue::PrimeElement16(shares_0[0].value)
             } else {
@@ -152,7 +173,15 @@ pub async fn bin_to_primefield16(
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
+            let message_next_len = message_next.byte_len();
             network.send_next(message_next).await?;
+            tracing::debug!(
+                "Party 2: Time taken to prepare message for next party: {:?}, of size: {:?}",
+                t_send_next.elapsed(),
+                message_next_len,
+            );
+
+            let t_send_prev = Instant::now();
             let message_prev = if shares_1.len() == 1 {
                 NetworkValue::PrimeElement16(shares_1[0].value)
             } else {
@@ -162,7 +191,13 @@ pub async fn bin_to_primefield16(
                     .collect::<Vec<_>>();
                 NetworkValue::vec_to_network(values)
             };
+            let message_prev_len = message_prev.byte_len();
             network.send_prev(message_prev).await?;
+            tracing::debug!(
+                "Party 2: Time taken to prepare message for previous party: {:?}, of size: {:?}",
+                t_send_prev.elapsed(),
+                message_prev_len,
+            );
             vec![]
         }
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),
@@ -179,10 +214,16 @@ pub async fn primefield16_to_bin_one_hot(
     let network = &mut session.network_session;
     let shares = match network.own_role.index() {
         0 => {
+            let t_receive_prev = Instant::now();
             let share_from_previous = network
                 .receive_prev()
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+            // tracing::debug!(
+            //     "Party 0: Time waited to receive from previous party: {:?}",
+            //     t_receive_prev.elapsed()
+            // );
+
             if values.len() == 1 {
                 match share_from_previous {
                     NetworkValue::RingElementBit(message) => Ok(vec![AdditiveShare::new(message)]),
@@ -209,10 +250,16 @@ pub async fn primefield16_to_bin_one_hot(
             }?
         }
         1 => {
+            let t_receive_next = Instant::now();
             let share_from_next = network
                 .receive_next()
                 .await
                 .map_err(|e| eyre!("Error in receiving in open_bin operation: {}", e))?;
+            // tracing::debug!(
+            //     "Party 1: Time waited to receive from next party: {:?}",
+            //     t_receive_next.elapsed()
+            // );
+
             if values.len() == 1 {
                 match share_from_next {
                     NetworkValue::RingElementBit(message) => Ok(vec![AdditiveShare::new(message)]),
@@ -239,6 +286,7 @@ pub async fn primefield16_to_bin_one_hot(
             }?
         }
         2 => {
+            let t_compute = Instant::now();
             let mut rng = AesRng::from_entropy();
             let (shares_0, shares_1): (Vec<AdditiveShare<Bit>>, Vec<AdditiveShare<Bit>>) = values
                 .iter()
@@ -256,6 +304,12 @@ pub async fn primefield16_to_bin_one_hot(
                     )
                 })
                 .unzip();
+            // tracing::debug!(
+            //     "Party 2: Time taken to compute shares: {:?}",
+            //     t_compute.elapsed()
+            // );
+
+            let t_send_next = Instant::now();
             let message_next = if shares_0.len() == 1 {
                 NetworkValue::RingElementBit(shares_0[0].value)
             } else {
@@ -266,6 +320,12 @@ pub async fn primefield16_to_bin_one_hot(
                 NetworkValue::vec_to_network(values)
             };
             network.send_next(message_next).await?;
+            // tracing::debug!(
+            //     "Party 2: Time taken to prepare message for next party: {:?}",
+            //     t_send_next.elapsed()
+            // );
+
+            let t_send_prev = Instant::now();
             let message_prev = if shares_1.len() == 1 {
                 NetworkValue::RingElementBit(shares_1[0].value)
             } else {
@@ -276,6 +336,10 @@ pub async fn primefield16_to_bin_one_hot(
                 NetworkValue::vec_to_network(values)
             };
             network.send_prev(message_prev).await?;
+            // tracing::debug!(
+            //     "Party 2: Time taken to prepare message for previous party: {:?}",
+            //     t_send_prev.elapsed()
+            // );
             vec![]
         }
         _ => bail!("Cannot deal with roles that have index outside of the set [0, 1, 2]"),

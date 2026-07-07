@@ -1,6 +1,7 @@
 use std::{
     iter::zip,
     ops::{Neg, SubAssign},
+    time::Instant,
 };
 
 use aes_prng::AesRng;
@@ -134,6 +135,11 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
     prime_modulus: K,
 ) -> Result<VecShareAdditive<Bit>> {
     let num_in_batch = shares[0].len();
+    tracing::debug!(
+        "Running bitlt_3pc_batched with {} shares each of num_in_batch {}",
+        shares.len(),
+        num_in_batch,
+    );
     // Scale the public value to avoid leakage to dealer if the private and public values are equal.
     // I.e., scaled = 2 * public_value + 1
     let mut scaled_public_value_bits =
@@ -157,8 +163,10 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
     scaled_shares.push(zero_vecshare);
     let num_bits = scaled_shares.len();
     let mut rng_rand_bits = if session.own_role().index() == 0 || session.own_role().index() == 1 {
+        let t = Instant::now();
         let shared_seed =
             setup_shared_seed_dealer_model(&mut session.network_session, prf_seed).await?;
+        tracing::debug!("setup_shared_seed_dealer_model: {:?}", t.elapsed());
         let mut rng = PrfRng::from_seed(Prf::expand_seed(shared_seed));
 
         assert_eq!(scaled_public_value_bits.len(), scaled_shares.len());
@@ -192,17 +200,25 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
 
     // Communication round 1: Send shares to dealer to convert to prime field
     let mut dealer_shares = Vec::with_capacity(scaled_shares.len());
+    tracing::debug!(
+        "Sending {} scaled shares to dealer for conversion to prime field",
+        scaled_shares.len()
+    );
+    let t_round1 = Instant::now();
     for share in scaled_shares {
         let dealer_share = send_binary_shares_to_dealer(session, share.shares()).await?;
         dealer_shares.push(dealer_share);
     }
+    tracing::debug!("round 1 (send_binary_shares_to_dealer x{}): {:?}", dealer_shares.len(), t_round1.elapsed());
     // Communication round 2: Receive prime field shares from dealer
     let mut prime_shares_received = Vec::with_capacity(dealer_shares.len());
+    let t_round2 = Instant::now();
     for dealer_share in dealer_shares {
         let prime_share =
             bin_to_primefield16(session, dealer_share, prime_modulus.to_u16().unwrap()).await?;
         prime_shares_received.push(VecShareAdditivePrime::new_vec(prime_share));
     }
+    tracing::debug!("round 2 (bin_to_primefield16 x{}): {:?}", prime_shares_received.len(), t_round2.elapsed());
 
     let (rand_shift, shifted_shares) = if let Some((rng, rand_bits)) = &mut rng_rand_bits {
         // Unmask prime shares
@@ -273,15 +289,18 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
     };
     // Communication round 3: Send prime shares to dealer to convert to binary
     let mut dealer_values = Vec::with_capacity(shifted_shares.len());
+    let t_round3 = Instant::now();
     for shifted_share in shifted_shares {
         let dealer_value = send_prime16_shares_to_dealer(session, shifted_share.shares()).await?;
         dealer_values.push(dealer_value);
     }
+    tracing::debug!("round 3 (send_prime16_shares_to_dealer x{}): {:?}", dealer_values.len(), t_round3.elapsed());
 
     // Communication round 4: Receive binary shares of one hot vector from dealer
     let mut one_hot_shifted_shares = vec![Vec::with_capacity(num_in_batch); dealer_values.len()];
 
     let len_bits = dealer_values.len();
+    let t_round4 = Instant::now();
     for i in 0..num_in_batch {
         let mut transposed_vec = Vec::with_capacity(len_bits);
         for dealer_vec in dealer_values.iter() {
@@ -294,6 +313,7 @@ pub async fn bitlt_3pc_batched<T: IntRing2k + NetworkInt, K: PrimInt>(
             one_hot_shifted_shares[idx].push(share);
         }
     }
+    tracing::debug!("round 4 (primefield16_to_bin_one_hot x{}): {:?}", num_in_batch, t_round4.elapsed());
 
     if let Some(rand_shift) = rand_shift {
         let mut one_hot_shares = Vec::with_capacity(one_hot_shifted_shares.len());

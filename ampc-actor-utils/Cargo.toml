@@ -48,6 +48,11 @@ rcgen = "0.13"
 tempfile = "3.10"
 
 [[bench]]
+name = "aes_rng_primefield"
+harness = false
+path = "benches/aes_rng_primefield.rs"
+
+[[bench]]
 name = "bit_inject"
 harness = false
 path = "benches/bit_inject.rs"
