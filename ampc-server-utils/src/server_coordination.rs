@@ -51,13 +51,14 @@ async fn log_request(req: Request, next: Next) -> AxumResponse {
     let path = req.uri().path().to_string();
     let started = Instant::now();
     let response = next.run(req).await;
-    tracing::info!(
-        "{} {} -> {} ({} ms)",
-        method,
-        path,
-        response.status().as_u16(),
-        started.elapsed().as_millis()
-    );
+    let status = response.status().as_u16();
+    let elapsed = started.elapsed().as_millis();
+    // High-frequency liveness/readiness probes are noise at info level.
+    if path == "/health" || path == "/ready" {
+        tracing::debug!("{} {} -> {} ({} ms)", method, path, status, elapsed);
+    } else {
+        tracing::info!("{} {} -> {} ({} ms)", method, path, status, elapsed);
+    }
     response
 }
 

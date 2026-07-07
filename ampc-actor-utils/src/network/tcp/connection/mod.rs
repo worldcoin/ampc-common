@@ -10,10 +10,13 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use crate::{
     execution::player::Identity,
-    network::tcp::{ConnectError, ConnectionConfig, ConnectionId, NetworkConnection},
+    network::tcp::{Client, ConnectError, ConnectionConfig, ConnectionId, NetworkConnection, Peer},
 };
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::oneshot, time::sleep};
+use tokio::{
+    sync::{mpsc::UnboundedSender, oneshot},
+    time::sleep,
+};
 
 impl<T: NetworkConnection + 'static> ConnectionConfig<T> {
     // used for logging
@@ -66,30 +69,57 @@ struct Connector<T: NetworkConnection + 'static> {
 
 impl<T: NetworkConnection> Connector<T> {
     async fn connect(&self) -> Result<T, ConnectError> {
-        match &self.connection_config {
+        // reduce the connection logic from 3 to 2 code paths
+        enum Endpoint<T: NetworkConnection> {
+            Client {
+                client: Arc<dyn Client<Output = T>>,
+                peer: Arc<Peer>,
+            },
+            Server {
+                peer_id: Identity,
+                conn_cmd_tx: UnboundedSender<ConnectionRequest<T>>,
+            },
+        }
+
+        let endpoint = match &self.connection_config {
             ConnectionConfig::Bidirectional {
                 peer,
                 client,
                 conn_cmd_tx,
             } => {
                 if &*self.own_id > peer.id() {
-                    let mut stream = client.connect(peer.url().to_string()).await?;
-                    handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
-                    handshake::outbound_ok(&mut stream).await?;
-                    Ok(stream)
-                } else {
-                    let (rsp_tx, rsp_rx) = oneshot::channel();
-                    let req = ConnectionRequest::new(peer.id().clone(), self.connection_id, rsp_tx);
-                    if conn_cmd_tx.send(req).is_err() {
-                        return Err(ConnectError::Other(
-                            "failed to send connection request".into(),
-                        ));
+                    Endpoint::Client {
+                        client: Arc::clone(client),
+                        peer: Arc::clone(peer),
                     }
-                    let r = rsp_rx.await?;
-                    Ok(r)
+                } else {
+                    Endpoint::Server {
+                        peer_id: peer.id().clone(),
+                        conn_cmd_tx: conn_cmd_tx.clone(),
+                    }
                 }
             }
             ConnectionConfig::Server {
+                peer_id,
+                conn_cmd_tx,
+            } => Endpoint::Server {
+                peer_id: peer_id.clone(),
+                conn_cmd_tx: conn_cmd_tx.clone(),
+            },
+            ConnectionConfig::Client { peer, client } => Endpoint::Client {
+                client: Arc::clone(client),
+                peer: Arc::clone(peer),
+            },
+        };
+
+        match endpoint {
+            Endpoint::Client { client, peer } => {
+                let mut stream = client.connect(peer.url().to_string()).await?;
+                handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
+                handshake::outbound_ok(&mut stream).await?;
+                Ok(stream)
+            }
+            Endpoint::Server {
                 peer_id,
                 conn_cmd_tx,
             } => {
@@ -102,12 +132,6 @@ impl<T: NetworkConnection> Connector<T> {
                 }
                 let r = rsp_rx.await?;
                 Ok(r)
-            }
-            ConnectionConfig::Client { peer, client } => {
-                let mut stream = client.connect(peer.url().to_string()).await?;
-                handshake::outbound(&mut stream, &self.own_id, &self.connection_id).await?;
-                handshake::outbound_ok(&mut stream).await?;
-                Ok(stream)
             }
         }
     }
