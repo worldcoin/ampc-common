@@ -351,7 +351,7 @@ pub async fn process_2d_lifted_anon_stats_score_normalization_job(
 }
 
 /// Per-eye threshold comparison
-/// For each threshold (in order) and each distance, emits a bit-injected Share<u32> that is
+/// For each threshold (in order) and each distance, emits a bit-injected `Share<u32>` that is
 /// 1 iff score < threshold
 async fn compare_against_thresholds_di(
     session: &mut Session,
@@ -426,7 +426,7 @@ pub async fn process_di_2d_anon_stats_job(
         job_size,
         thresholds.len(),
         config.party_id,
-        crate::types::DistanceFunction::Cosine,
+        crate::types::DistanceFunction::QuantizedCosine,
         AnonStatsResultSource::Aggregator,
         operation,
     );
@@ -814,7 +814,7 @@ pub mod test_helper {
                 self.scores.len(),
                 n,
                 0,
-                crate::types::DistanceFunction::Cosine,
+                crate::types::DistanceFunction::QuantizedCosine,
                 AnonStatsResultSource::Aggregator,
                 operation,
             );
@@ -1094,7 +1094,7 @@ mod tests {
             }
             assert_eq!(stats.n_buckets_per_side, thresholds.len());
             assert_eq!(stats.is_mirror_orientation, expected_mirror);
-            assert_eq!(stats.distance_function, DistanceFunction::Cosine);
+            assert_eq!(stats.distance_function, DistanceFunction::QuantizedCosine);
         }
     }
 

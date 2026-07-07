@@ -384,6 +384,16 @@ impl BucketStatistics2D {
         self.buckets.clear();
         self.end_time_utc_timestamp = Some(now_timestamp);
 
+        // Thresholds.len should be the same as n_buckets_per_side
+        if self.n_buckets_per_side != thresholds.len() {
+            tracing::warn!(
+                "DI thresholds length {} != n_buckets_per_side {}; using thresholds length.",
+                thresholds.len(),
+                self.n_buckets_per_side
+            );
+            self.n_buckets_per_side = thresholds.len();
+        }
+
         let n = self.n_buckets_per_side;
         let nn = n * n;
 
@@ -397,26 +407,13 @@ impl BucketStatistics2D {
                 buckets_2d.len()
             );
         }
-        if thresholds.len() != n {
-            tracing::warn!(
-                "DI thresholds length {} != n_buckets_per_side {}; out-of-range edges fall back to i16 bounds.",
-                thresholds.len(),
-                n
-            );
-        }
 
         // Edge labels for bucket k: [thresholds[k-1], thresholds[k]); bucket 0 starts at the
         // domain floor (everything below the first threshold).
         // Create all the bucket limits
-        let bucket_limits = |k: usize| -> [f64; 2] {
-            let lo = if k == 0 {
-                i16::MIN as f64
-            } else {
-                *thresholds.get(k - 1).unwrap_or(&i16::MIN) as f64
-            };
-            let hi = *thresholds.get(k).unwrap_or(&i16::MAX) as f64;
-            [lo, hi]
-        };
+        let mut edges: Vec<f64> = thresholds.iter().map(|&t| t as f64).collect();
+        edges.insert(0, i16::MIN as f64);
+        let bucket_limits = |k: usize| -> [f64; 2] { [edges[k], edges[k + 1]] };
 
         self.buckets.reserve(nn);
         for idx in 0..nn {

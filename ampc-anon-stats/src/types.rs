@@ -65,7 +65,7 @@ pub enum DistanceFunction {
     FHD,
     NHD,
     HD,
-    Cosine,
+    QuantizedCosine,
 }
 
 impl Display for DistanceFunction {
@@ -74,7 +74,7 @@ impl Display for DistanceFunction {
             Self::FHD => write!(f, "fhd"),
             Self::NHD => write!(f, "nhd"),
             Self::HD => write!(f, "hd"),
-            Self::Cosine => write!(f, "cosine"),
+            Self::QuantizedCosine => write!(f, "cosine"),
         }
     }
 }
