@@ -5,6 +5,7 @@ members = [
     "ampc-server-utils",
     "ampc-actor-utils",
     "ampc-anon-stats",
+    "vector-mpc-5pc",
 ]
 resolver = "2"
 

@@ -1,0 +1,22 @@
+[package]
+name = "vector-mpc-5pc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ampc-secret-sharing = { path = "../ampc-secret-sharing" }
+# ripple_carry_adder: byte-optimal MSB extraction, matching the adder used
+# by the reference vector-mpc-poc (the default is the lower-latency
+# parallel-prefix adder).
+ampc-actor-utils = { path = "../ampc-actor-utils", features = ["ripple_carry_adder"] }
+tokio = { workspace = true }
+async-trait = "~0.1"
+eyre = { workspace = true }
+rand = { workspace = true }
+
+[[bin]]
+name = "vector-mpc-5pc"
+path = "src/main.rs"

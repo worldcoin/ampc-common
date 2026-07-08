@@ -465,6 +465,60 @@ pub mod degree4 {
                 .reduce(|a, b| a + b)
                 .unwrap()
         }
+
+        /// Shamir-share an element among 5 parties with a degree-2
+        /// polynomial (tolerates 2 semi-honest corruptions), evaluated at
+        /// the exceptional points 1..=5.
+        pub fn encode_5<R: CryptoRng + Rng>(
+            input: &GaloisRingElement<Monomial>,
+            rng: &mut R,
+        ) -> [ShamirGaloisRingShare; 5] {
+            let coefs = [
+                *input,
+                GaloisRingElement::random(rng),
+                GaloisRingElement::random(rng),
+            ];
+            std::array::from_fn(|j| {
+                let i = j + 1;
+                let element = GaloisRingElement::EXCEPTIONAL_SEQUENCE[i];
+                // Horner evaluation: c0 + e * (c1 + e * c2)
+                let share = coefs[0] + (coefs[1] + coefs[2] * element) * element;
+                ShamirGaloisRingShare { id: i, y: share }
+            })
+        }
+
+        /// Lagrange interpolation coefficients at zero for a degree-4
+        /// polynomial evaluated at the exceptional points 1..=5 (the
+        /// pointwise product of two degree-2 sharings); index i-1 belongs
+        /// to party i.
+        pub fn deg_4_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 5] {
+            let mut res = [GaloisRingElement::ONE; 5];
+            for i in 1..=5 {
+                for j in 1..=5 {
+                    if j != i {
+                        res[i - 1] = res[i - 1] * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
+                        res[i - 1] = res[i - 1]
+                            * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                                - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                                .inverse();
+                    }
+                }
+            }
+            res
+        }
+
+        /// Reconstruct a degree-4 sharing (e.g. the pointwise product of two
+        /// degree-2 sharings) from all 5 shares.
+        pub fn reconstruct_deg_4_shares(
+            shares: &[ShamirGaloisRingShare; 5],
+        ) -> GaloisRingElement<Monomial> {
+            let lagrange_polys_at_zero = Self::deg_4_lagrange_polys_at_zero();
+            shares
+                .iter()
+                .map(|s| s.y * lagrange_polys_at_zero[s.id - 1])
+                .reduce(|a, b| a + b)
+                .unwrap()
+        }
     }
 
     #[cfg(test)]
@@ -513,6 +567,22 @@ pub mod degree4 {
 
             assert_eq!(reconstructed, expected);
         }
+        #[test]
+        fn sharing_5() {
+            let input1 = GaloisRingElement::random(&mut rand::thread_rng());
+            let input2 = GaloisRingElement::random(&mut rand::thread_rng());
+
+            let shares1 = ShamirGaloisRingShare::encode_5(&input1, &mut rand::thread_rng());
+            let shares2 = ShamirGaloisRingShare::encode_5(&input2, &mut rand::thread_rng());
+            let shares_mul: [ShamirGaloisRingShare; 5] =
+                std::array::from_fn(|i| shares1[i] * shares2[i]);
+
+            let reconstructed = ShamirGaloisRingShare::reconstruct_deg_4_shares(&shares_mul);
+            let expected = input1 * input2;
+
+            assert_eq!(reconstructed, expected);
+        }
+
         #[test]
         fn sharing_mat() {
             let input1 = GaloisRingElement::random(&mut rand::thread_rng());

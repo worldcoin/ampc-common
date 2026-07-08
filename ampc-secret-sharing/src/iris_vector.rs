@@ -217,6 +217,46 @@ impl IrisVector {
         Ok(shares)
     }
 
+    /// Generate 5-party Shamir secret shares from this iris embedding vector.
+    ///
+    /// Same chunk-of-4 basis-A encoding as [`IrisVector::secret_share`], with
+    /// degree-2 polynomials over 5 exceptional points instead of degree-1
+    /// over 3 (tolerates 2 semi-honest corruptions instead of 1).
+    ///
+    /// # Errors
+    /// Returns an error if vector size is not divisible by 4 (should never happen for 512)
+    pub fn secret_share_5<R: CryptoRng + Rng>(
+        &self,
+        rng: &mut R,
+    ) -> eyre::Result<[IrisSecretSharedVector; 5]> {
+        #[allow(clippy::manual_is_multiple_of)]
+        if IRIS_VECTOR_SIZE % 4 != 0 {
+            bail!(
+                "Vector size must be divisible by 4, got {}",
+                IRIS_VECTOR_SIZE
+            );
+        }
+
+        let mut shares: [IrisSecretSharedVector; 5] =
+            std::array::from_fn(|_| IrisSecretSharedVector::default());
+
+        for i in (0..IRIS_VECTOR_SIZE).step_by(4) {
+            let element = GaloisRingElement::<basis::A>::from_coefs([
+                self.0[i] as u16,
+                self.0[i + 1] as u16,
+                self.0[i + 2] as u16,
+                self.0[i + 3] as u16,
+            ]);
+            let element = element.to_monomial();
+            let share = ShamirGaloisRingShare::encode_5(&element, rng);
+            for (j, share_j) in share.iter().enumerate() {
+                shares[j].0[i..i + 4].copy_from_slice(&share_j.y.coefs);
+            }
+        }
+
+        Ok(shares)
+    }
+
     /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
     /// Mainly useful for tests, dev tooling, and PCP fixture generation.
     pub fn to_base64(&self) -> String {
@@ -310,6 +350,20 @@ impl IrisSecretSharedVector {
     /// This is used in the reconstruction process.
     pub fn multiply_lagrange_coeffs(&mut self, id: usize) {
         let lagrange_coeffs = ShamirGaloisRingShare::deg_2_lagrange_polys_at_zero();
+        self.multiply_coeffs(lagrange_coeffs[id - 1]);
+    }
+
+    /// 5-party variant of [`Self::multiply_lagrange_coeffs`]: multiply by the
+    /// degree-4 Lagrange coefficient of the given party (`id` in 1..=5) and
+    /// convert to basis B, so that a plain `udot`-style wrapping dot product
+    /// with a DB share yields one additive share of the dot product.
+    pub fn multiply_lagrange_coeffs_5(&mut self, id: usize) {
+        assert!((1..=5).contains(&id), "party id must be in 1..=5");
+        let lagrange_coeffs = ShamirGaloisRingShare::deg_4_lagrange_polys_at_zero();
+        self.multiply_coeffs(lagrange_coeffs[id - 1]);
+    }
+
+    fn multiply_coeffs(&mut self, coeff: GaloisRingElement<basis::Monomial>) {
         for i in (0..self.0.len()).step_by(4) {
             let element = GaloisRingElement::<basis::Monomial>::from_coefs([
                 self.0[i],
@@ -317,7 +371,7 @@ impl IrisSecretSharedVector {
                 self.0[i + 2],
                 self.0[i + 3],
             ]);
-            let element: GaloisRingElement<basis::Monomial> = element * lagrange_coeffs[id - 1];
+            let element: GaloisRingElement<basis::Monomial> = element * coeff;
             let element = element.to_basis_B();
             self.0[i] = element.coefs[0];
             self.0[i + 1] = element.coefs[1];
@@ -445,6 +499,35 @@ mod tests {
             .collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_secret_sharing_5_dot_product() {
+        // The sum of the parties' local wrapping dot products (query share
+        // pre-multiplied by the degree-4 Lagrange coefficient, basis B)
+        // equals the plaintext dot product mod 2^16.
+        fn udot(a: &[u16], b: &[u16]) -> u16 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(&a, &b)| u16::wrapping_mul(a, b))
+                .fold(0_u16, u16::wrapping_add)
+        }
+
+        let mut rng = thread_rng();
+        for _ in 0..5 {
+            let v1 = IrisVector::random(&mut rng);
+            let v2 = IrisVector::random(&mut rng);
+
+            let mut sv1 = v1.secret_share_5(&mut rng).unwrap();
+            let sv2 = v2.secret_share_5(&mut rng).unwrap();
+
+            let mut dot: u16 = 0;
+            for i in 0..5 {
+                sv1[i].multiply_lagrange_coeffs_5(i + 1);
+                dot = u16::wrapping_add(dot, udot(&sv1[i].0, &sv2[i].0));
+            }
+            assert_eq!(dot, v1.dot(&v2) as u16);
+        }
     }
 
     #[test]

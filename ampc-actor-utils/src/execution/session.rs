@@ -68,6 +68,24 @@ impl NetworkSession {
         let prev_identity = self.prev_identity()?;
         self.receive(&prev_identity).await
     }
+
+    /// Send to the party holding the given role. Used by N-party protocols
+    /// that address arbitrary peers rather than the next/prev ring.
+    pub async fn send_to_role(&mut self, role: Role, value: NetworkValue) -> Result<()> {
+        let identity = self.identity(&role)?.clone();
+        self.send(value, &identity).await
+    }
+
+    /// Receive from the party holding the given role.
+    pub async fn receive_from_role(&mut self, role: Role) -> Result<NetworkValue> {
+        let identity = self.identity(&role)?.clone();
+        self.receive(&identity).await
+    }
+
+    /// Number of parties in this session.
+    pub fn num_parties(&self) -> usize {
+        self.role_assignments.len()
+    }
 }
 
 // Helper methods for sending and receiving VecRingElement<T>.

@@ -4,6 +4,7 @@ pub mod fhd_ops;
 pub mod nhd_ops;
 pub mod ops;
 pub mod prf;
+pub mod rss5;
 pub mod shuffle;
 pub mod test_utils;
 
