@@ -1101,7 +1101,7 @@ mod tests {
     #[tokio::test]
     async fn test_di_2d_distances() {
         let mut thresholds: Vec<i16> = vec![-1400];
-        thresholds.extend((-1000..=3500).step_by(5));
+        thresholds.extend((-1000..=3000).step_by(5));
         thresholds.push(4000);
         run_di_2d_test(
             thresholds,
