@@ -68,6 +68,20 @@ pub struct AnonStatsServerConfig {
     /// Env var: `ANON_STATS__NHD_THRESHOLD_RATIO`.
     pub nhd_threshold_ratio: f64,
 
+    #[serde(default = "default_n_buckets_1d_nhd")]
+    /// Number of buckets to use in 1D NHD (score-normalization) anon stats computation.
+    /// Independent from `n_buckets_1d` because the NHD histogram range (`nhd_threshold_ratio`)
+    /// is wider than the FHD range: sharing the count would change the bucket width.
+    /// Sized as `nhd_threshold_ratio / bucket_width` (0.4 / 0.001 = 400 by default).
+    /// Env var: `ANON_STATS__N_BUCKETS_1D_NHD`.
+    pub n_buckets_1d_nhd: usize,
+
+    #[serde(default = "default_n_buckets_2d_nhd")]
+    /// Number of buckets to use in 2D NHD (score-normalization) anon stats computation.
+    /// See `n_buckets_1d_nhd` for the sizing rationale.
+    /// Env var: `ANON_STATS__N_BUCKETS_2D_NHD`.
+    pub n_buckets_2d_nhd: usize,
+
     #[serde(default = "default_min_1d_job_size")]
     /// Minimum job size for 1D anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
@@ -181,6 +195,16 @@ fn default_nhd_threshold_ratio() -> f64 {
     0.4
 }
 
+fn default_n_buckets_1d_nhd() -> usize {
+    // Keeps the NHD bucket width at 0.001 — matching the FHD histogram (0.375 / 375) —
+    // over the wider default NHD range (`default_nhd_threshold_ratio` = 0.4).
+    400
+}
+
+fn default_n_buckets_2d_nhd() -> usize {
+    400
+}
+
 fn default_min_1d_job_size() -> usize {
     1000
 }
@@ -260,6 +284,10 @@ impl AnonStatsServerConfig {
             // value here so existing tests pass without each one overriding the field.
             // Production deploys read `default_nhd_threshold_ratio()` (currently 0.4).
             nhd_threshold_ratio: ampc_actor_utils::constants::MATCH_THRESHOLD_RATIO,
+            // Same reasoning: NHD test fixtures share bucket counts with the FHD ones,
+            // so mirror the generic defaults rather than the production 400.
+            n_buckets_1d_nhd: default_n_buckets_1d(),
+            n_buckets_2d_nhd: default_n_buckets_2d(),
             min_1d_job_size: 0,
             min_1d_job_size_reauth: 0,
             min_1d_job_size_recovery: 0,
