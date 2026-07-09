@@ -180,7 +180,7 @@ async fn process_1d_anon_stats_score_normalization_inner(
             (config.n_buckets_1d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
         None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
-            (config.n_buckets_1d, config.nhd_threshold_ratio)
+            (config.n_buckets_1d_nhd, config.nhd_threshold_ratio)
         }
     };
     let translated_thresholds =
@@ -637,7 +637,7 @@ mod tests {
             calculate_iris_threshold_score_normalization(num_buckets_1d, MATCH_THRESHOLD_RATIO);
 
         let config = AnonStatsServerConfig {
-            n_buckets_1d: num_buckets_1d,
+            n_buckets_1d_nhd: num_buckets_1d,
             ..AnonStatsServerConfig::test_default()
         };
         let ground_truth = TestDistances::generate_ground_truth_input(&mut rng, 10, 12);

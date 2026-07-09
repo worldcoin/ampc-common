@@ -370,6 +370,100 @@ impl BucketStatistics2D {
         }
         self.next_start_time_utc_timestamp = Some(now_timestamp);
     }
+
+    /// Same as above, converting buckets from cumulative to histogram for Deep Identifier
+    /// buckets are non uniform size, so we use explicit threshold list
+    pub fn fill_buckets_di(
+        &mut self,
+        buckets_2d: &[u32],
+        thresholds: &[i16],
+        start_timestamp: Option<DateTime<Utc>>,
+    ) {
+        tracing::info!("Filling DI 2D buckets : {} entries", buckets_2d.len());
+        let now_timestamp = Utc::now();
+        self.buckets.clear();
+        self.end_time_utc_timestamp = Some(now_timestamp);
+
+        // Thresholds.len should be the same as n_buckets_per_side
+        if self.n_buckets_per_side != thresholds.len() {
+            tracing::warn!(
+                "DI thresholds length {} != n_buckets_per_side {}; using thresholds length.",
+                thresholds.len(),
+                self.n_buckets_per_side
+            );
+            self.n_buckets_per_side = thresholds.len();
+        }
+
+        let n = self.n_buckets_per_side;
+        let nn = n * n;
+
+        // Check that buckets and thresholds have the correct lengths
+        if buckets_2d.len() != nn {
+            tracing::warn!(
+                "Expected {} cumulative entries ({}x{}), got {}. Missing cells treated as 0.",
+                nn,
+                n,
+                n,
+                buckets_2d.len()
+            );
+        }
+
+        // Edge labels for bucket k: [thresholds[k-1], thresholds[k]); bucket 0 starts at the
+        // domain floor (everything below the first threshold).
+        // Create all the bucket limits
+        let mut edges: Vec<f64> = thresholds.iter().map(|&t| t as f64).collect();
+        edges.insert(0, i16::MIN as f64);
+        let bucket_limits = |k: usize| -> [f64; 2] { [edges[k], edges[k + 1]] };
+
+        self.buckets.reserve(nn);
+        for idx in 0..nn {
+            let i = idx / n; // row (left)
+            let j = idx % n; // col (right)
+
+            // Cumulative 2D counts C[i][j].
+            let c_ij = *buckets_2d.get(idx).unwrap_or(&0) as i64;
+            let c_im1_j = if i > 0 {
+                *buckets_2d.get(idx - n).unwrap_or(&0) as i64
+            } else {
+                0
+            };
+            let c_i_jm1 = if j > 0 {
+                *buckets_2d.get(idx - 1).unwrap_or(&0) as i64
+            } else {
+                0
+            };
+            let c_im1_jm1 = if i > 0 && j > 0 {
+                *buckets_2d.get(idx - n - 1).unwrap_or(&0) as i64
+            } else {
+                0
+            };
+
+            // Inclusion–exclusion to recover the true cell count [i][j].
+            let mut cell = c_ij - c_im1_j - c_i_jm1 + c_im1_jm1;
+            if cell < 0 {
+                tracing::warn!(
+                    "Negative decumulated count at ({},{}) after inclusion–exclusion; clamping to 0",
+                    i,
+                    j
+                );
+                cell = 0;
+            }
+
+            // Only keep non-empty cells to keep the serialized histogram small.
+            if cell > 0 {
+                self.buckets.push(Bucket2DResult {
+                    count: cell as usize,
+                    left_hamming_distance_bucket: bucket_limits(i),
+                    right_hamming_distance_bucket: bucket_limits(j),
+                });
+            }
+        }
+
+        if let Some(start_timestamp) = start_timestamp {
+            self.start_time_utc_timestamp = start_timestamp;
+        }
+        self.next_start_time_utc_timestamp = Some(now_timestamp);
+    }
 }
 
 #[cfg(test)]
