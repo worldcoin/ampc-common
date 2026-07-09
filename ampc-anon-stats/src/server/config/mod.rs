@@ -169,7 +169,7 @@ fn default_face_bucket_thresholds() -> Vec<i16> {
 fn default_di_2d_bucket_thresholds() -> Vec<i16> {
     // Deep Identifier score buckets:
     //   bucket 0        : score < -1000
-    //   buckets 1..=900 : [-1000, 3000) width 5   (900 buckets)
+    //   buckets 1..=800 : [-1000, 3000) width 5   (800 buckets)
     //   last bucket     : score >= 3000
     let mut thresholds: Vec<i16> = (-1000..=3000).step_by(5).collect();
     thresholds.push(4000);
