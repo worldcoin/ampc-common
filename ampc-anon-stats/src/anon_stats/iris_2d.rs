@@ -215,7 +215,7 @@ async fn process_2d_anon_stats_score_normalization_inner(
             (config.n_buckets_2d_reauth, MATCH_THRESHOLD_RATIO_REAUTH)
         }
         None | Some(AnonStatsOperation::Uniqueness) | Some(AnonStatsOperation::Recovery) => {
-            (config.n_buckets_2d, config.nhd_threshold_ratio)
+            (config.n_buckets_2d_nhd, config.nhd_threshold_ratio)
         }
     };
     let translated_thresholds =
@@ -747,7 +747,7 @@ mod tests {
         let thresholds = calculate_iris_threshold_score_normalization(num_buckets, threshold_ratio);
 
         let config = AnonStatsServerConfig {
-            n_buckets_2d: num_buckets,
+            n_buckets_2d_nhd: num_buckets,
             n_buckets_2d_reauth: num_buckets,
             ..AnonStatsServerConfig::test_default()
         };
