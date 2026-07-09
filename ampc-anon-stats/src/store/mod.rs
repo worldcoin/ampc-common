@@ -3,6 +3,7 @@ use crate::{
     anon_stats::face::FaceDistance,
     store::postgres::{AccessMode, PostgresClient},
 };
+
 use eyre::{bail, Result};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,7 @@ const ANON_STATS_1D_LIFTED_TABLE: &str = "anon_stats_1d_lifted";
 const ANON_STATS_2D_TABLE: &str = "anon_stats_2d";
 const ANON_STATS_2D_LIFTED_TABLE: &str = "anon_stats_2d_lifted";
 const ANON_STATS_FACE_TABLE: &str = "anon_stats_face";
+const ANON_STATS_2D_TABLE_DI: &str = "anon_stats_2d_di";
 
 impl AnonStatsStore {
     pub async fn new(postgres_client: &PostgresClient) -> Result<Self> {
@@ -94,6 +96,15 @@ impl AnonStatsStore {
         operation: Option<AnonStatsOperation>,
     ) -> Result<i64> {
         self.num_available_anon_stats(ANON_STATS_2D_TABLE, origin, operation)
+            .await
+    }
+    /// Deep Identifier 2D table variant (dedicated table, not context-routed).
+    pub async fn num_available_anon_stats_2d_di(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        self.num_available_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
             .await
     }
     /// Get number of available lifted anon stats entries from the DB for the given origin.
@@ -171,6 +182,7 @@ impl AnonStatsStore {
         self.get_available_anon_stats(ANON_STATS_1D_LIFTED_TABLE, origin, operation, limit)
             .await
     }
+
     /// Get available anon stats entries from the DB for the given origin, up to the given limit.
     /// Returns a tuple of (ids, Vec<(match_id, T)>)
     pub async fn get_available_anon_stats_2d<T: for<'a> Deserialize<'a>>(
@@ -182,6 +194,17 @@ impl AnonStatsStore {
         self.get_available_anon_stats(ANON_STATS_2D_TABLE, origin, operation, limit)
             .await
     }
+    /// Deep Identifier 2D table variant (dedicated table, not context-routed).
+    pub async fn get_available_anon_stats_2d_di<T: for<'a> Deserialize<'a>>(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+        limit: usize,
+    ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
+        self.get_available_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation, limit)
+            .await
+    }
+
     /// Get available lifted anon stats entries from the DB for the given origin, up to the given limit.
     /// Returns a tuple of (ids, Vec<(match_id, T)>)
     pub async fn get_available_anon_stats_2d_lifted<T: for<'a> Deserialize<'a>>(
@@ -210,6 +233,7 @@ impl AnonStatsStore {
 
         Ok(())
     }
+
     pub async fn mark_anon_stats_processed_1d(&self, ids: &[i64]) -> Result<()> {
         self.mark_anon_stats_processed(ANON_STATS_1D_TABLE, ids)
             .await
@@ -222,6 +246,12 @@ impl AnonStatsStore {
         self.mark_anon_stats_processed(ANON_STATS_2D_TABLE, ids)
             .await
     }
+
+    pub async fn mark_anon_stats_processed_2d_di(&self, ids: &[i64]) -> Result<()> {
+        self.mark_anon_stats_processed(ANON_STATS_2D_TABLE_DI, ids)
+            .await
+    }
+
     pub async fn mark_anon_stats_processed_2d_lifted(&self, ids: &[i64]) -> Result<()> {
         self.mark_anon_stats_processed(ANON_STATS_2D_LIFTED_TABLE, ids)
             .await
@@ -272,6 +302,15 @@ impl AnonStatsStore {
         operation: Option<AnonStatsOperation>,
     ) -> Result<u64> {
         self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE, origin, operation)
+            .await
+    }
+
+    pub async fn clear_unprocessed_anon_stats_2d_di(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<u64> {
+        self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
             .await
     }
 
@@ -365,6 +404,16 @@ impl AnonStatsStore {
         operation: AnonStatsOperation,
     ) -> Result<()> {
         self.insert_anon_stats_batch(ANON_STATS_2D_TABLE, anon_stats, origin, operation)
+            .await
+    }
+    /// Deep Identifier 2D table variant (dedicated table, not context-routed).
+    pub async fn insert_anon_stats_batch_2d_di<T: Serialize>(
+        &self,
+        anon_stats: &[(i64, T)],
+        origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
+    ) -> Result<()> {
+        self.insert_anon_stats_batch(ANON_STATS_2D_TABLE_DI, anon_stats, origin, operation)
             .await
     }
     pub async fn insert_anon_stats_batch_2d_lifted<T: Serialize>(
