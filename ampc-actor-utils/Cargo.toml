@@ -61,3 +61,18 @@ path = "benches/bit_inject.rs"
 name = "reshare_mux"
 harness = false
 path = "benches/reshare_mux.rs"
+
+[[bench]]
+name = "prime_to_bin"
+harness = false
+path = "benches/prime_to_bin_microbench.rs"
+
+[[bench]]
+name = "udot"
+harness = false
+path = "benches/udot_microbench.rs"
+
+[[bench]]
+name = "aes_vs_chacha"
+harness = false
+path = "benches/aes_vs_chacha.rs"
