@@ -105,6 +105,11 @@ pub struct TlsConfig {
     #[serde(default)]
     pub leaf_cert: Option<String>,
 
+    /// The root certificates for each party. This array must be in party-id order.
+    /// ex: [party 0 cert, party 1 cert, party 2 cert]. Parties can technically
+    /// have the same certificate. However, that would prevent the code from
+    /// using the root certificate to verify a peer id (given to the Server during
+    /// connection establishment).
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub root_certs: Vec<String>,
 }
