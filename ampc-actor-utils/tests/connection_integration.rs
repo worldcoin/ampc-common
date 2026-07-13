@@ -25,11 +25,13 @@ use tokio::{
     sync::mpsc,
     time::{timeout, Duration},
 };
+use tokio_rustls::rustls::pki_types::{pem::PemObject, CertificateDer};
 use tokio_util::sync::CancellationToken;
 use tracing_test::traced_test;
 
 /// Test utilities for certificate generation
 mod cert_utils {
+    use ampc_actor_utils::network::tcp::{Client, Server};
     use tempfile::TempDir;
 
     use super::*;
@@ -259,6 +261,83 @@ mod cert_utils {
         port
     }
 
+    /// Helper to run a complete server + client test for TLS connections
+    /// Handles accept_loop, server echo, client connection, and cleanup
+    pub async fn run_tls_server_client_test(
+        listener: impl Server<Output = TlsStreamConn> + 'static,
+        server_id: Identity,
+        client_id: Identity,
+        peer: Arc<Peer>,
+        client: Arc<dyn Client<Output = TlsStreamConn>>,
+        tls_config: Option<ampc_actor_utils::network::tcp::RuntimeTlsConfig>,
+        expect_success: bool,
+    ) -> Result<()> {
+        let shutdown_ct = CancellationToken::new();
+
+        // Spawn accept loop
+        let (conn_req_tx, conn_req_rx) =
+            mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
+        let accept_task = {
+            let shutdown = shutdown_ct.clone();
+            tokio::spawn(async move {
+                accept_loop(listener, conn_req_rx, shutdown, tls_config).await;
+            })
+        };
+
+        // Spawn server echo task
+        let server_task = spawn_echo_server(
+            ConnectionId::new(0),
+            server_id.clone(),
+            ConnectionConfig::Server {
+                peer_id: client_id.clone(),
+                conn_cmd_tx: conn_req_tx.clone(),
+            },
+            shutdown_ct.clone(),
+            super::TEST_MESSAGE.len(),
+        )
+        .await;
+
+        // Spawn client task
+        let client_task = spawn_test_client(
+            ConnectionId::new(0),
+            client_id.clone(),
+            ConnectionConfig::Client {
+                peer: peer.clone(),
+                client: client.clone(),
+            },
+            shutdown_ct.clone(),
+            super::TEST_MESSAGE,
+            200,
+        )
+        .await;
+
+        // Wait for completion
+        if expect_success {
+            timeout(super::TEST_TIMEOUT, server_task)
+                .await
+                .expect("server timeout")?
+                .expect("server failed");
+            timeout(super::TEST_TIMEOUT, client_task)
+                .await
+                .expect("client timeout")?
+                .expect("client failed");
+        } else {
+            let client_result = timeout(super::TEST_TIMEOUT, client_task).await;
+            let client_succeeded = matches!(client_result, Ok(Ok(Ok(()))));
+            assert!(
+                !client_succeeded,
+                "connection should have been rejected but succeeded"
+            );
+            timeout(Duration::from_secs(1), server_task).await.ok();
+        }
+
+        // Clean up
+        shutdown_ct.cancel();
+        timeout(Duration::from_secs(1), accept_task).await.ok();
+
+        Ok(())
+    }
+
     /// Spawn an echo server task that connects with the given config and echoes data back
     pub async fn spawn_echo_server<T: ampc_actor_utils::network::tcp::NetworkConnection>(
         conn_id: ConnectionId,
@@ -337,7 +416,7 @@ mod cert_utils {
     }
 }
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const TEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_MESSAGE: &[u8] = b"Hello, TLS!";
 
 /// Test ServerOnly connection with ServerOnly TLS
@@ -372,7 +451,7 @@ async fn test_server_only_connection_with_server_only_tls() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -459,7 +538,7 @@ async fn test_server_only_connection_with_mutual_tls() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -574,7 +653,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
     let accept_task_a = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_a, conn_req_rx_a, shutdown).await;
+            accept_loop(listener_a, conn_req_rx_a, shutdown, None).await;
         })
     };
 
@@ -584,7 +663,7 @@ async fn test_bidirectional_connection_with_server_only_tls() -> Result<()> {
     let accept_task_b = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_b, conn_req_rx_b, shutdown).await;
+            accept_loop(listener_b, conn_req_rx_b, shutdown, None).await;
         })
     };
 
@@ -700,7 +779,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     let accept_task_a = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_a, conn_req_rx_a, shutdown).await;
+            accept_loop(listener_a, conn_req_rx_a, shutdown, None).await;
         })
     };
 
@@ -710,7 +789,7 @@ async fn test_bidirectional_connection_with_mutual_tls() -> Result<()> {
     let accept_task_b = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener_b, conn_req_rx_b, shutdown).await;
+            accept_loop(listener_b, conn_req_rx_b, shutdown, None).await;
         })
     };
 
@@ -785,7 +864,7 @@ async fn test_client_only_connection_plain_tcp() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -864,7 +943,7 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
     let accept_task = {
         let shutdown = shutdown_ct.clone();
         tokio::spawn(async move {
-            accept_loop(listener, conn_req_rx, shutdown).await;
+            accept_loop(listener, conn_req_rx, shutdown, None).await;
         })
     };
 
@@ -907,4 +986,129 @@ async fn test_mutual_tls_rejects_client_without_cert() -> Result<()> {
     timeout(Duration::from_secs(1), accept_task).await.ok();
     timeout(Duration::from_secs(1), server_task).await.ok();
     Ok(())
+}
+
+/// Test Mutual TLS connection with cert-pinning enabled and correct peers
+/// Should succeed with matching peer IDs and root certs
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tls_connection_config_with_correct_peers() -> Result<()> {
+    let setup = cert_utils::get_client_server_setup().await?;
+    let cert_utils::ClientServerTestSetup {
+        certs,
+        addr,
+        server_id,
+        client_id,
+        peer,
+    } = setup;
+
+    let listener = TlsServer::new(
+        to_inaddr_any(addr),
+        TlsServerConfig::Mutual {
+            root_certs: certs.root_certs(),
+            key_file: certs.server_key_path.clone(),
+            cert_file: certs.server_cert_path.clone(),
+        },
+    )
+    .await?;
+
+    // peer_certs must contain the root CA cert, not the leaf cert.
+    // The listener verifies that the peer's cert chain is anchored to this CA.
+    let mut peer_certs = std::collections::HashMap::new();
+    let ca_cert_der = CertificateDer::pem_file_iter(&certs.ca_cert_path)?
+        .next()
+        .ok_or(eyre::eyre!("no certificate found in file"))?
+        .map_err(|e| eyre::eyre!("failed to parse certificate: {}", e))?;
+    peer_certs.insert(client_id.0.clone(), ca_cert_der.as_ref().to_vec());
+
+    let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
+        peer_certs,
+        validate_peer_ids: true,
+    };
+
+    let client = Arc::new(
+        TlsClient::new(TlsClientConfig::Mutual {
+            root_certs: certs.root_certs(),
+            key_file: certs.client_key_path.clone(),
+            cert_file: certs.client_cert_path.clone(),
+        })
+        .await?,
+    );
+
+    cert_utils::run_tls_server_client_test(
+        listener,
+        server_id,
+        client_id,
+        peer,
+        client,
+        Some(tls_config),
+        true, // expect success
+    )
+    .await
+}
+
+/// Test Mutual TLS connection with cert-pinning enabled but the peer is mapped
+/// to a different (unrelated) root CA. The client presents a cert chain
+/// anchored to the real CA, but the server expects a chain anchored to a
+/// freshly-generated CA that did not sign anything — so validation must fail.
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tls_connection_config_with_wrong_cert() -> Result<()> {
+    let setup = cert_utils::get_client_server_setup().await?;
+    let cert_utils::ClientServerTestSetup {
+        certs,
+        addr,
+        server_id,
+        client_id,
+        peer,
+    } = setup;
+
+    let listener = TlsServer::new(
+        to_inaddr_any(addr),
+        TlsServerConfig::Mutual {
+            root_certs: certs.root_certs(),
+            key_file: certs.server_key_path.clone(),
+            cert_file: certs.server_cert_path.clone(),
+        },
+    )
+    .await?;
+
+    // Generate an unrelated CA cert and map the client identity to it.
+    // The client's cert chain is anchored to the real CA, so chain
+    // verification against this unrelated CA must fail.
+    let wrong_ca_key = KeyPair::generate()?;
+    let mut wrong_ca_params = CertificateParams::default();
+    wrong_ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let wrong_ca_cert = wrong_ca_params.self_signed(&wrong_ca_key)?;
+    let wrong_ca_der = wrong_ca_cert.der().as_ref().to_vec();
+
+    let mut peer_certs = std::collections::HashMap::new();
+    peer_certs.insert(client_id.0.clone(), wrong_ca_der);
+
+    let tls_config = ampc_actor_utils::network::tcp::RuntimeTlsConfig {
+        peer_certs,
+        validate_peer_ids: true,
+    };
+
+    let client = Arc::new(
+        TlsClient::new(TlsClientConfig::Mutual {
+            root_certs: certs.root_certs(),
+            key_file: certs.client_key_path.clone(),
+            cert_file: certs.client_cert_path.clone(),
+        })
+        .await?,
+    );
+
+    cert_utils::run_tls_server_client_test(
+        listener,
+        server_id,
+        client_id,
+        peer,
+        client,
+        Some(tls_config),
+        false, // expect failure
+    )
+    .await
 }

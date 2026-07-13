@@ -10,6 +10,7 @@ pub mod types;
 
 use crate::execution::player::Identity;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use thiserror::Error;
@@ -19,7 +20,8 @@ use tokio::sync::mpsc::UnboundedSender;
 pub use config::configure_tcp_stream;
 pub use connection::{accept_loop, connect, ConnectionRequest, ConnectionState};
 pub use streams::{
-    Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsStreamConn,
+    Client, ConnectError, DynStreamConn, NetworkConnection, Server, TcpStreamConn, TlsMode,
+    TlsStreamConn,
 };
 pub use types::{ConnectionId, Peer};
 
@@ -103,8 +105,23 @@ pub struct TlsConfig {
     #[serde(default)]
     pub leaf_cert: Option<String>,
 
+    /// The root certificates for each party. This array must be in party-id order.
+    /// ex: [party 0 cert, party 1 cert, party 2 cert]. Parties can technically
+    /// have the same certificate. However, that would prevent the code from
+    /// using the root certificate to verify a peer id (given to the Server during
+    /// connection establishment).
     #[serde(default, deserialize_with = "deserialize_yaml_json_string")]
     pub root_certs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeTlsConfig {
+    /// Maps each peer identity string to the DER-encoded root CA certificate
+    /// that is expected to anchor that peer's TLS certificate chain.
+    pub peer_certs: HashMap<String, Vec<u8>>,
+
+    /// If true, use peer_certs to validate incoming peer connections.
+    pub validate_peer_ids: bool,
 }
 
 // used when constructing a worker or leader handle

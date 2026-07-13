@@ -7,9 +7,21 @@ use tokio::net::TcpStream;
 use tokio_rustls::rustls::Error as RustlsError;
 use tokio_rustls::TlsStream;
 
+pub trait MaybeHasTlsCert {
+    /// Return the full peer certificate chain as raw DER buffers (leaf cert
+    /// first, then any intermediate CA certs). The root CA is not included
+    /// because it is not transmitted in the TLS handshake.
+    ///
+    /// Returns `None` when the connection carries no peer certificate chain
+    /// (e.g. plain TCP or server-only TLS).
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>>;
+}
+
 /// Trait for network connections that can be closed
 #[async_trait]
-pub trait NetworkConnection: AsyncRead + AsyncWrite + Send + Sync + Unpin {
+pub trait NetworkConnection:
+    MaybeHasTlsCert + AsyncRead + AsyncWrite + Send + Sync + Unpin
+{
     async fn close(&mut self);
 }
 
@@ -20,11 +32,22 @@ pub trait Client: Send + Sync {
     async fn connect(&self, url: String) -> Result<Self::Output, ConnectError>;
 }
 
+/// TLS mode exposed by a server
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsMode {
+    None,
+    ServerOnly,
+    Mutual,
+}
+
 /// Trait for accepting incoming connections
 #[async_trait]
 pub trait Server: Send {
     type Output: NetworkConnection;
     async fn accept(&self) -> Result<(SocketAddr, Self::Output), ConnectError>;
+    fn tls_mode(&self) -> TlsMode {
+        TlsMode::None
+    }
 }
 
 /// Error type for network connection operations
@@ -119,6 +142,12 @@ pub struct TlsStreamConn(pub TlsStream<TcpStream>);
 /// Dynamic stream type for mixed connectors and listeners
 pub type DynStreamConn = Box<dyn NetworkConnection>;
 
+impl MaybeHasTlsCert for DynStreamConn {
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
+        (**self).maybe_tls_cert_chain()
+    }
+}
+
 #[async_trait]
 impl NetworkConnection for DynStreamConn {
     async fn close(&mut self) {
@@ -160,6 +189,12 @@ impl AsyncWrite for TcpStreamConn {
     }
 }
 
+impl MaybeHasTlsCert for TcpStreamConn {
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
+        None
+    }
+}
+
 #[async_trait]
 impl NetworkConnection for TcpStreamConn {
     async fn close(&mut self) {
@@ -198,6 +233,15 @@ impl AsyncWrite for TlsStreamConn {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         std::pin::Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+    }
+}
+
+impl MaybeHasTlsCert for TlsStreamConn {
+    fn maybe_tls_cert_chain(&self) -> Option<Vec<Vec<u8>>> {
+        let (_, tls_session) = self.0.get_ref();
+        tls_session
+            .peer_certificates()
+            .map(|certs| certs.iter().map(|c| c.as_ref().to_vec()).collect())
     }
 }
 

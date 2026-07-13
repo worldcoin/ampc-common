@@ -31,8 +31,8 @@ pub trait NetworkHandle: Send + Sync {
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
     /// Establish a dedicated control-plane channel to each ring neighbour.
     ///
-    /// Unlike sessions returned by [`make_sessions`], sends on the returned
-    /// [`ControlChannel`] block until the data is flushed to the wire. Use this
+    /// Unlike sessions returned by `make_sessions`, sends on the returned
+    /// `ControlChannel` block until the data is flushed to the wire. Use this
     /// for coordination and phase-transition signalling, not data-plane throughput.
     ///
     /// Opens new TCP/TLS connections on every call. Returns an error if connections
@@ -87,7 +87,7 @@ pub async fn build_network_handle(
         .map(|(_, (id, url))| (id.clone(), url.to_string()));
 
     macro_rules! build_network_handle {
-        ($listener:expr, $connector:expr) => {
+        ($listener:expr, $connector:expr, $tls:expr) => {
             Ok(Box::new(
                 MpcNetworkHandle::new(
                     my_identity,
@@ -98,6 +98,7 @@ pub async fn build_network_handle(
                     shutdown_ct,
                     my_index,
                     role_assignments,
+                    $tls,
                 )
                 .await?,
             ))
@@ -144,7 +145,7 @@ pub async fn build_network_handle(
             cert_file: leaf_cert.clone(),
         })
         .await?;
-        build_network_handle!(listener, connector)
+        build_network_handle!(listener, connector, args.tls.clone())
     } else {
         tracing::info!(
             "Building NetworkHandle, without TLS, from config: {:?}, listen_addr: {:?}",
@@ -153,7 +154,7 @@ pub async fn build_network_handle(
         );
         let listener = BoxTcpServer(TcpServer::new(my_addr).await?);
         let connector = BoxTcpClient(TcpClient::default());
-        build_network_handle!(listener, connector)
+        build_network_handle!(listener, connector, args.tls.clone())
     }
 }
 
@@ -254,6 +255,7 @@ pub mod testing {
                         shutdown_ct,
                         peer_idx,
                         role_assignments,
+                        None,
                     )
                     .await?;
                     Ok(handle)
