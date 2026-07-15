@@ -51,11 +51,62 @@
 //!   provider/receiver pair — 10 messages in total. As with any replicated
 //!   opening, the revealed components are determined by the opened value and
 //!   the receivers' own shares, so nothing beyond the value leaks.
+//! * **32-bit FHD comparison** ([`fhd_greater_than_threshold_and_open`]):
+//!   the 5-party analogue of the iris pipeline (`batch_signed_lift_vec` +
+//!   `fhd_greater_than_threshold`), opening the sign of
+//!   `code * 2^16 - A * mask (mod 2^32)`. There is no share lift or bit
+//!   injection: multiplying by `B = 2^16` lifts the code addends for free,
+//!   and the mask addends' two wrap bits (a 16-bit carry circuit,
+//!   [`addend_wraps`]) are folded into a 32-plane adder as sparse
+//!   public-coefficient addends ([`fhd_extract_msb`]). See the section
+//!   comment above [`addend_wraps`] for the algebra.
+//!
+//! # Security argument (semi-honest, any 2 of 5)
+//!
+//! Privacy of every subprotocol reduces to one accounting invariant: every
+//! secret-dependent message a coalition `{a, b}` can observe is padded by at
+//! least one fresh PRF draw from a stream whose holder set excludes both `a`
+//! and `b`, and no draw pads two observed values:
+//!
+//! * a transferred additive share (`d̂_3`, `d̂_4`) is padded by two pairwise
+//!   masks with distinct compensators; for every coalition containing the
+//!   recipient, at least one summand comes from a pair disjoint from the
+//!   coalition (the other member of each mask pair is the sender or a
+//!   compensator, never both mask pairs overlap one coalition);
+//! * an input-sharing correction for sharer `j` observed by `{a, b}`
+//!   (possible only when `{a, b} != D_j` and `j` is honest) is padded by
+//!   that sharing's slot-`{a, b}` PRF draw — slot `{a, b}` is then always
+//!   one of the sharer's 5 PRF slots, its key is held only by the coalition's
+//!   complement, and the padded slot value itself is never seen by `{a, b}`;
+//! * every draw appears in exactly two places — an unobserved component and
+//!   at most one observed correction — so pads are never reused across
+//!   observed values, within a call or across calls (streams only move
+//!   forward, and draw counts are a public function of the schedule).
+//!
+//! Consequently any 2-coalition misses at least one of the three adder
+//! addends (2 clear addends would put the value in the joint view of their
+//! holders, hence `t + 1 = 3` is also the minimum), every AND-gate wire
+//! stays hidden unless it is a function of the coalition's own inputs, and
+//! openings reveal only the opened value: the component aggregates a
+//! receiver obtains are determined by the opened value plus its own shares
+//! (the missing components are jointly uniform subject to their XOR before
+//! the open).
+//!
+//! The FHD pipeline introduces no new message types: it is composed
+//! entirely of redistributions, input sharings, AND gates and one opening,
+//! so the invariant above covers it. Each addend holder's difference addend
+//! `d_i` is a local function of its own clear addends (whose sharings are
+//! independently padded), the wrap bits stay RSS-shared throughout, and the
+//! sparse wrap-correction addends only reuse those shared planes with
+//! public coefficients.
 //!
 //! Sessions run over the crate's [`NetworkSession`] with 5 role assignments;
 //! per-component and pairwise PRF streams are derived from a per-party seed
 //! at session setup ([`setup_rss5_session`]) and advanced in lockstep, which
-//! assumes all parties execute the same deterministic protocol schedule.
+//! assumes all parties execute the same deterministic protocol schedule and
+//! use the session's channels exclusively (same assumption as the 3-party
+//! ops). The protocol is semi-honest only: there is no detection of PRF
+//! desynchronization or of inconsistent messages from a deviating party.
 
 use crate::{
     execution::{
@@ -186,13 +237,23 @@ pub type Value5 = Vec<Plane5>;
 
 /// This party's clear addend for the binary adder after redistribution:
 /// parties 0, 1 and 2 each hold one 16-bit value per input; parties 3 and 4
-/// hold none.
+/// hold none. Constructed only by [`redistribute`], keeping the length and
+/// the addend consistent across parties.
 pub struct AdderInput {
-    pub len: usize,
+    len: usize,
     value: Option<Vec<RingElement<u16>>>,
 }
 
 impl AdderInput {
+    /// Number of shared values (identical on all parties).
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn value(&self) -> Option<&[RingElement<u16>]> {
         self.value.as_deref()
     }
@@ -584,6 +645,16 @@ fn word_count(n: usize) -> usize {
     n.div_ceil(64)
 }
 
+/// Split a flat vector of shared words into `planes` planes of `words`
+/// words each. Safe for empty batches (`words == 0` would panic in
+/// `slice::chunks`).
+fn chunk_planes(shared: Vec<Share5<u64>>, words: usize, planes: usize) -> Vec<Plane5> {
+    if words == 0 {
+        return vec![Vec::new(); planes];
+    }
+    shared.chunks(words).map(<[_]>::to_vec).collect()
+}
+
 /// Transpose values into 16 bit-planes; plane `b`, word `w`, bit `j` is bit
 /// `b` of `vals[w * 64 + j]`. Values beyond `vals.len()` are zero-padded.
 fn transpose_planes(vals: &[RingElement<u16>]) -> Vec<Vec<RingElement<u64>>> {
@@ -611,7 +682,7 @@ fn plane_to_bools(plane: &[RingElement<u64>], n: usize) -> Vec<bool> {
 /// (the adder inputs). Each addend holder sends one 16-plane correction to
 /// 2 peers.
 pub async fn share_adder_inputs(sess: &mut Rss5Session, input: &AdderInput) -> Result<Vec<Value5>> {
-    let words = word_count(input.len);
+    let words = word_count(input.len());
     let mut values = Vec::with_capacity(3);
     for sharer in 0..3 {
         let flat = if sess.topo.party == sharer {
@@ -625,7 +696,7 @@ pub async fn share_adder_inputs(sess: &mut Rss5Session, input: &AdderInput) -> R
             None
         };
         let shared = sess.input_share_words(sharer, PLANES * words, flat).await?;
-        values.push(shared.chunks(words).map(<[_]>::to_vec).collect());
+        values.push(chunk_planes(shared, words, PLANES));
     }
     Ok(values)
 }
@@ -796,7 +867,370 @@ pub async fn open_bit_plane(sess: &mut Rss5Session, plane: &Plane5, n: usize) ->
 pub async fn lt_zero_and_open_u16(sess: &mut Rss5Session, input: &AdderInput) -> Result<Vec<bool>> {
     let values = share_adder_inputs(sess, input).await?;
     let msb = extract_msb(sess, values).await?;
-    open_bit_plane(sess, &msb, input.len).await
+    open_bit_plane(sess, &msb, input.len()).await
+}
+
+// ---------------------------------------------------------------------------
+// 32-bit FHD threshold comparison
+//
+// The 5-party analogue of the iris pipeline `batch_signed_lift_vec` +
+// `fhd_greater_than_threshold` (see [`crate::protocol::fhd_ops`]): open the
+// sign of `code_dot * B - mask_dot * A (mod 2^32)` with `B = 2^16` and
+// `A = translate_threshold_a(t)`, given additive 5-sharings of the two u16
+// dot products.
+//
+// Unlike the 3-party version there is no generic share lift or bit
+// injection. Both are avoided by working on the redistributed clear addends:
+//
+// * `code * B`: if `c_0 + c_1 + c_2 = code (mod 2^16)` then
+//   `sum_i (c_i << 16) = code * 2^16 (mod 2^32)` — multiplying by `B = 2^16`
+//   lifts the addends for free (any wrap of the u16 sum lands on `2^32`).
+// * `mask * A`: the u16 addends over-count the u32 value by the wraps `w` of
+//   their integer sum, `m_0 + m_1 + m_2 = mask + w * 2^16` with
+//   `w = b_1 + 2 * b_2 in {0, 1, 2}`, so
+//   `mask * A = sum_i (A * m_i) - A * 2^16 * w (mod 2^32)`. The two wrap
+//   bits are computed once by a 16-bit binary carry circuit
+//   ([`addend_wraps`]) and stay RSS-shared.
+//
+// The difference is then summed by one 32-plane binary adder over five
+// inputs: the three input-shared local addends
+// `d_i = (c_i << 16) - A * m_i` and two *sparse* values `gamma_1 * b_1`,
+// `gamma_2 * b_2` with public `gamma_j = A << (15 + j) (mod 2^32)` — a
+// public-coefficient-times-shared-bit value needs no multiplication, its
+// bit-planes are the bit's plane wherever `gamma` has a set bit and zero
+// elsewhere. The adder elides AND gates on statically-zero planes and on
+// every layer's top-plane carry (discarded mod `2^32`).
+//
+// Value preconditions (same data ranges the 3-party pipeline relies on):
+// the mask is interpreted as an unsigned 16-bit value, and the sign of the
+// difference is meaningful when `|code * B - mask * A| < 2^31`. Note that
+// `mask < 2^15` alone does not imply this (e.g. `code = -mask = -30000` at
+// `A = 2^14` gives `|diff| = mask * (B + A) > 2^31`); iris dot products
+// satisfy the stronger `|code_dot| <= mask_dot <= 12800`, which gives
+// `|diff| <= 12800 * (B + A) < 2^31` for any `A < 2^16`. The circuit
+// itself is exact mod `2^32` for arbitrary u16 inputs, and agrees with the
+// 3-party pipeline on every input with `mask < 2^15` (they compute the
+// identical mod-2^32 difference).
+// ---------------------------------------------------------------------------
+
+/// Bit planes of a u32 value.
+const PLANES32: usize = 32;
+
+/// A bit-sliced 32-bit value with statically-zero planes elided (`None`).
+type SparsePlanes = Vec<Option<Plane5>>;
+
+/// The two wrap (carry) bits of a redistributed value's addend sum, as RSS
+/// bit-planes: `v_0 + v_1 + v_2 = value + b1 * 2^16 + b2 * 2^17` over the
+/// integers. Produced by [`addend_wraps`].
+pub struct WrapBits {
+    b1: Plane5,
+    b2: Plane5,
+}
+
+/// The input-shared 32-plane difference addends of the FHD comparison plus
+/// the threshold constant. Produced by [`fhd_diff_inputs`].
+pub struct FhdDiffInputs {
+    a: u32,
+    len: usize,
+    values: Vec<SparsePlanes>,
+}
+
+/// Transpose u32 values into 32 bit-planes of u64 words (see
+/// [`transpose_planes`]).
+fn transpose_planes32(vals: &[u32]) -> Vec<Vec<RingElement<u64>>> {
+    let words = word_count(vals.len());
+    let mut planes = vec![vec![0u64; words]; PLANES32];
+    for (idx, v) in vals.iter().enumerate() {
+        let (w, j) = (idx / 64, idx % 64);
+        for (b, plane) in planes.iter_mut().enumerate() {
+            plane[w] |= (((v >> b) & 1) as u64) << j;
+        }
+    }
+    planes
+        .into_iter()
+        .map(|plane| plane.into_iter().map(RingElement).collect())
+        .collect()
+}
+
+/// The sparse 32-plane value `gamma * bit` for a public coefficient: plane
+/// `k` is the bit's plane where `gamma` has bit `k` set, zero elsewhere.
+fn coeff_times_bit(gamma: u32, bit: &Plane5) -> SparsePlanes {
+    (0..PLANES32)
+        .map(|k| ((gamma >> k) & 1 == 1).then(|| bit.clone()))
+        .collect()
+}
+
+/// Share the addends' bit-planes and compute the two wrap bits of their
+/// integer sum: `v_0 + v_1 + v_2 = value + b1 * 2^16 + b2 * 2^17`. This is
+/// the 5-party counterpart of the carry computation inside the 3-party
+/// share lift (`binary_add_3_get_two_carries`); the bits stay RSS-shared
+/// (no bit injection — [`fhd_extract_msb`] folds them into the final adder
+/// as sparse addends).
+pub async fn addend_wraps(sess: &mut Rss5Session, input: &AdderInput) -> Result<WrapBits> {
+    let v = share_adder_inputs(sess, input).await?;
+    let words = word_count(input.len());
+    let (x, y, z) = (&v[0], &v[1], &v[2]);
+
+    // Full-adder layer over all 16 planes, keeping the top carry:
+    // x + y + z = s + 2c exactly over the integers (s, c < 2^16).
+    let mut flat_a: Vec<Share5<u64>> = Vec::with_capacity(PLANES * words);
+    let mut flat_b: Vec<Share5<u64>> = Vec::with_capacity(PLANES * words);
+    for k in 0..PLANES {
+        flat_a.extend(xor_planes(&x[k], &z[k]));
+        flat_b.extend(xor_planes(&y[k], &z[k]));
+    }
+    let and_res = sess.and_words(&flat_a, &flat_b).await?;
+    let s: Vec<Plane5> = (0..PLANES)
+        .map(|k| xor_planes(&xor_planes(&x[k], &y[k]), &z[k]))
+        .collect();
+    let c: Vec<Plane5> = (0..PLANES)
+        .map(|k| {
+            let mut plane: Plane5 = and_res[k * words..(k + 1) * words].to_vec();
+            xor_assign_planes(&mut plane, &z[k]);
+            plane
+        })
+        .collect();
+
+    // Ripple the carry of s + 2c into bit 16. Bit 0 of 2c is zero, so the
+    // chain starts at bit 1 with carry = s_1 & c_0.
+    let mut carry = sess.and_words(&s[1], &c[0]).await?;
+    for k in 2..PLANES {
+        // carry = MAJ(s_k, c_{k-1}, carry)
+        let a = xor_planes(&s[k], &carry);
+        let b = xor_planes(&c[k - 1], &carry);
+        let t = sess.and_words(&a, &b).await?;
+        xor_assign_planes(&mut carry, &t);
+    }
+    // Bit 16 of the sum adds c_15 and the incoming carry: the sum bit is the
+    // first wrap and their carry (the sum is < 3 * 2^16) is the second.
+    let b1 = xor_planes(&c[PLANES - 1], &carry);
+    let b2 = sess.and_words(&c[PLANES - 1], &carry).await?;
+    Ok(WrapBits { b1, b2 })
+}
+
+/// Compute and input-share the 32 bit-planes of the local difference
+/// addends `d_i = (code_i << 16) - A * mask_i (mod 2^32)` held by parties
+/// 0-2, where `A = translate_threshold_a(threshold_ratio)`. Their sum is
+/// `code * 2^16 - A * mask - A * 2^16 * w (mod 2^32)` with `w` the mask
+/// addends' wrap count (see [`addend_wraps`]).
+pub async fn fhd_diff_inputs(
+    sess: &mut Rss5Session,
+    code: &AdderInput,
+    mask: &AdderInput,
+    threshold_ratio: f64,
+) -> Result<FhdDiffInputs> {
+    if code.len() != mask.len() {
+        bail!(
+            "fhd inputs must have equal lengths, got {} and {}",
+            code.len(),
+            mask.len()
+        );
+    }
+    let a = crate::protocol::fhd_ops::translate_threshold_a(threshold_ratio);
+    let len = code.len();
+    let words = word_count(len);
+    let mut values = Vec::with_capacity(3);
+    for sharer in 0..3 {
+        let flat = if sess.topo.party == sharer {
+            let c = code.value().expect("addend holders have a value");
+            let m = mask.value().expect("addend holders have a value");
+            let d: Vec<u32> = c
+                .iter()
+                .zip(m.iter())
+                .map(|(c, m)| ((c.0 as u32) << 16).wrapping_sub(a.wrapping_mul(m.0 as u32)))
+                .collect();
+            Some(transpose_planes32(&d).into_iter().flatten().collect())
+        } else {
+            None
+        };
+        let shared = sess
+            .input_share_words(sharer, PLANES32 * words, flat)
+            .await?;
+        values.push(
+            chunk_planes(shared, words, PLANES32)
+                .into_iter()
+                .map(Some)
+                .collect(),
+        );
+    }
+    Ok(FhdDiffInputs { a, len, values })
+}
+
+/// One zero-aware full-adder layer over 32-plane values; all AND gates of
+/// the layer are batched into a single communication round. Planes with at
+/// most one non-zero input need no AND (the sum passes through, the carry
+/// is zero), and the top plane's carry is discarded (mod `2^32`).
+async fn fa_layer_sparse(
+    sess: &mut Rss5Session,
+    triples: Vec<[SparsePlanes; 3]>,
+) -> Result<Vec<(SparsePlanes, SparsePlanes)>> {
+    let planes = triples[0][0].len();
+    let mut flat_a: Vec<Share5<u64>> = Vec::new();
+    let mut flat_b: Vec<Share5<u64>> = Vec::new();
+    // (triple index, carry output plane, post-AND xor operand, word count)
+    #[allow(clippy::type_complexity)]
+    let mut jobs: Vec<(usize, usize, Option<Plane5>, usize)> = Vec::new();
+    let mut outs: Vec<(SparsePlanes, SparsePlanes)> = triples
+        .iter()
+        .map(|_| (vec![None; planes], vec![None; planes]))
+        .collect();
+
+    for (ti, [x, y, z]) in triples.iter().enumerate() {
+        for k in 0..planes {
+            let somes: Vec<&Plane5> = [x[k].as_ref(), y[k].as_ref(), z[k].as_ref()]
+                .into_iter()
+                .flatten()
+                .collect();
+            outs[ti].0[k] = match somes.len() {
+                0 => None,
+                1 => Some(somes[0].clone()),
+                2 => Some(xor_planes(somes[0], somes[1])),
+                _ => Some(xor_planes(&xor_planes(somes[0], somes[1]), somes[2])),
+            };
+            if k + 1 < planes {
+                match somes.len() {
+                    // c = a & b
+                    2 => {
+                        flat_a.extend(somes[0].iter().copied());
+                        flat_b.extend(somes[1].iter().copied());
+                        jobs.push((ti, k + 1, None, somes[0].len()));
+                    }
+                    // c = ((x ^ z) & (y ^ z)) ^ z
+                    3 => {
+                        flat_a.extend(xor_planes(somes[0], somes[2]));
+                        flat_b.extend(xor_planes(somes[1], somes[2]));
+                        jobs.push((ti, k + 1, Some(somes[2].clone()), somes[0].len()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    if !flat_a.is_empty() {
+        let and_res = sess.and_words(&flat_a, &flat_b).await?;
+        let mut offset = 0;
+        for (ti, out_k, xor_z, words) in jobs {
+            let mut plane: Plane5 = and_res[offset..offset + words].to_vec();
+            offset += words;
+            if let Some(z) = xor_z {
+                xor_assign_planes(&mut plane, &z);
+            }
+            outs[ti].1[out_k] = Some(plane);
+        }
+    }
+    Ok(outs)
+}
+
+/// MSB of `u + v (mod 2^planes)` via a zero-aware ripple-carry adder.
+async fn ripple_msb_sparse(
+    sess: &mut Rss5Session,
+    u: &SparsePlanes,
+    v: &SparsePlanes,
+    words: usize,
+) -> Result<Plane5> {
+    let planes = u.len();
+    let mut carry: Option<Plane5> = None;
+    for k in 0..planes - 1 {
+        // carry = MAJ(u_k, v_k, carry); MAJ with a zero input is an AND of
+        // the other two, MAJ with two zero inputs is zero.
+        let step = {
+            let somes: Vec<&Plane5> = [u[k].as_ref(), v[k].as_ref(), carry.as_ref()]
+                .into_iter()
+                .flatten()
+                .collect();
+            match somes.len() {
+                0 | 1 => None,
+                2 => Some((somes[0].clone(), somes[1].clone(), None)),
+                _ => Some((
+                    xor_planes(somes[0], somes[2]),
+                    xor_planes(somes[1], somes[2]),
+                    Some(somes[2].clone()),
+                )),
+            }
+        };
+        carry = match step {
+            None => None,
+            Some((a, b, z)) => {
+                let mut t = sess.and_words(&a, &b).await?;
+                if let Some(z) = z {
+                    xor_assign_planes(&mut t, &z);
+                }
+                Some(t)
+            }
+        };
+    }
+    let mut msb: Plane5 = vec![Share5::zero(); words];
+    for plane in [
+        u[planes - 1].as_ref(),
+        v[planes - 1].as_ref(),
+        carry.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        xor_assign_planes(&mut msb, plane);
+    }
+    Ok(msb)
+}
+
+/// Extract the sign of `code * 2^16 - A * mask (mod 2^32)` as one RSS
+/// bit-plane (1 = "greater than threshold", i.e. NOT a match — the same
+/// convention as [`crate::protocol::fhd_ops::fhd_greater_than_threshold`]):
+/// a compressor tree sums the three difference addends and the two sparse
+/// wrap-correction values `(A << 16) * b1` and `(A << 17) * b2`, followed by
+/// a ripple-carry adder.
+pub async fn fhd_extract_msb(
+    sess: &mut Rss5Session,
+    diff: FhdDiffInputs,
+    wraps: WrapBits,
+) -> Result<Plane5> {
+    let words = word_count(diff.len);
+    let mut values = diff.values;
+    values.push(coeff_times_bit(diff.a.wrapping_shl(16), &wraps.b1));
+    values.push(coeff_times_bit(diff.a.wrapping_shl(17), &wraps.b2));
+
+    // Compressor tree; the dense difference addends come first so the
+    // sparse values join late and their zero planes save half adders.
+    while values.len() > 2 {
+        let groups = values.len() / 3;
+        let rest = values.split_off(groups * 3);
+        let mut triples: Vec<[SparsePlanes; 3]> = Vec::with_capacity(groups);
+        let mut it = values.into_iter();
+        for _ in 0..groups {
+            triples.push([it.next().unwrap(), it.next().unwrap(), it.next().unwrap()]);
+        }
+        let mut next_values = Vec::with_capacity(groups * 2 + rest.len());
+        for (s, c) in fa_layer_sparse(sess, triples).await? {
+            next_values.push(s);
+            next_values.push(c);
+        }
+        next_values.extend(rest);
+        values = next_values;
+    }
+
+    let v = values.pop().unwrap();
+    let u = values.pop().unwrap();
+    ripple_msb_sparse(sess, &u, &v, words).await
+}
+
+/// The full 5-party FHD threshold comparison: given additive 5-sharings of
+/// the code and mask dot products, open the bits of
+/// `mask * A > code * B` — i.e. "distance greater than threshold" (NOT a
+/// match), the 5-party analogue of `batch_signed_lift_vec` +
+/// `fhd_greater_than_threshold` + `open_bin`.
+pub async fn fhd_greater_than_threshold_and_open(
+    sess: &mut Rss5Session,
+    code: &[RingElement<u16>],
+    mask: &[RingElement<u16>],
+    threshold_ratio: f64,
+) -> Result<Vec<bool>> {
+    let code_in = redistribute(sess, code).await?;
+    let mask_in = redistribute(sess, mask).await?;
+    let diff = fhd_diff_inputs(sess, &code_in, &mask_in, threshold_ratio).await?;
+    let wraps = addend_wraps(sess, &mask_in).await?;
+    let msb = fhd_extract_msb(sess, diff, wraps).await?;
+    open_bit_plane(sess, &msb, code.len()).await
 }
 
 /// Test/debug helper: reconstruct binary RSS-shared values from all parties'
@@ -1055,6 +1489,217 @@ mod tests {
             .collect();
         for h in handles {
             assert_eq!(h.await.unwrap(), expected);
+        }
+    }
+
+    /// Deterministic corner cases around the threshold and the ring
+    /// boundaries, exercising the full carry chains of the adder (all-ones
+    /// and all-zeros difference patterns, sign flips, wrap-around).
+    #[tokio::test]
+    async fn lt_threshold_edge_cases() {
+        const THRESHOLD: u16 = 1000;
+        let values: Vec<u16> = vec![
+            0,
+            1,
+            999,
+            1000,
+            1001,
+            0x7FFF, // largest positive value
+            0x8000, // smallest negative value
+            0x8001,
+            0xFFFF,                         // -1
+            THRESHOLD.wrapping_add(0x7FFF), // difference = i16::MAX
+            THRESHOLD.wrapping_add(0x8000), // difference = i16::MIN
+            THRESHOLD.wrapping_sub(0x8000), // difference wraps the other way
+            0x5555,
+            0xAAAA,
+            THRESHOLD - 1 + 0x8000,
+        ];
+        let n = values.len();
+        let parts = additive_sharing(&values);
+        let mut handles = Vec::new();
+        for (i, sess) in make_sessions().await.into_iter().enumerate() {
+            let z = parts[i].clone();
+            handles.push(tokio::spawn(async move {
+                let mut sess = sess;
+                let mut input = redistribute(&mut sess, &z).await.unwrap();
+                sub_pub(&sess, &mut input, RingElement(THRESHOLD));
+                lt_zero_and_open_u16(&mut sess, &input).await.unwrap()
+            }));
+        }
+        let expected: Vec<bool> = values
+            .iter()
+            .map(|&v| (v.wrapping_sub(THRESHOLD) as i16) < 0)
+            .collect();
+        assert_eq!(expected.len(), n);
+        for h in handles {
+            assert_eq!(h.await.unwrap(), expected);
+        }
+    }
+
+    /// The wrap bits of [`addend_wraps`] must equal the integer carries of
+    /// the three clear addends: `v0 + v1 + v2 = value + b1*2^16 + b2*2^17`.
+    #[tokio::test]
+    async fn fhd_addend_wraps_correct() {
+        const N: usize = 100;
+        let values: Vec<u16> = (0..N).map(|_| rand::thread_rng().gen()).collect();
+        let parts = additive_sharing(&values);
+        let mut handles = Vec::new();
+        for (i, sess) in make_sessions().await.into_iter().enumerate() {
+            let z = parts[i].clone();
+            handles.push(tokio::spawn(async move {
+                let mut sess = sess;
+                let input = redistribute(&mut sess, &z).await.unwrap();
+                let addend: Vec<u16> = input
+                    .value()
+                    .map(|v| v.iter().map(|x| x.0).collect())
+                    .unwrap_or_default();
+                let wraps = addend_wraps(&mut sess, &input).await.unwrap();
+                (addend, wraps.b1, wraps.b2)
+            }));
+        }
+        let mut outputs = Vec::new();
+        for h in handles {
+            outputs.push(h.await.unwrap());
+        }
+        // integer sum of the three clear addends -> expected wrap count
+        let wraps: Vec<u32> = (0..N)
+            .map(|k| {
+                let sum: u32 = (0..3).map(|p| outputs[p].0[k] as u32).sum();
+                sum >> 16
+            })
+            .collect();
+        assert!(wraps.iter().any(|&w| w > 0), "test should exercise wraps");
+        let b1_shares: Vec<Plane5> = outputs.iter().map(|(_, b1, _)| b1.clone()).collect();
+        let b2_shares: Vec<Plane5> = outputs.iter().map(|(_, _, b2)| b2.clone()).collect();
+        let b1 = reconstruct_rss(&b1_shares);
+        let b2 = reconstruct_rss(&b2_shares);
+        for (k, &w) in wraps.iter().enumerate() {
+            assert!(w <= 2);
+            assert_eq!((b1[k / 64] >> (k % 64)) & 1, (w & 1) as u64, "b1 at {k}");
+            assert_eq!((b2[k / 64] >> (k % 64)) & 1, (w >> 1) as u64, "b2 at {k}");
+        }
+    }
+
+    /// The full FHD pipeline must match the exact mod-2^32 plaintext
+    /// semantics `MSB((code << 16) - A * mask)` for arbitrary u16 inputs,
+    /// with both a power-of-two threshold constant (A = 2^14 at t = 0.375,
+    /// single-plane wrap corrections) and a general one.
+    #[tokio::test]
+    async fn fhd_pipeline_matches_plaintext() {
+        for ratio in [0.375, 0.36] {
+            let a = crate::protocol::fhd_ops::translate_threshold_a(ratio);
+            let mut pairs: Vec<(u16, u16)> = vec![
+                (0, 0),
+                (0, 1),  // diff = -A
+                (5, 20), // at t=0.375: 5 * 2^16 = 2^14 * 20, diff = 0
+                (5, 19), // just above zero
+                (5, 21), // just below zero
+                (0x7FFF, 0xFFFF),
+                (0x8000, 0),
+                (0xFFFF, 0xFFFF),
+                (12800, 12800),          // iris-range extremes
+                (0x8000 | 12800, 12800), // negative code, full mask
+            ];
+            let mut rng = rand::thread_rng();
+            pairs.extend((0..190).map(|_| (rng.gen::<u16>(), rng.gen::<u16>())));
+            let expected: Vec<bool> = pairs
+                .iter()
+                .map(|&(c, m)| {
+                    let diff = ((c as u32) << 16).wrapping_sub(a.wrapping_mul(m as u32));
+                    diff >> 31 == 1
+                })
+                .collect();
+            let codes: Vec<u16> = pairs.iter().map(|p| p.0).collect();
+            let masks: Vec<u16> = pairs.iter().map(|p| p.1).collect();
+            let code_parts = additive_sharing(&codes);
+            let mask_parts = additive_sharing(&masks);
+            let mut handles = Vec::new();
+            for (i, sess) in make_sessions().await.into_iter().enumerate() {
+                let (zc, zm) = (code_parts[i].clone(), mask_parts[i].clone());
+                handles.push(tokio::spawn(async move {
+                    let mut sess = sess;
+                    fhd_greater_than_threshold_and_open(&mut sess, &zc, &zm, ratio)
+                        .await
+                        .unwrap()
+                }));
+            }
+            for h in handles {
+                assert_eq!(h.await.unwrap(), expected, "ratio {ratio}");
+            }
+        }
+    }
+
+    /// Empty batches must degrade gracefully through both the 16-bit and
+    /// the FHD pipelines (regression: `slice::chunks(0)` panicked).
+    #[tokio::test]
+    async fn empty_batch_pipelines() {
+        let mut handles = Vec::new();
+        for sess in make_sessions().await {
+            handles.push(tokio::spawn(async move {
+                let mut sess = sess;
+                let input = redistribute(&mut sess, &[]).await.unwrap();
+                let bits = lt_zero_and_open_u16(&mut sess, &input).await.unwrap();
+                let fhd = fhd_greater_than_threshold_and_open(&mut sess, &[], &[], 0.375)
+                    .await
+                    .unwrap();
+                (bits, fhd)
+            }));
+        }
+        for h in handles {
+            let (bits, fhd) = h.await.unwrap();
+            assert!(bits.is_empty());
+            assert!(fhd.is_empty());
+        }
+    }
+
+    /// The pairwise mask bookkeeping must telescope exactly: with all-zero
+    /// additive inputs the three addends still look random individually but
+    /// must sum to zero, across repeated invocations on the same session
+    /// (stream states advance in lockstep).
+    #[tokio::test]
+    async fn redistribute_masks_telescope_across_calls() {
+        const N: usize = 64;
+        const ROUNDS: usize = 3;
+        let mut handles = Vec::new();
+        for (_, sess) in make_sessions().await.into_iter().enumerate() {
+            handles.push(tokio::spawn(async move {
+                let mut sess = sess;
+                let zeros = vec![RingElement(0u16); N];
+                let mut addends = Vec::new();
+                for _ in 0..ROUNDS {
+                    let input = redistribute(&mut sess, &zeros).await.unwrap();
+                    addends.push(
+                        input
+                            .value()
+                            .map(|v| v.iter().map(|x| x.0).collect::<Vec<u16>>()),
+                    );
+                }
+                addends
+            }));
+        }
+        let mut outputs = Vec::new();
+        for h in handles {
+            outputs.push(h.await.unwrap());
+        }
+        for round in 0..ROUNDS {
+            let mut sum = vec![0u16; N];
+            let mut first_addend = None;
+            for (p, rounds) in outputs.iter().enumerate() {
+                match &rounds[round] {
+                    Some(addend) => {
+                        assert!(p < 3);
+                        for (s, &a) in sum.iter_mut().zip(addend.iter()) {
+                            *s = s.wrapping_add(a);
+                        }
+                        first_addend.get_or_insert_with(|| addend.clone());
+                    }
+                    None => assert!(p >= 3),
+                }
+            }
+            assert_eq!(sum, vec![0u16; N], "masks must cancel in round {round}");
+            // sanity: the addends are masked (not the plaintext zeros)
+            assert_ne!(first_addend.unwrap(), vec![0u16; N]);
         }
     }
 }

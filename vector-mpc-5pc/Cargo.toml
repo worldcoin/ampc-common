@@ -6,12 +6,20 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# Byte-optimal ripple-carry MSB extraction for the 3PC pipelines, matching
+# the adder used by the reference vector-mpc-poc. The default build keeps
+# the lower-latency parallel-prefix adder that ampc-actor-utils ships with.
+#
+# Deliberately NOT enabled unconditionally: a hardwired dependency feature
+# would unify into every workspace-wide build (`cargo test` at the root)
+# and silently remove all test/compile coverage of the default adder that
+# external consumers such as iris-mpc actually use.
+ripple = ["ampc-actor-utils/ripple_carry_adder"]
+
 [dependencies]
 ampc-secret-sharing = { path = "../ampc-secret-sharing" }
-# ripple_carry_adder: byte-optimal MSB extraction, matching the adder used
-# by the reference vector-mpc-poc (the default is the lower-latency
-# parallel-prefix adder).
-ampc-actor-utils = { path = "../ampc-actor-utils", features = ["ripple_carry_adder"] }
+ampc-actor-utils = { path = "../ampc-actor-utils" }
 tokio = { workspace = true }
 async-trait = "~0.1"
 eyre = { workspace = true }

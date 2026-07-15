@@ -25,8 +25,12 @@ harness:
   implementation, verifies every opened bit against the plaintext
   computation, and reports bytes per comparison. Counted bytes are the
   serialized `NetworkValue` messages handed to the transport (excluding
-  TCP/TLS framing); the harness enables the `ripple_carry_adder` feature for
-  byte-optimal MSB extraction on both sides.
+  TCP/TLS framing). This crate's `ripple` feature (off by default) forwards
+  to `ampc-actor-utils/ripple_carry_adder` for byte-optimal 3PC MSB
+  extraction; it is deliberately not hardwired on the dependency, since
+  Cargo feature unification would otherwise strip every workspace build —
+  including `ampc-actor-utils`'s own tests — of coverage for the default
+  parallel-prefix adder that external consumers like `iris-mpc` use.
 
 ## Encoding
 
@@ -64,13 +68,31 @@ extract the MSB with a bit-sliced binary adder, and open the resulting bit.
   redistribute-then-input-share pipeline). Opens deliver each party's 4
   missing components via per-component designated providers (10 messages).
 
+Both stacks also implement the **32-bit iris FHD threshold comparison**
+(open the sign of `code_dot * B - mask_dot * A mod 2^32`, `B = 2^16`):
+
+* **3PC**: the production `batch_signed_lift_vec` (bit-sliced two-carry
+  adder + bit injection per value) followed by `fhd_greater_than_threshold`
+  (local constant multiply + u32 MSB extraction) — the exact code
+  `iris-mpc` imports from this repo.
+* **5PC (`rss5` FHD ops)**: no lift and no bit injection — multiplying by
+  `B = 2^16` lifts the redistributed code addends for free, and the mask
+  addends' two wrap bits (one 16-bit carry circuit) are folded into a
+  32-plane zero-aware adder as sparse public-coefficient addends.
+
 See the `rss5` module documentation for the full protocol and privacy
 arguments.
 
 ## Measured communication
 
-`cargo run --release -p vector-mpc-5pc -- 4096 2` (per-comparison values are
-independent of `db_size`/`num_queries` up to amortized per-message framing):
+See [ANALYSIS.md](ANALYSIS.md) for the full traffic summary (including the
+poc's default parallel-prefix configuration) and a cross-cloud egress cost
+estimate.
+
+`cargo run --release -p vector-mpc-5pc --features ripple -- 4096 2`
+(per-comparison values are independent of `db_size`/`num_queries` up to
+amortized per-message framing; without `--features ripple` the 3PC columns
+show the default parallel-prefix figures, see ANALYSIS.md):
 
 | | 3PC (t=1) | 5PC (t=2) |
 |---|---|---|
@@ -86,6 +108,12 @@ tolerating 2 corruptions instead of 1 with replicated sharing: every
 secret-dependent value must reach 2 peers instead of 1 (8 vs 3 bits per
 bit-plane AND), the comparison needs 3 addends instead of 2 (29 vs 15 ANDs),
 and openings and input paths replicate accordingly.
+
+The 32-bit iris FHD pipelines measure **76.19 B** (3PC, ripple; 96.72 B
+with the default prefix adder) vs **195.75 B** (5PC) per comparison — a
+**2.57×** ratio, below the 16-bit 3.30× because the 5PC wrap-bit design
+avoids a second lift and any bit injection. See
+[ANALYSIS.md](ANALYSIS.md) for the phase breakdowns.
 
 Breakdown per comparison (aggregate, excluding ~0.4% framing): 3PC =
 rep3 conversion 6 B + split 2 B + 15 plane-ANDs × 3 bits + 1 open bit ×
@@ -106,7 +134,7 @@ adder).
 
 **Bytes vs rounds.** Both pipelines are tuned for bytes:
 
-* The harness enables `ripple_carry_adder`; the crate default is the
+* The table above uses the `ripple` feature; the crate default is the
   parallel-prefix adder, which costs roughly 2× the adder bytes but reduces
   the sequential AND rounds from ~14–15 to ~4.
 * The 5PC cheap AND resharing (8 bits/gate) is a two-leg protocol —
@@ -167,8 +195,11 @@ traffic, not wall-clock performance.
 # measurement harness (defaults: db_size=4096, num_queries=2);
 # verifies every opened result against the plaintext computation
 cargo run --release -p vector-mpc-5pc -- [db_size] [num_queries]
+# byte-optimal 3PC adder (the configuration in the table above)
+cargo run --release -p vector-mpc-5pc --features ripple -- [db_size] [num_queries]
 
-# protocol unit tests live with the protocol code
+# protocol unit tests live with the protocol code; run both adder configs
 cargo test -p ampc-actor-utils rss5
+cargo test -p ampc-actor-utils --features ripple_carry_adder rss5
 cargo test -p ampc-secret-sharing
 ```
