@@ -1,0 +1,22 @@
+-- POP-4104 — add created_at to anon_stats_2d_di so the generic retention CronJob
+-- (retention-reaper, iris-mpc) can delete processed rows older than the retention
+-- window with a batched, guarded DELETE — the exact mechanism POP-3905 added for the
+-- five iris anon_stats_* tables in 20260630120000_anon_stats_add_created_at.
+--
+-- anon_stats_2d_di was created one day after that migration (20260701000000_2d_di)
+-- and did not inherit the column, so the Deep Identifier table is currently
+-- unreapable: rows are marked processed = TRUE after bucketing but nothing can
+-- age-select them for deletion.
+--
+-- `ADD COLUMN ... DEFAULT now()` is metadata-only on PG11+ (fast-default path; now()
+-- is STABLE — verified on PG16.14 for the sibling migration: relfilenode unchanged,
+-- no table rewrite). Existing rows get the migration-time timestamp, which is safe
+-- for retention: it only ever OVERESTIMATES row freshness, so rows are deleted later
+-- than their true age, never earlier.
+--
+-- The created_at index is intentionally NOT here: it must be built CONCURRENTLY
+-- (the table is hot — the DI actor inserts on the enrollment path — and already has
+-- tens of millions of rows), and CREATE INDEX CONCURRENTLY cannot run inside the
+-- transaction sqlx wraps this migration in. See 20260722000001.
+
+ALTER TABLE anon_stats_2d_di ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT now();
