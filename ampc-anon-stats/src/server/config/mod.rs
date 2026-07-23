@@ -109,6 +109,10 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_face_job_size: usize,
 
+    #[serde(default = "default_min_face_job_size_reauth")]
+    /// Minimum job size for REAUTH Face anon stats computation.
+    pub min_face_job_size_reauth: usize,
+
     #[serde(default = "default_min_2d_job_size_reauth")]
     /// Minimum job size for REAUTH 2D anon stats computation.
     pub min_2d_job_size_reauth: usize,
@@ -234,6 +238,10 @@ fn default_min_face_job_size() -> usize {
     1000
 }
 
+fn default_min_face_job_size_reauth() -> usize {
+    100
+}
+
 fn default_min_1d_job_size_reauth() -> usize {
     default_min_1d_job_size()
 }
@@ -314,6 +322,7 @@ impl AnonStatsServerConfig {
             min_2d_job_size_recovery: 0,
             min_2d_job_size_mirror: 0,
             min_face_job_size: 0,
+            min_face_job_size_reauth: 0,
             max_rows_per_job_1d: 0,
             max_rows_per_job_2d: 0,
             poll_interval_secs: default_poll_interval_secs(),
@@ -374,15 +383,17 @@ impl AnonStatsServerConfig {
             || self.max_rows_per_job_1d < self.min_1d_job_size_recovery
             || self.max_rows_per_job_1d < self.min_1d_job_size_mirror
             || self.max_rows_per_job_1d < self.min_face_job_size
+            || self.max_rows_per_job_1d < self.min_face_job_size_reauth
         {
             bail!(
-                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {}, {})",
+                "max_rows_per_job_1d ({}) cannot be less than min_1d_job_sizes ({}, {}, {}, {}, {}, {})",
                 self.max_rows_per_job_1d,
                 self.min_1d_job_size,
                 self.min_1d_job_size_reauth,
                 self.min_1d_job_size_recovery,
                 self.min_1d_job_size_mirror,
-                self.min_face_job_size
+                self.min_face_job_size,
+                self.min_face_job_size_reauth
             );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
