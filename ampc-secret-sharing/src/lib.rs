@@ -9,6 +9,7 @@
 
 pub mod face_vector;
 pub mod galois;
+pub mod galois64;
 pub mod id;
 pub mod iris_vector;
 pub mod shares;
