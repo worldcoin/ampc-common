@@ -239,7 +239,7 @@ fn default_min_face_job_size() -> usize {
 }
 
 fn default_min_face_job_size_reauth() -> usize {
-    default_min_face_job_size()
+    100
 }
 
 fn default_min_1d_job_size_reauth() -> usize {
