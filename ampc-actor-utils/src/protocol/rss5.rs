@@ -478,17 +478,17 @@ impl Rss5Session {
         })
     }
 
-    /// Share a vector of u64 words known in the clear to `sharer` (an
-    /// "input sharing"): 5 of the 6 components come from the component
-    /// streams (derived locally by their holders), and the sharer sends the
-    /// correction component to its 2 other holders. Components containing
-    /// the sharer are zero.
-    async fn input_share_words(
+    /// Prepare the local part of an input sharing without communicating.
+    ///
+    /// PRF streams are consumed in canonical component order. The sharer
+    /// additionally obtains the correction that must be sent to the other
+    /// two holders; receivers install that correction after communication.
+    fn prepare_input_share_words(
         &mut self,
         sharer: usize,
         len: usize,
         values: Option<Vec<RingElement<u64>>>,
-    ) -> Result<Vec<Share5<u64>>> {
+    ) -> (Vec<Share5<u64>>, Option<Vec<RingElement<u64>>>) {
         let p = self.topo.party;
         let d = corr_set(sharer);
         debug_assert_eq!(values.is_some(), p == sharer);
@@ -514,21 +514,46 @@ impl Rss5Session {
             }
         }
 
+        (out, corr)
+    }
+
+    fn install_input_correction(
+        &self,
+        out: &mut [Share5<u64>],
+        sharer: usize,
+        corr: Vec<RingElement<u64>>,
+    ) {
+        assert_eq!(out.len(), corr.len(), "correction length mismatch");
+        let li = self.topo.local_idx[corr_set(sharer)]
+            .expect("correction holder has the correction component");
+        for (out_word, c) in out.iter_mut().zip(corr) {
+            out_word.c[li] ^= c;
+        }
+    }
+
+    /// Share a vector of u64 words known in the clear to `sharer` (an
+    /// "input sharing"): 5 of the 6 components come from the component
+    /// streams (derived locally by their holders), and the sharer sends the
+    /// correction component to its 2 other holders. Components containing
+    /// the sharer are zero.
+    async fn input_share_words(
+        &mut self,
+        sharer: usize,
+        len: usize,
+        values: Option<Vec<RingElement<u64>>>,
+    ) -> Result<Vec<Share5<u64>>> {
+        let p = self.topo.party;
+        let (mut out, corr) = self.prepare_input_share_words(sharer, len, values);
+
         if p == sharer {
             let corr = corr.expect("sharer has plaintext words");
             let [r1, r2] = corr_receivers(sharer);
             self.send_elems(r1, corr.clone()).await?;
             self.send_elems(r2, corr.clone()).await?;
-            let li = self.topo.local_idx[d].expect("sharer holds its correction set");
-            for (out_word, c) in out.iter_mut().zip(corr) {
-                out_word.c[li] ^= c;
-            }
+            self.install_input_correction(&mut out, sharer, corr);
         } else if corr_receivers(sharer).contains(&p) {
             let v = self.recv_elems::<u64>(sharer, len).await?;
-            let li = self.topo.local_idx[d].expect("receiver holds the correction set");
-            for (out_word, c) in out.iter_mut().zip(v) {
-                out_word.c[li] ^= c;
-            }
+            self.install_input_correction(&mut out, sharer, v);
         }
         Ok(out)
     }
@@ -572,14 +597,42 @@ impl Rss5Session {
     async fn reshare_direct(&mut self, z: &[RingElement<u64>]) -> Result<Vec<Share5<u64>>> {
         let len = z.len();
         self.legs += 1;
+        let p = self.topo.party;
         let mut out = vec![Share5::<u64>::zero(); len];
+
+        // Prepare all five input sharings before any communication. Keeping
+        // this loop in canonical sharer order makes every holder consume its
+        // component PRF streams identically.
+        let mut own_corr = None;
         for sharer in 0..NUM_PARTIES {
-            let values = (self.topo.party == sharer).then(|| z.to_vec());
-            let sh = self.input_share_words(sharer, len, values).await?;
+            let values = (p == sharer).then(|| z.to_vec());
+            let (sh, corr) = self.prepare_input_share_words(sharer, len, values);
+            if p == sharer {
+                own_corr = corr;
+            } else {
+                debug_assert!(corr.is_none());
+            }
             for (out_word, sh_word) in out.iter_mut().zip(sh) {
                 for (o, s) in out_word.c.iter_mut().zip(sh_word.c) {
                     *o ^= s;
                 }
+            }
+        }
+
+        // Each party sends its correction before that party starts
+        // receiving. No send therefore depends on an earlier receive, so
+        // the ten independent sends form one network leg rather than the
+        // chain produced by invoking five input sharings sequentially.
+        let corr = own_corr.expect("party prepared its own correction");
+        let [r1, r2] = corr_receivers(p);
+        self.send_elems(r1, corr.clone()).await?;
+        self.send_elems(r2, corr.clone()).await?;
+        self.install_input_correction(&mut out, p, corr);
+
+        for sharer in 0..NUM_PARTIES {
+            if corr_receivers(sharer).contains(&p) {
+                let corr = self.recv_elems::<u64>(sharer, len).await?;
+                self.install_input_correction(&mut out, sharer, corr);
             }
         }
         Ok(out)
@@ -1435,9 +1488,97 @@ mod tests {
         player::{Identity, RoleAssignment},
         session::{NetworkSession, SessionId},
     };
-    use crate::network::mpc::LocalNetworkingStore;
+    use crate::network::mpc::{LocalNetworkingStore, NetworkValue, Networking};
+    use async_trait::async_trait;
+    use eyre::eyre;
     use rand::Rng;
-    use std::sync::Arc;
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            Arc,
+        },
+    };
+
+    #[derive(Debug)]
+    struct CausalMessage {
+        value: NetworkValue,
+        arrival: u64,
+    }
+
+    type CausalChannels = Arc<
+        HashMap<
+            (Identity, Identity),
+            (
+                async_channel::Sender<CausalMessage>,
+                async_channel::Receiver<CausalMessage>,
+            ),
+        >,
+    >;
+
+    struct CausalNetworking {
+        owner: Identity,
+        channels: CausalChannels,
+        clock: Arc<AtomicU64>,
+    }
+
+    #[async_trait]
+    impl Networking for CausalNetworking {
+        async fn send(&mut self, value: NetworkValue, receiver: &Identity) -> Result<()> {
+            let (tx, _) = self
+                .channels
+                .get(&(self.owner.clone(), receiver.clone()))
+                .ok_or_else(|| eyre!("missing causal channel"))?;
+            tx.send(CausalMessage {
+                value,
+                arrival: self.clock.load(Ordering::SeqCst) + 1,
+            })
+            .await
+            .map_err(|e| eyre!(e.to_string()))
+        }
+
+        async fn receive(&mut self, sender: &Identity) -> Result<NetworkValue> {
+            let (_, rx) = self
+                .channels
+                .get(&(sender.clone(), self.owner.clone()))
+                .ok_or_else(|| eyre!("missing causal channel"))?;
+            let msg = rx.recv().await.map_err(|e| eyre!(e.to_string()))?;
+            self.clock.fetch_max(msg.arrival, Ordering::SeqCst);
+            Ok(msg.value)
+        }
+    }
+
+    /// Replace the zero-latency local transport after PRF setup with a
+    /// deterministic logical-latency transport. A send arrives at the
+    /// sender's current causal depth plus one; receives advance the
+    /// receiver to that depth. Independent sends therefore remain in one
+    /// leg, while send-after-receive dependencies add a leg.
+    fn install_causal_network(sessions: &mut [Rss5Session]) -> Vec<Arc<AtomicU64>> {
+        let identities: Vec<Identity> = (0..NUM_PARTIES)
+            .map(|i| Identity::from(format!("party{i}")))
+            .collect();
+        let mut channels = HashMap::new();
+        for sender in &identities {
+            for receiver in &identities {
+                if sender != receiver {
+                    let (tx, rx) = async_channel::unbounded();
+                    channels.insert((sender.clone(), receiver.clone()), (tx, rx));
+                }
+            }
+        }
+        let channels = Arc::new(channels);
+        let clocks: Vec<Arc<AtomicU64>> = (0..NUM_PARTIES)
+            .map(|_| Arc::new(AtomicU64::new(0)))
+            .collect();
+        for ((session, owner), clock) in sessions.iter_mut().zip(identities).zip(&clocks) {
+            session.network_session.networking = Box::new(CausalNetworking {
+                owner,
+                channels: Arc::clone(&channels),
+                clock: Arc::clone(clock),
+            });
+        }
+        clocks
+    }
 
     fn make_network_sessions() -> Vec<NetworkSession> {
         let identities: Vec<Identity> = (0..NUM_PARTIES)
@@ -1800,11 +1941,11 @@ mod tests {
     }
 
     /// All four adder/resharing variants must agree with the plaintext
-    /// comparison, and their critical-path leg counts must match the
-    /// derived values (ripple: 15 sequential AND rounds; prefix tree: 6
-    /// batched AND rounds; redistribution resharing: 2 legs per round;
-    /// direct resharing: 1 leg per round; plus redistribute, input share
-    /// and open).
+    /// comparison, and both the schedule counter and an independently
+    /// tracked causal network depth must match the derived values (ripple:
+    /// 15 sequential AND rounds; prefix tree: 6 batched AND rounds;
+    /// redistribution resharing: 2 legs per round; direct resharing: 1 leg
+    /// per round; plus redistribute, input share and open).
     #[tokio::test]
     async fn adder_variants_agree() {
         const THRESHOLD: u16 = 1000;
@@ -1819,7 +1960,8 @@ mod tests {
             THRESHOLD.wrapping_add(0x7FFF),
             THRESHOLD.wrapping_add(0x8000),
         ];
-        values.extend((0..119).map(|_| rand::thread_rng().gen::<u16>()));
+        // 129 values exercise two full bit-sliced words and one partial word.
+        values.extend((0..120).map(|_| rand::thread_rng().gen::<u16>()));
         let expected: Vec<bool> = values
             .iter()
             .map(|&v| (v.wrapping_sub(THRESHOLD) as i16) < 0)
@@ -1831,8 +1973,10 @@ mod tests {
             (AdderKind::PrefixTree, ReshareMode::Direct, 9),
         ] {
             let parts = additive_sharing(&values);
+            let mut sessions = make_sessions().await;
+            let clocks = install_causal_network(&mut sessions);
             let mut handles = Vec::new();
-            for (i, sess) in make_sessions().await.into_iter().enumerate() {
+            for (i, sess) in sessions.into_iter().enumerate() {
                 let z = parts[i].clone();
                 handles.push(tokio::spawn(async move {
                     let mut sess = sess;
@@ -1850,6 +1994,15 @@ mod tests {
                 assert_eq!(bits, expected, "{kind:?}/{mode:?}");
                 assert_eq!(legs, expected_legs, "{kind:?}/{mode:?} leg count");
             }
+            let causal_legs = clocks
+                .iter()
+                .map(|clock| clock.load(Ordering::SeqCst))
+                .max()
+                .unwrap();
+            assert_eq!(
+                causal_legs, expected_legs,
+                "{kind:?}/{mode:?} causal leg count"
+            );
         }
     }
 
