@@ -259,6 +259,21 @@ impl AdderInput {
     }
 }
 
+/// How an AND gate converts the binary additive sharing of its local cross
+/// products back into RSS. Must be set identically on all 5 parties (the
+/// PRF streams advance in lockstep with the schedule).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReshareMode {
+    /// Redistribute to 3 clear addends, then 3 input sharings: 8
+    /// element-sends per gate over 2 sequential message legs. Byte-optimal.
+    Redistribute,
+    /// Every party input-shares its own additive crumb directly: 10
+    /// element-sends per gate over 1 leg. Round-optimal; pairs with the
+    /// batched [`AdderKind::PrefixTree`] adder, where gates are parallel
+    /// and the per-gate leg is on the critical path once per round.
+    Direct,
+}
+
 /// A 5-party RSS session: the underlying [`NetworkSession`] plus the
 /// per-component and pairwise PRF streams.
 pub struct Rss5Session {
@@ -270,6 +285,14 @@ pub struct Rss5Session {
     /// One PRF stream per party pair this party belongs to (indexed by the
     /// same `SETS` table). Used to mask the redistributed additive shares.
     pair_streams: Vec<Option<AesRng>>,
+    /// AND-gate resharing strategy (default [`ReshareMode::Redistribute`]).
+    reshare_mode: ReshareMode,
+    /// Sequential one-way message legs on the protocol's critical path,
+    /// counted at logical-phase granularity: independent sends within a
+    /// phase (e.g. the 3 input sharings of a resharing) count once. The
+    /// counter is schedule-driven, so it advances identically on all
+    /// parties whether or not they send in a phase.
+    legs: u64,
 }
 
 /// Establish the shared PRF keys over a 5-party [`NetworkSession`]: for each
@@ -338,10 +361,23 @@ pub async fn setup_rss5_session(
         topo,
         streams,
         pair_streams,
+        reshare_mode: ReshareMode::Redistribute,
+        legs: 0,
     })
 }
 
 impl Rss5Session {
+    /// Select the AND-gate resharing strategy (must match on all parties).
+    pub fn set_reshare_mode(&mut self, mode: ReshareMode) {
+        self.reshare_mode = mode;
+    }
+
+    /// Sequential one-way message legs accumulated on this session's
+    /// critical path (see the field docs for the counting convention).
+    pub fn legs(&self) -> u64 {
+        self.legs
+    }
+
     async fn send_elems<T: IntRing2k + NetworkInt>(
         &mut self,
         to: usize,
@@ -397,6 +433,7 @@ impl Rss5Session {
         &mut self,
         items: &[RingElement<u64>],
     ) -> Result<Option<Vec<RingElement<u64>>>> {
+        self.legs += 1;
         let len = items.len();
         let xor3 = |items: &[RingElement<u64>],
                     a: Vec<RingElement<u64>>,
@@ -508,6 +545,8 @@ impl Rss5Session {
     ) -> Result<Vec<Share5<u64>>> {
         let len = z.len();
         let mut addend = self.redistribute_words(z).await?;
+        // The 3 input sharings are independent: one logical leg.
+        self.legs += 1;
         let mut out = vec![Share5::<u64>::zero(); len];
         for sharer in 0..3 {
             let values = if self.topo.party == sharer {
@@ -525,8 +564,29 @@ impl Rss5Session {
         Ok(out)
     }
 
+    /// Convert a binary additive 5-sharing into a fresh RSS sharing in one
+    /// leg: every party input-shares its own crumb and the 5 sharings are
+    /// XORed. 10 element-sends per gate (vs 8 for the redistribution route)
+    /// but all sharings are independent, so the critical path is a single
+    /// leg — the round-optimal choice for batched (prefix-adder) gates.
+    async fn reshare_direct(&mut self, z: &[RingElement<u64>]) -> Result<Vec<Share5<u64>>> {
+        let len = z.len();
+        self.legs += 1;
+        let mut out = vec![Share5::<u64>::zero(); len];
+        for sharer in 0..NUM_PARTIES {
+            let values = (self.topo.party == sharer).then(|| z.to_vec());
+            let sh = self.input_share_words(sharer, len, values).await?;
+            for (out_word, sh_word) in out.iter_mut().zip(sh) {
+                for (o, s) in out_word.c.iter_mut().zip(sh_word.c) {
+                    *o ^= s;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// AND of two vectors of binary RSS shares: local cross products of the
-    /// assigned component pairs, then the cheap resharing.
+    /// assigned component pairs, then resharing per [`ReshareMode`].
     async fn and_words(
         &mut self,
         x: &[Share5<u64>],
@@ -544,7 +604,10 @@ impl Rss5Session {
                 RingElement(acc)
             })
             .collect();
-        self.reshare_via_redistribution(&z).await
+        match self.reshare_mode {
+            ReshareMode::Redistribute => self.reshare_via_redistribution(&z).await,
+            ReshareMode::Direct => self.reshare_direct(&z).await,
+        }
     }
 }
 
@@ -564,6 +627,7 @@ pub async fn redistribute(
     sess: &mut Rss5Session,
     items: &[RingElement<u16>],
 ) -> Result<AdderInput> {
+    sess.legs += 1;
     let len = items.len();
     let value = match sess.topo.party {
         0 => {
@@ -682,6 +746,8 @@ fn plane_to_bools(plane: &[RingElement<u64>], n: usize) -> Vec<bool> {
 /// (the adder inputs). Each addend holder sends one 16-plane correction to
 /// 2 peers.
 pub async fn share_adder_inputs(sess: &mut Rss5Session, input: &AdderInput) -> Result<Vec<Value5>> {
+    // The 3 input sharings are independent: one logical leg.
+    sess.legs += 1;
     let words = word_count(input.len());
     let mut values = Vec::with_capacity(3);
     for sharer in 0..3 {
@@ -785,11 +851,103 @@ async fn final_adder_msb(sess: &mut Rss5Session, u: &Value5, v: &Value5) -> Resu
     Ok(msb)
 }
 
+/// MSB of `u + v (mod 2^16)` via a parallel-prefix (Kogge-Stone-family)
+/// carry tree, where `v` is a carry value with a zero LSB plane.
+///
+/// The carry into bit 15 is the group-generate of bits 1..=14 (bit 0
+/// generates nothing since `v_0 = 0`): per-bit `(g, p) = (u & v, u ^ v)`
+/// pairs are reduced by a binary tree of segment combines
+/// `(G, P) = (G_hi ^ (P_hi & G_lo), P_hi & P_lo)`, each level batched into
+/// one AND round. Only the total generate is needed (no per-bit sums), so
+/// this is a 13-combine tree reduction rather than a full prefix scan:
+/// 39 plane-ANDs over 5 AND rounds, vs the ripple adder's 14 plane-ANDs
+/// over 14 sequential rounds — the round-optimal choice.
+async fn final_adder_msb_prefix(sess: &mut Rss5Session, u: &Value5, v: &Value5) -> Result<Plane5> {
+    assert!(
+        v[0].iter().all(|s| *s == Share5::zero()),
+        "final adder expects a carry-form second operand"
+    );
+    let words = u[0].len();
+
+    // g_k = u_k & v_k and p_k = u_k ^ v_k for the carry-relevant bits
+    // 1..=14, batched into one AND round.
+    let mut flat_a: Vec<Share5<u64>> = Vec::with_capacity((PLANES - 2) * words);
+    let mut flat_b: Vec<Share5<u64>> = Vec::with_capacity(flat_a.capacity());
+    for k in 1..PLANES - 1 {
+        flat_a.extend(u[k].iter().copied());
+        flat_b.extend(v[k].iter().copied());
+    }
+    let and_res = sess.and_words(&flat_a, &flat_b).await?;
+    // Segments ordered low -> high; P is dropped once a segment can no
+    // longer be a combine operand (the root).
+    let mut segs: Vec<(Plane5, Option<Plane5>)> = (1..PLANES - 1)
+        .map(|k| {
+            let g = and_res[(k - 1) * words..k * words].to_vec();
+            let p = xor_planes(&u[k], &v[k]);
+            (g, Some(p))
+        })
+        .collect();
+
+    while segs.len() > 1 {
+        let pairs = segs.len() / 2;
+        let is_root_level = segs.len() == 2;
+        let mut flat_a: Vec<Share5<u64>> = Vec::new();
+        let mut flat_b: Vec<Share5<u64>> = Vec::new();
+        for i in 0..pairs {
+            let (lo, hi) = (&segs[2 * i], &segs[2 * i + 1]);
+            let hi_p = hi.1.as_ref().expect("non-root segment has a propagate");
+            // G_hi ^ (P_hi & G_lo)
+            flat_a.extend(hi_p.iter().copied());
+            flat_b.extend(lo.0.iter().copied());
+            if !is_root_level {
+                // P_hi & P_lo
+                flat_a.extend(hi_p.iter().copied());
+                flat_b.extend(lo.1.as_ref().expect("non-root propagate").iter().copied());
+            }
+        }
+        let and_res = sess.and_words(&flat_a, &flat_b).await?;
+
+        let per_pair = if is_root_level { words } else { 2 * words };
+        let mut next: Vec<(Plane5, Option<Plane5>)> = Vec::with_capacity(pairs + 1);
+        for i in 0..pairs {
+            let mut g: Plane5 = and_res[i * per_pair..i * per_pair + words].to_vec();
+            xor_assign_planes(&mut g, &segs[2 * i + 1].0);
+            let p = (!is_root_level)
+                .then(|| and_res[i * per_pair + words..(i + 1) * per_pair].to_vec());
+            next.push((g, p));
+        }
+        if segs.len() % 2 == 1 {
+            next.push(segs.pop().unwrap());
+        }
+        segs = next;
+    }
+
+    let carry = segs.pop().unwrap().0;
+    let mut msb = xor_planes(&u[PLANES - 1], &v[PLANES - 1]);
+    xor_assign_planes(&mut msb, &carry);
+    Ok(msb)
+}
+
+/// Final-adder circuit selection for [`extract_msb_with`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdderKind {
+    /// Ripple-carry: 14 plane-ANDs, 14 sequential AND rounds. Byte-optimal.
+    Ripple,
+    /// Parallel-prefix carry tree: 39 plane-ANDs, 5 AND rounds.
+    /// Round-optimal; combine with [`ReshareMode::Direct`] for the fewest
+    /// legs.
+    PrefixTree,
+}
+
 /// Extract the MSB of the sum of the shared adder inputs as one RSS
 /// bit-plane: a compressor tree reduces the inputs to two values (for the
-/// 3 redistribution addends this is a single full adder), followed by a
-/// ripple-carry adder.
-pub async fn extract_msb(sess: &mut Rss5Session, mut values: Vec<Value5>) -> Result<Plane5> {
+/// 3 redistribution addends this is a single full adder), followed by the
+/// selected final adder.
+pub async fn extract_msb_with(
+    sess: &mut Rss5Session,
+    mut values: Vec<Value5>,
+    kind: AdderKind,
+) -> Result<Plane5> {
     if values.len() < 3 {
         bail!("adder needs at least 3 inputs");
     }
@@ -814,7 +972,15 @@ pub async fn extract_msb(sess: &mut Rss5Session, mut values: Vec<Value5>) -> Res
 
     let v = values.pop().unwrap(); // carry-form value from the last full adder
     let u = values.pop().unwrap();
-    final_adder_msb(sess, &u, &v).await
+    match kind {
+        AdderKind::Ripple => final_adder_msb(sess, &u, &v).await,
+        AdderKind::PrefixTree => final_adder_msb_prefix(sess, &u, &v).await,
+    }
+}
+
+/// [`extract_msb_with`] using the byte-optimal ripple-carry final adder.
+pub async fn extract_msb(sess: &mut Rss5Session, values: Vec<Value5>) -> Result<Plane5> {
+    extract_msb_with(sess, values, AdderKind::Ripple).await
 }
 
 /// Open an RSS bit-plane: every party XORs its 6 held components; each of
@@ -822,6 +988,7 @@ pub async fn extract_msb(sess: &mut Rss5Session, mut values: Vec<Value5>) -> Res
 /// designated provider, aggregated per (provider, receiver) pair — 10
 /// messages in total instead of an all-to-all broadcast.
 pub async fn open_bit_plane(sess: &mut Rss5Session, plane: &Plane5, n: usize) -> Result<Vec<bool>> {
+    sess.legs += 1;
     let p = sess.topo.party;
     let mut acc: Vec<RingElement<u64>> = plane
         .iter()
@@ -1027,6 +1194,8 @@ pub async fn fhd_diff_inputs(
         );
     }
     let a = crate::protocol::fhd_ops::translate_threshold_a(threshold_ratio);
+    // The 3 input sharings are independent: one logical leg.
+    sess.legs += 1;
     let len = code.len();
     let words = word_count(len);
     let mut values = Vec::with_capacity(3);
@@ -1626,6 +1795,60 @@ mod tests {
             }
             for h in handles {
                 assert_eq!(h.await.unwrap(), expected, "ratio {ratio}");
+            }
+        }
+    }
+
+    /// All four adder/resharing variants must agree with the plaintext
+    /// comparison, and their critical-path leg counts must match the
+    /// derived values (ripple: 15 sequential AND rounds; prefix tree: 6
+    /// batched AND rounds; redistribution resharing: 2 legs per round;
+    /// direct resharing: 1 leg per round; plus redistribute, input share
+    /// and open).
+    #[tokio::test]
+    async fn adder_variants_agree() {
+        const THRESHOLD: u16 = 1000;
+        let mut values: Vec<u16> = vec![
+            0,
+            999,
+            1000,
+            1001,
+            0x7FFF,
+            0x8000,
+            0xFFFF,
+            THRESHOLD.wrapping_add(0x7FFF),
+            THRESHOLD.wrapping_add(0x8000),
+        ];
+        values.extend((0..119).map(|_| rand::thread_rng().gen::<u16>()));
+        let expected: Vec<bool> = values
+            .iter()
+            .map(|&v| (v.wrapping_sub(THRESHOLD) as i16) < 0)
+            .collect();
+        for (kind, mode, expected_legs) in [
+            (AdderKind::Ripple, ReshareMode::Redistribute, 33),
+            (AdderKind::Ripple, ReshareMode::Direct, 18),
+            (AdderKind::PrefixTree, ReshareMode::Redistribute, 15),
+            (AdderKind::PrefixTree, ReshareMode::Direct, 9),
+        ] {
+            let parts = additive_sharing(&values);
+            let mut handles = Vec::new();
+            for (i, sess) in make_sessions().await.into_iter().enumerate() {
+                let z = parts[i].clone();
+                handles.push(tokio::spawn(async move {
+                    let mut sess = sess;
+                    sess.set_reshare_mode(mode);
+                    let mut input = redistribute(&mut sess, &z).await.unwrap();
+                    sub_pub(&sess, &mut input, RingElement(THRESHOLD));
+                    let shared = share_adder_inputs(&mut sess, &input).await.unwrap();
+                    let msb = extract_msb_with(&mut sess, shared, kind).await.unwrap();
+                    let bits = open_bit_plane(&mut sess, &msb, input.len()).await.unwrap();
+                    (bits, sess.legs())
+                }));
+            }
+            for h in handles {
+                let (bits, legs) = h.await.unwrap();
+                assert_eq!(bits, expected, "{kind:?}/{mode:?}");
+                assert_eq!(legs, expected_legs, "{kind:?}/{mode:?} leg count");
             }
         }
     }

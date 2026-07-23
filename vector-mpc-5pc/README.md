@@ -132,18 +132,29 @@ adder).
 
 ## Trade-offs
 
-**Bytes vs rounds.** Both pipelines are tuned for bytes:
+**Bytes vs rounds.** The headline tables use the byte-optimal
+configurations; both 5PC axes are runtime-selectable and measured by the
+harness (`AdderKind`: ripple vs parallel-prefix carry tree; `ReshareMode`:
+8-bit/2-leg redistribution vs 10-bit/1-leg direct resharing). Measured
+16-bit matrix (bytes per comparison, critical-path one-way legs per query):
 
-* The table above uses the `ripple` feature; the crate default is the
-  parallel-prefix adder, which costs roughly 2× the adder bytes but reduces
-  the sequential AND rounds from ~14–15 to ~4.
-* The 5PC cheap AND resharing (8 bits/gate) is a two-leg protocol —
-  redistribute, then input-share — where a direct 5-sharer resharing
-  (10 bits/gate) is one leg (33 vs 19 legs per query). Reverting just the 14
-  sequential ripple-carry gates costs +3.5 B/comparison for 19 legs.
-* In a real deployment, round latency is hidden the way the reference PoC
-  does it: pipeline DB chunks across parallel sessions, so throughput is
-  bandwidth-bound, not RTT-bound.
+| variant | bytes | legs |
+|---|---|---|
+| ripple + redistribute-reshare (byte-optimal) | 46.42 B | 33 |
+| ripple + direct-reshare | 53.71 B | 18 |
+| prefix + redistribute-reshare | 71.33 B | 15 |
+| prefix + direct-reshare (round-optimal) | 84.85 B | 9 |
+
+The round-optimal configuration reaches constant-round-protocol territory
+(≈10 rounds, the domain of masked-opening/edaBit designs with helper
+parties and preprocessed randomness) at a fraction of their bytes and with
+no preprocessing. For flat scans, round latency is hidden anyway by
+pipelining DB chunks across parallel sessions (throughput is
+bandwidth-bound, not RTT-bound), so the byte-optimal variant remains the
+default; the round-optimal one targets small adaptive batches (e.g. graph
+search) where the ~9-leg fill dominates. The 3PC baseline has the same
+knob via the crate's `ripple` feature vs the default parallel-prefix
+adder.
 
 **Price of the corruption threshold.** The 3.30× is intrinsic to (5,2)-RSS:
 replication factor 3 means each party holds 6 of 10 components, every

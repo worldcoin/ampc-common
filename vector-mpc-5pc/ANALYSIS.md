@@ -69,6 +69,21 @@ Bytes are the serialized protocol messages summed over **all** parties
 | **5PC 16-bit extension** (`rss5`, ripple-style compressor adder) | 16.01 B | — | 29.15 B | 1.26 B | **46.42 B** | 9.28 B |
 | **5PC iris FHD 32-bit** (`rss5` FHD ops) | 32.01 B | 44.17 B | 118.30 B | 1.26 B | **195.75 B** | 39.15 B |
 
+The 5PC 16-bit pipeline also has runtime-selectable round-optimized
+variants (parallel-prefix carry tree, 1-leg direct resharing), trading
+bytes for critical-path legs — measured by the same harness, all verified
+against plaintext:
+
+| variant | bytes/comparison | legs/query |
+|---|---|---|
+| ripple + redistribute-reshare (byte-optimal) | 46.42 B | 33 |
+| ripple + direct-reshare | 53.71 B | 18 |
+| prefix + redistribute-reshare | 71.33 B | 15 |
+| prefix + direct-reshare (round-optimal) | 84.85 B | 9 |
+
+(The FHD pipeline currently ships ripple-only at 101 legs/query; a prefix
+variant would land around ~20 legs by the same construction.)
+
 Notes:
 
 * `vector-mpc-poc` calls `iris_mpc_cpu::protocol::ops::{galois_ring_to_rep3,

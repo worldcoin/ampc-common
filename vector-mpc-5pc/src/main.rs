@@ -123,6 +123,8 @@ struct PartyStats {
     open_bytes: u64,
     /// Protocol messages only (setup excluded, like the byte phases).
     messages: u64,
+    /// Sequential one-way message legs per query (5PC pipelines only).
+    legs: u64,
 }
 
 impl PartyStats {
@@ -329,10 +331,13 @@ async fn party_5(
     counters: Counters,
     db_size: usize,
     queries: Vec<Vec<bool>>,
+    adder: rss5::AdderKind,
+    reshare: rss5::ReshareMode,
 ) -> Result<PartyStats> {
     let party = network_session.own_role().index();
     let seed: PrfSeed = rand::thread_rng().gen();
     let mut sess = rss5::setup_rss5_session(network_session, seed).await?;
+    sess.set_reshare_mode(reshare);
     let mut stats = PartyStats::after_setup(&counters);
 
     let db: Vec<[u16; IRIS_VECTOR_SIZE]> = (0..db_size)
@@ -362,7 +367,7 @@ async fn party_5(
         rss5::sub_pub(&sess, &mut input, RingElement(THRESHOLD));
         let shared = rss5::share_adder_inputs(&mut sess, &input).await?;
         let after_convert = counters.bytes();
-        let msb = rss5::extract_msb(&mut sess, shared).await?;
+        let msb = rss5::extract_msb_with(&mut sess, shared, adder).await?;
         let after_msb = counters.bytes();
         let bits = rss5::open_bit_plane(&mut sess, &msb, db_size).await?;
         let after_open = counters.bytes();
@@ -376,6 +381,7 @@ async fn party_5(
             "5PC party {party} query {q}: result mismatch"
         );
     }
+    stats.legs = sess.legs() / queries.len().max(1) as u64;
     stats.finish(&counters);
     Ok(stats)
 }
@@ -435,6 +441,7 @@ async fn party_5_fhd(
             "5PC FHD party {party} query {q}: result mismatch"
         );
     }
+    stats.legs = sess.legs() / num_queries.max(1) as u64;
     stats.finish(&counters);
     Ok(stats)
 }
@@ -469,11 +476,18 @@ async fn run_3pc_fhd(db_size: usize, num_queries: usize) -> Result<Vec<PartyStat
     Ok(stats)
 }
 
-async fn run_5pc(db_size: usize, expected: &[Vec<bool>]) -> Result<Vec<PartyStats>> {
+async fn run_5pc(
+    db_size: usize,
+    expected: &[Vec<bool>],
+    adder: rss5::AdderKind,
+    reshare: rss5::ReshareMode,
+) -> Result<Vec<PartyStats>> {
     let mut handles = Vec::new();
     for (session, counters) in counted_network_sessions(5) {
         let queries = expected.to_vec();
-        handles.push(tokio::spawn(party_5(session, counters, db_size, queries)));
+        handles.push(tokio::spawn(party_5(
+            session, counters, db_size, queries, adder, reshare,
+        )));
     }
     let mut stats = Vec::new();
     for h in handles {
@@ -540,6 +554,9 @@ fn report(label: &str, corruptions: usize, stats: &[PartyStats], comparisons: u6
         })
         .collect();
     println!("  per party breakdown: {}", per_party.join("  "));
+    if stats[0].legs > 0 {
+        println!("  sequential message legs per query: {}", stats[0].legs);
+    }
     println!(
         "  total protocol bytes: {total} ({messages} messages), \
          one-time setup: {setup} bytes ({setup_messages} messages)"
@@ -594,7 +611,13 @@ async fn main() -> Result<()> {
     let stats3 = run_3pc(db_size, &expected).await?;
     let bytes3 = report("3PC baseline (ampc-actor-utils)", 1, &stats3, comparisons);
 
-    let stats5 = run_5pc(db_size, &expected).await?;
+    let stats5 = run_5pc(
+        db_size,
+        &expected,
+        rss5::AdderKind::Ripple,
+        rss5::ReshareMode::Redistribute,
+    )
+    .await?;
     let bytes5 = report("5PC extension (rss5)", 2, &stats5, comparisons);
 
     println!(
@@ -603,6 +626,43 @@ async fn main() -> Result<()> {
         bytes5,
         bytes3
     );
+    println!();
+
+    // Bytes-vs-rounds matrix over the adder and resharing variants.
+    println!("== 5PC 16-bit adder/resharing variants (bytes vs critical-path legs) ==");
+    for (adder, reshare, label) in [
+        (
+            rss5::AdderKind::Ripple,
+            rss5::ReshareMode::Redistribute,
+            "ripple + redistribute-reshare (byte-optimal)",
+        ),
+        (
+            rss5::AdderKind::Ripple,
+            rss5::ReshareMode::Direct,
+            "ripple + direct-reshare",
+        ),
+        (
+            rss5::AdderKind::PrefixTree,
+            rss5::ReshareMode::Redistribute,
+            "prefix + redistribute-reshare",
+        ),
+        (
+            rss5::AdderKind::PrefixTree,
+            rss5::ReshareMode::Direct,
+            "prefix + direct-reshare (round-optimal)",
+        ),
+    ] {
+        let stats = run_5pc(db_size, &expected, adder, reshare).await?;
+        let total: u64 = stats
+            .iter()
+            .map(|s| s.convert_bytes + s.lift_bytes + s.msb_bytes + s.open_bytes)
+            .sum();
+        println!(
+            "  {label:<46} {:>7.3} B/comparison, {:>2} legs/query (verified: OK)",
+            total as f64 / comparisons as f64,
+            stats[0].legs,
+        );
+    }
     println!();
 
     let stats_fhd = run_3pc_fhd(db_size, num_queries).await?;
