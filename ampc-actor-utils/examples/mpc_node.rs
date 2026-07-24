@@ -55,7 +55,7 @@ struct Args {
     rounds: usize,
 
     /// TCP connections per peer.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 1)]
     connections: usize,
 
     /// Payload bytes per message (the "small" size for non-fixed distributions).
@@ -361,17 +361,12 @@ taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --session
 taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
 wait
 
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 100 --rounds 2000 &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 100 --rounds 2000 &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 100 --rounds 2000 &
-wait
-
 # Bimodal payloads (the fair comparison against grpc_node's flow-control stress):
 # mostly 32B, 5% 16KB bursts. Add `--dist uniform` for a uniform spread instead.
 DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 100 --rounds 2000 $DIST &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 100 --rounds 2000 $DIST &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 100 --rounds 2000 $DIST &
+taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 90 --rounds 2000 $DIST &
+taskset -c 3-6   $BIN --party 1 --workers 3 --sessions 90 --rounds 2000 $DIST &
+taskset -c 7-9   $BIN --party 2 --workers 3 --sessions 90 --rounds 2000 $DIST &
 wait
 
 

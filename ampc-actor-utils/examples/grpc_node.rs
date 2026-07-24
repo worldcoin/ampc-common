@@ -62,7 +62,7 @@ struct Args {
     /// gRPC connections per peer (connection_parallelism). The number of gRPC
     /// streams is derived as `sessions / connections` (one stream per connection),
     /// so keep `sessions` a multiple of `connections`.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 1)]
     connections: usize,
 
     /// Payload bytes per message (the "small" size for non-fixed distributions).
@@ -366,25 +366,28 @@ BIN=./target/release/examples/grpc_node
 # so RTT ≈ 2 × delay.
 sudo tc qdisc add dev lo root netem delay 500us 100us distribution normal loss 0.05%
 
+
+// using around 48 connections on a 192 core machine.
+// 48/192 = 0.25
+// on a 12 core machine that's 3 cores per connection
+//
+// don't want to measure contention, just networking stack latency. so make --connections 1 and have 21 sessions per connection
+
+
 # Launch 3 parties pinned to DISJOINT core sets. Match --workers to the core count
 # (≈ 1 worker thread per core — do NOT oversubscribe; this is async, non-blocking I/O).
 # Adjust core ranges to your machine (this assumes ≥12 cores).
-taskset -c 0-3  perf stat -d -o perf.p0.txt $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
-wait
-
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 21 --rounds 2000 &
+taskset -c 3-6   $BIN --party 1 --workers 3 --sessions 21 --rounds 2000 &
+taskset -c 7-9   $BIN --party 2 --workers 3 --sessions 21 --rounds 2000 &
 wait
 
 # Bimodal payloads to stress HTTP-2 flow-control windows: mostly 32B, 5% 16KB
 # bursts. Add `--dist uniform` for a uniform 32B..16KB spread instead.
-DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.05"
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 100 --rounds 2000 $DIST &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 100 --rounds 2000 $DIST &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 100 --rounds 2000 $DIST &
+DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
+taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 3-6   $BIN --party 1 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 7-9   $BIN --party 2 --workers 3 --sessions 21 --rounds 2000 $DIST &
 wait
 
 
