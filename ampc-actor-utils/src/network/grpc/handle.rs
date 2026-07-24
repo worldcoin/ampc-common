@@ -8,24 +8,16 @@ use crate::{
     },
 };
 use eyre::{eyre, Result};
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, Mutex},
     time::sleep,
 };
 use tonic::{async_trait, Request, Response, Status, Streaming};
 
 use super::networking::GrpcNetworking;
 use super::session::GrpcSession;
-use super::{err_to_status, GrpcConfig, InStream, InStreams, OutStream, OutStreams, TonicResult};
-
-struct StartMessageStreamTask {
-    sender: Identity,
-    stream_id: StreamId,
-    stream: Streaming<SendRequests>,
-    inbound_forwarder: HashMap<u32, OutStream>,
-    inbound_sessions: HashMap<SessionId, InStream>,
-}
+use super::{GrpcConfig, InStream, InStreams, OutStream, OutStreams, TonicResult};
 
 struct ConnectToPartyTask {
     party_id: Identity,
@@ -36,7 +28,6 @@ enum GrpcTask {
     ConnectToParty(ConnectToPartyTask),
     CreateOutgoingStreams(SessionId),
     ObtainIncomingStreams(SessionId),
-    StartMessageStream(StartMessageStreamTask),
     IsSessionReady(SessionId),
 }
 
@@ -55,66 +46,64 @@ struct MessageJob {
 // Concurrency handler for networking operations
 #[derive(Clone)]
 pub struct GrpcHandle {
+    grpc: Arc<Mutex<GrpcNetworking>>,
     job_queue: mpsc::Sender<MessageJob>,
     party_id: Identity,
     config: GrpcConfig,
 }
 
 impl GrpcHandle {
-    pub async fn new(mut grpc: GrpcNetworking) -> Result<Self> {
+    pub async fn new(grpc: GrpcNetworking) -> Result<Self> {
         let party_id = grpc.party_id();
         let config = grpc.config();
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<MessageJob>(1);
+        let grpc = Arc::new(Mutex::new(grpc));
+        let (tx, rx) = tokio::sync::mpsc::channel::<MessageJob>(1);
 
         // Loop to handle incoming tasks from job queue
-        tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
-                match job.task {
-                    GrpcTask::CreateOutgoingStreams(session_id) => {
-                        let job_result = grpc
-                            .create_outgoing_streams(session_id)
-                            .await
-                            .map(MessageResult::OutgoingStreams);
-                        let _ = job.return_channel.send(job_result);
-                    }
-                    GrpcTask::IsSessionReady(session_id) => {
-                        let job_result = Ok(MessageResult::IsSessionReady(
-                            grpc.is_session_ready(session_id),
-                        ));
-                        let _ = job.return_channel.send(job_result);
-                    }
-                    GrpcTask::ConnectToParty(task) => {
-                        let job_result = grpc
-                            .connect_to_party(task.party_id, &task.address)
-                            .await
-                            .map(|_| MessageResult::Empty);
-                        let _ = job.return_channel.send(job_result);
-                    }
-                    GrpcTask::StartMessageStream(task) => {
-                        let job_result = grpc
-                            .start_message_stream(
-                                task.sender,
-                                task.stream_id,
-                                task.stream,
-                                task.inbound_forwarder,
-                                task.inbound_sessions,
-                            )
-                            .await
-                            .map(|_| MessageResult::Empty);
-                        let _ = job.return_channel.send(job_result);
-                    }
-                    GrpcTask::ObtainIncomingStreams(session_id) => {
-                        let job_result = grpc
-                            .obtain_incoming_streams(session_id)
-                            .await
-                            .map(MessageResult::IncomingStreams);
-                        let _ = job.return_channel.send(job_result);
+        {
+            let grpc = grpc.clone();
+            tokio::spawn(async move {
+                let mut rx = rx;
+                while let Some(job) = rx.recv().await {
+                    match job.task {
+                        GrpcTask::CreateOutgoingStreams(session_id) => {
+                            let mut grpc = grpc.lock().await;
+                            let job_result = grpc
+                                .create_outgoing_streams(session_id)
+                                .await
+                                .map(MessageResult::OutgoingStreams);
+                            let _ = job.return_channel.send(job_result);
+                        }
+                        GrpcTask::IsSessionReady(session_id) => {
+                            let grpc = grpc.lock().await;
+                            let job_result = Ok(MessageResult::IsSessionReady(
+                                grpc.is_session_ready(session_id),
+                            ));
+                            let _ = job.return_channel.send(job_result);
+                        }
+                        GrpcTask::ConnectToParty(task) => {
+                            let mut grpc = grpc.lock().await;
+                            let job_result = grpc
+                                .connect_to_party(task.party_id, &task.address)
+                                .await
+                                .map(|_| MessageResult::Empty);
+                            let _ = job.return_channel.send(job_result);
+                        }
+                        GrpcTask::ObtainIncomingStreams(session_id) => {
+                            let mut grpc = grpc.lock().await;
+                            let job_result = grpc
+                                .obtain_incoming_streams(session_id)
+                                .await
+                                .map(MessageResult::IncomingStreams);
+                            let _ = job.return_channel.send(job_result);
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(GrpcHandle {
+            grpc,
             party_id,
             job_queue: tx,
             config,
@@ -181,20 +170,25 @@ impl PartyNode for GrpcHandle {
             inbound_sessions.insert(SessionId::from(session_id), hawk_rx);
         }
 
-        let task = StartMessageStreamTask {
-            sender: sender_id.clone(),
-            stream_id,
-            stream: incoming_stream,
-            inbound_forwarder,
-            inbound_sessions,
-        };
-        let task = GrpcTask::StartMessageStream(task);
-        let _ = self.submit(task).await.map_err(err_to_status)?;
+        let grpc = self.grpc.clone();
+        let sender_id_clone = sender_id.clone();
+        tokio::spawn(async move {
+            let mut grpc = grpc.lock().await;
+            let _ = grpc
+                .start_message_stream(
+                    sender_id,
+                    stream_id,
+                    incoming_stream,
+                    inbound_forwarder,
+                    inbound_sessions,
+                )
+                .await;
+        });
 
         tracing::debug!(
             "Player {:?} has started message stream with player {:?} in stream {:?}",
             self.party_id,
-            sender_id,
+            sender_id_clone,
             stream_id.0
         );
 
