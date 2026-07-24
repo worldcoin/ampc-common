@@ -58,13 +58,71 @@ struct Args {
     #[arg(long, default_value_t = 4)]
     connections: usize,
 
-    /// Payload bytes per message.
+    /// Payload bytes per message (the "small" size for non-fixed distributions).
     #[arg(long, default_value_t = 32)]
     payload: usize,
+
+    /// Payload size distribution across a session's messages.
+    #[arg(long, value_enum, default_value_t = Dist::Fixed)]
+    dist: Dist,
+
+    /// Large/burst payload bytes (upper size for `bimodal` and `uniform`).
+    #[arg(long, default_value_t = 4096)]
+    large: usize,
+
+    /// Fraction of messages that are `--large` bytes (bimodal only).
+    #[arg(long, default_value_t = 0.05)]
+    large_frac: f64,
 
     /// Tokio worker threads (set ≈ the number of cores you `taskset` this process to).
     #[arg(long, default_value_t = 4)]
     workers: usize,
+}
+
+/// Payload size distribution across a session's messages.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum Dist {
+    /// Every message is exactly `--payload` bytes.
+    Fixed,
+    /// Mostly `--payload` bytes; a `--large-frac` fraction are `--large` bytes.
+    /// The bimodal burst pattern that stresses HTTP-2 flow-control windows.
+    Bimodal,
+    /// Uniform random size in `[--payload, --large]` bytes.
+    Uniform,
+}
+
+/// Cheap deterministic per-session RNG (xorshift64) — reproducible, no deps.
+struct Rng(u64);
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+    }
+    fn next_f64(&mut self) -> f64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        (x >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// Draw the next message size (bytes) for the chosen distribution.
+fn next_size(rng: &mut Rng, dist: Dist, small: usize, large: usize, large_frac: f64) -> usize {
+    match dist {
+        Dist::Fixed => small,
+        Dist::Bimodal => {
+            if rng.next_f64() < large_frac {
+                large
+            } else {
+                small
+            }
+        }
+        Dist::Uniform => {
+            let (lo, hi) = (small.min(large), small.max(large));
+            lo + (rng.next_f64() * (hi - lo) as f64) as usize
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -113,7 +171,17 @@ async fn run(args: Args) -> Result<()> {
 
     let total_msgs = args.sessions * args.rounds; // this party's sends; recvs equal
     let start = Instant::now();
-    let sessions = ping_pong(sessions, next_id, prev_id, args.rounds, args.payload).await;
+    let sessions = ping_pong(
+        sessions,
+        next_id,
+        prev_id,
+        args.rounds,
+        args.payload,
+        args.dist,
+        args.large,
+        args.large_frac,
+    )
+    .await;
     let elapsed = start.elapsed();
 
     report(&args, total_msgs, elapsed);
@@ -133,23 +201,32 @@ async fn run(args: Args) -> Result<()> {
 /// Returns the sessions so the caller can keep them alive until after the
 /// cooldown — dropping a session early drains its outbound channel and signals
 /// EOF to the peer still receiving from us, tearing down the whole mesh.
+#[allow(clippy::too_many_arguments)]
 async fn ping_pong(
     sessions: Vec<NetworkSession>,
     next_id: Identity,
     prev_id: Identity,
     rounds: usize,
     payload: usize,
+    dist: Dist,
+    large: usize,
+    large_frac: f64,
 ) -> Vec<NetworkSession> {
     let mut tasks = JoinSet::new();
-    for mut session in sessions.into_iter() {
+    for (seed, mut session) in sessions.into_iter().enumerate() {
         let next_id = next_id.clone();
         let prev_id = prev_id.clone();
-        let msg = NetworkValue::Bytes(vec![7u8; payload]);
+        // Scratch buffer sized to the largest payload we might send; slice it per
+        // round so payload generation never dominates the hot path.
+        let buf = vec![7u8; payload.max(large)];
+        let mut rng = Rng::new(seed as u64);
         tasks.spawn(async move {
             for _ in 0..rounds {
                 // send is non-blocking (unbounded mpsc → coalesced by the mux task),
                 // so all parties enqueue before anyone blocks on recv — no deadlock.
-                if session.networking.send(msg.clone(), &next_id).await.is_err() {
+                let n = next_size(&mut rng, dist, payload, large, large_frac);
+                let msg = NetworkValue::Bytes(buf[..n].to_vec());
+                if session.networking.send(msg, &next_id).await.is_err() {
                     break;
                 }
                 // A peer finishing first closes its send half; the resulting recv
@@ -172,6 +249,15 @@ fn report(args: &Args, total_msgs: usize, elapsed: Duration) {
         "sessions={} rounds={} connections={} payload={}B workers={}",
         args.sessions, args.rounds, args.connections, args.payload, args.workers
     );
+    let dist_desc = match args.dist {
+        Dist::Fixed => format!("fixed {}B", args.payload),
+        Dist::Bimodal => format!(
+            "bimodal {}B/{}B frac={}",
+            args.payload, args.large, args.large_frac
+        ),
+        Dist::Uniform => format!("uniform {}..{}B", args.payload, args.large),
+    };
+    println!("distribution:      {}", dist_desc);
     println!("wall-clock:        {:.3} s", secs);
     println!("this party msgs:   {} (sends; recvs equal)", total_msgs);
     println!(
@@ -206,6 +292,14 @@ wait
 taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
 taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
 taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
+wait
+
+# Bimodal payloads (the fair comparison against grpc_node's flow-control stress):
+# mostly 32B, 5% 16KB bursts. Add `--dist uniform` for a uniform spread instead.
+DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
+taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 $DIST &
+taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 $DIST &
+taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 $DIST &
 wait
 
 

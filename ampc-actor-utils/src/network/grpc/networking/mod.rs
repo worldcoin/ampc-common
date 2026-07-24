@@ -92,7 +92,9 @@ impl GrpcNetworking {
         // 1000-session fan-in (see GRPC_WINDOW_SIZE).
         let endpoint = Endpoint::from_shared(address.to_string())?
             .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
-            .initial_connection_window_size(Some(GRPC_WINDOW_SIZE));
+            .initial_connection_window_size(Some(
+                (GRPC_WINDOW_SIZE * self.config.stream_parallelism() as u32).min((1 << 31) - 1),
+            ));
         let clients = (0..self.config.connection_parallelism.max(1))
             .map(|_| {
                 let endpoint = endpoint.clone();
