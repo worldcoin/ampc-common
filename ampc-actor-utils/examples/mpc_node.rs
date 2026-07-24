@@ -125,6 +125,64 @@ fn next_size(rng: &mut Rng, dist: Dist, small: usize, large: usize, large_frac: 
     }
 }
 
+/// Wire header size in bytes. Kept small so it fits the default 32B payload.
+const HDR: usize = 16;
+/// Magic marking a well-formed benchmark message (catches gross corruption).
+const MAGIC: u32 = 0xA11C_E500;
+/// Body fill byte; the receiver checks every post-header byte equals this.
+const FILL: u8 = 7;
+
+/// Write a self-describing header into `buf` and return the send length.
+/// Layout (little-endian): magic u32 | session_id u32 | round u32 | len u32.
+/// The body (bytes `HDR..`) is left as the caller's `FILL` pre-fill.
+fn encode_msg(buf: &mut [u8], session_id: u32, round: u32, n: usize) -> usize {
+    let n = n.max(HDR);
+    buf[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+    buf[4..8].copy_from_slice(&session_id.to_le_bytes());
+    buf[8..12].copy_from_slice(&round.to_le_bytes());
+    buf[12..16].copy_from_slice(&(n as u32).to_le_bytes());
+    n
+}
+
+/// Validate a received message against the session and round it must carry.
+/// Panics on any mismatch: truncation, corruption, drop, reorder, or misroute.
+fn check_msg(bytes: &[u8], session_id: u32, round: u32) {
+    assert!(
+        bytes.len() >= HDR,
+        "session {session_id} round {round}: {} bytes < header — truncated",
+        bytes.len()
+    );
+    let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+    assert_eq!(
+        magic, MAGIC,
+        "session {session_id} round {round}: bad magic — corrupted"
+    );
+    let got_session = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    assert_eq!(
+        got_session, session_id,
+        "round {round}: message for session {got_session} arrived on \
+         session {session_id} — misrouted"
+    );
+    let got_round = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    assert_eq!(
+        got_round, round,
+        "session {session_id}: expected round {round}, got {got_round} — \
+         dropped or reordered"
+    );
+    let declared = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+    assert_eq!(
+        declared,
+        bytes.len(),
+        "session {session_id} round {round}: declared {declared} bytes, got {} \
+         — truncated or padded",
+        bytes.len()
+    );
+    assert!(
+        bytes[HDR..].iter().all(|&b| b == FILL),
+        "session {session_id} round {round}: body corrupted"
+    );
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     assert!(args.party < 3, "party must be 0, 1, or 2");
@@ -196,7 +254,10 @@ async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-/// One task per session; each runs `rounds` of send(next); recv(prev).
+/// One task per session; each runs `rounds` of send(next); recv(prev). Every
+/// received message is validated against the session id and round it must carry
+/// (see `check_msg`), so a dropped, reordered, misrouted, truncated, or
+/// corrupted message panics the benchmark instead of passing silently.
 ///
 /// Returns the sessions so the caller can keep them alive until after the
 /// cooldown — dropping a session early drains its outbound channel and signals
@@ -213,26 +274,37 @@ async fn ping_pong(
     large_frac: f64,
 ) -> Vec<NetworkSession> {
     let mut tasks = JoinSet::new();
-    for (seed, mut session) in sessions.into_iter().enumerate() {
+    for mut session in sessions.into_iter() {
+        let session_id = session.session_id.0;
         let next_id = next_id.clone();
         let prev_id = prev_id.clone();
-        // Scratch buffer sized to the largest payload we might send; slice it per
-        // round so payload generation never dominates the hot path.
-        let buf = vec![7u8; payload.max(large)];
-        let mut rng = Rng::new(seed as u64);
+        // Scratch buffer sized to the largest payload we might send; the body is
+        // pre-filled with FILL and each round rewrites only the header, so payload
+        // generation never dominates the hot path.
+        let mut buf = vec![FILL; payload.max(large + HDR).max(HDR)];
+        let mut rng = Rng::new(session_id as u64);
         tasks.spawn(async move {
-            for _ in 0..rounds {
+            for round in 0..rounds {
                 // send is non-blocking (unbounded mpsc → coalesced by the mux task),
                 // so all parties enqueue before anyone blocks on recv — no deadlock.
                 let n = next_size(&mut rng, dist, payload, large, large_frac);
-                let msg = NetworkValue::Bytes(buf[..n].to_vec());
+                let len = encode_msg(&mut buf, session_id, round as u32, n);
+                let msg = NetworkValue::Bytes(buf[..len].to_vec());
                 if session.networking.send(msg, &next_id).await.is_err() {
                     break;
                 }
-                // A peer finishing first closes its send half; the resulting recv
-                // error is benign end-of-benchmark teardown, not a reason to abort.
-                if session.networking.receive(&prev_id).await.is_err() {
-                    break;
+                // All parties run the same rounds in lockstep and sessions are kept
+                // alive through the cooldown, so a recv error here is a real dropped
+                // message / vanished peer, not benign teardown — fail loudly.
+                match session.networking.receive(&prev_id).await {
+                    Ok(NetworkValue::Bytes(b)) => check_msg(&b, session_id, round as u32),
+                    Ok(_) => {
+                        panic!("session {session_id} round {round}: expected NetworkValue::Bytes")
+                    }
+                    Err(e) => panic!(
+                        "session {session_id} round {round}: recv failed ({e}) — dropped \
+                         message or peer gone"
+                    ),
                 }
             }
             session
@@ -289,17 +361,17 @@ taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --session
 taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
 wait
 
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 100 --rounds 2000 &
+taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 100 --rounds 2000 &
+taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 100 --rounds 2000 &
 wait
 
 # Bimodal payloads (the fair comparison against grpc_node's flow-control stress):
 # mostly 32B, 5% 16KB bursts. Add `--dist uniform` for a uniform spread instead.
 DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
-taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 $DIST &
-taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 $DIST &
-taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 $DIST &
+taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 100 --rounds 2000 $DIST &
+taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 100 --rounds 2000 $DIST &
+taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 100 --rounds 2000 $DIST &
 wait
 
 
