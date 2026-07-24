@@ -113,26 +113,33 @@ async fn run(args: Args) -> Result<()> {
 
     let total_msgs = args.sessions * args.rounds; // this party's sends; recvs equal
     let start = Instant::now();
-    ping_pong(sessions, next_id, prev_id, args.rounds, args.payload).await;
+    let sessions = ping_pong(sessions, next_id, prev_id, args.rounds, args.payload).await;
     let elapsed = start.elapsed();
 
     report(&args, total_msgs, elapsed);
 
-    // Cooldown so peers finish their last rounds before we drop the handle (which
-    // cancels the shutdown token and closes connections).
+    // Cooldown so peers finish their last rounds before we tear down. Keep the
+    // sessions alive across the sleep: dropping a session drains its outbound
+    // channel, which the peer's reader sees as EOF and turns into a mesh-wide
+    // err_ct cancellation — killing any peer still mid-benchmark.
     tokio::time::sleep(Duration::from_millis(500)).await;
+    drop(sessions);
     drop(handle);
     Ok(())
 }
 
 /// One task per session; each runs `rounds` of send(next); recv(prev).
+///
+/// Returns the sessions so the caller can keep them alive until after the
+/// cooldown — dropping a session early drains its outbound channel and signals
+/// EOF to the peer still receiving from us, tearing down the whole mesh.
 async fn ping_pong(
     sessions: Vec<NetworkSession>,
     next_id: Identity,
     prev_id: Identity,
     rounds: usize,
     payload: usize,
-) {
+) -> Vec<NetworkSession> {
     let mut tasks = JoinSet::new();
     for mut session in sessions.into_iter() {
         let next_id = next_id.clone();
@@ -142,16 +149,19 @@ async fn ping_pong(
             for _ in 0..rounds {
                 // send is non-blocking (unbounded mpsc → coalesced by the mux task),
                 // so all parties enqueue before anyone blocks on recv — no deadlock.
-                session
-                    .networking
-                    .send(msg.clone(), &next_id)
-                    .await
-                    .unwrap();
-                let _ = session.networking.receive(&prev_id).await.unwrap();
+                if session.networking.send(msg.clone(), &next_id).await.is_err() {
+                    break;
+                }
+                // A peer finishing first closes its send half; the resulting recv
+                // error is benign end-of-benchmark teardown, not a reason to abort.
+                if session.networking.receive(&prev_id).await.is_err() {
+                    break;
+                }
             }
+            session
         });
     }
-    tasks.join_all().await;
+    tasks.join_all().await
 }
 
 fn report(args: &Args, total_msgs: usize, elapsed: Duration) {
@@ -192,6 +202,12 @@ taskset -c 0-3  perf stat -d -o perf.p0.txt $BIN --party 0 --workers 4 --session
 taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
 taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
 wait
+
+taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
+wait
+
 
 # Tear down netem
 sudo tc qdisc del dev lo root

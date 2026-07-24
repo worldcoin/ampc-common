@@ -210,6 +210,12 @@ taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --session
 taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
 wait
 
+taskset -c 0-3   $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 4-7   $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
+taskset -c 8-11  $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
+wait
+
+
 # Tear down netem
 sudo tc qdisc del dev lo root
 
