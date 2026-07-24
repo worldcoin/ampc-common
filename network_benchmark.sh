@@ -45,14 +45,14 @@ LARGE_FRAC=${LARGE_FRAC:-0.5}
 LARGE_SIZES=("16384" "65536" "131072") # 16KB, 64KB, 128KB
 
 DELAYS=${DELAYS:-"0 250us 1ms"}
-LOSS=${LOSS:-} # 0.05%}
+LOSS=${LOSS:-0.05%}
 JITTER=${JITTER:-100us}
 
 CORES=("0-2" "3-5" "6-8")
 
 MPC_BIN="$ROOT/target/release/examples/mpc_node"
 GRPC_BIN="$ROOT/target/release/examples/grpc_node"
-LOG_FILE="$ROOT/benchmark_raw_output_grpc_only.log"
+LOG_FILE="$ROOT/benchmark_raw_output_with_loss.log"
 
 # Clear or start new log file
 echo "=== Benchmark Run: $(date -Iseconds) ===" | tee "$LOG_FILE"
@@ -134,8 +134,8 @@ for large_bytes in "${LARGE_SIZES[@]}"; do
   echo "============================================================" | tee -a "$LOG_FILE"
 
   # Run MPC Stack
-#  run_suite "MPC" "$MPC_BIN" "$dist_label" \
-#    --dist bimodal --payload "$PAYLOAD" --large "$large_bytes" --large-frac "$LARGE_FRAC"
+  run_suite "MPC" "$MPC_BIN" "$dist_label" \
+    --dist bimodal --payload "$PAYLOAD" --large "$large_bytes" --large-frac "$LARGE_FRAC"
 
   # Run gRPC Stack
   run_suite "gRPC" "$GRPC_BIN" "$dist_label" \
