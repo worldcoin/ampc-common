@@ -66,42 +66,56 @@ def main():
     dists = sorted({k[0] for k in data}, key=lambda d: parse_dist_size(d))
     stacks = sorted({k[1] for k in data})
 
-    n = len(dists)
-    ncols = min(3, n)
-    nrows = (n + ncols - 1) // ncols
+    # (row label, y-axis label, reducer over the per-config latency samples)
+    metrics = [
+        ("average", "avg per-round latency (µs)", mean),
+        ("tail (p95)", "p95 per-round latency (µs)", percentile95),
+    ]
+
+    ncols = len(dists)
+    nrows = len(metrics)
     fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4.5 * nrows),
                              squeeze=False, sharex=True)
 
     colors = {"MPC": "tab:blue", "gRPC": "tab:orange"}
 
-    for idx, dist in enumerate(dists):
-        ax = axes[idx // ncols][idx % ncols]
-        for stack in stacks:
-            pts = sorted(
-                (delay, mean(lats))
-                for (d, s, delay), lats in data.items()
-                if d == dist and s == stack
-            )
-            if not pts:
-                continue
-            xs = [p[0] / 1000.0 for p in pts]  # ms
-            ys = [p[1] for p in pts]
-            ax.plot(xs, ys, marker="o",
-                    color=colors.get(stack), label=stack)
-        ax.set_title(dist)
-        ax.set_xlabel("network delay (ms, one-way)")
-        ax.set_ylabel("per-round latency (µs)")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-
-    # hide any unused subplots
-    for j in range(n, nrows * ncols):
-        axes[j // ncols][j % ncols].axis("off")
+    for row, (metric_name, ylabel, reducer) in enumerate(metrics):
+        for col, dist in enumerate(dists):
+            ax = axes[row][col]
+            for stack in stacks:
+                pts = sorted(
+                    (delay, reducer(lats))
+                    for (d, s, delay), lats in data.items()
+                    if d == dist and s == stack
+                )
+                if not pts:
+                    continue
+                xs = [p[0] / 1000.0 for p in pts]  # ms
+                ys = [p[1] for p in pts]
+                ax.plot(xs, ys, marker="o",
+                        color=colors.get(stack), label=stack)
+            if row == 0:
+                ax.set_title(dist)
+            if row == nrows - 1:
+                ax.set_xlabel("network delay (ms, one-way)")
+            if col == 0:
+                ax.set_ylabel(f"{metric_name}\n{ylabel}")
+            ax.grid(True, alpha=0.3)
+            ax.legend()
 
     fig.suptitle("MPC vs gRPC: per-round latency vs network delay", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(args.out, dpi=130)
     print(f"wrote {args.out}")
+
+
+def percentile95(values):
+    """p95 via nearest-rank; falls back gracefully for tiny samples."""
+    if not values:
+        raise ValueError("empty sample")
+    s = sorted(values)
+    rank = max(1, int(round(0.95 * len(s))))
+    return s[rank - 1]
 
 
 def parse_dist_size(dist):

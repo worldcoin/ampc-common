@@ -31,13 +31,15 @@ use stream_manager::StreamManager;
 /// session in flight, so backpressure is provided by the OS socket buffer; we
 /// size the window generously so HTTP-2 flow control never engages (see the
 /// "large flow-control windows" note in the idealized gRPC design).
-pub(crate) const GRPC_WINDOW_SIZE: u32 = 16 * 1024 * 1024;
+pub(crate) const GRPC_WINDOW_SIZE: u32 = 500 * 1024 * 1024;
 
 /// Maximum gRPC message the server will decode. tonic defaults to 4 MiB and
 /// rejects anything larger at decode time; raise it so coalesced batches (and
 /// any single large message) are accepted. Data flows client -> server on
 /// `start_message_stream`, so this is set on the receiving (server) side.
-pub(crate) const GRPC_MAX_MESSAGE_SIZE: usize = 8 * 1024 * 1024;
+pub(crate) const GRPC_MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+
+pub(crate) const GRPC_MAX_FRAME_SIZE: u32 = 256 * 1024;
 
 // WARNING: this implementation assumes that messages for a specific player
 // within one session are sent in order and consecutively. Don't send messages
@@ -278,6 +280,7 @@ pub async fn setup_local_grpc_networking(
             Server::builder()
                 .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
                 .initial_connection_window_size(Some(GRPC_WINDOW_SIZE))
+                .max_frame_size(GRPC_MAX_FRAME_SIZE)
                 .add_service(
                     PartyNodeServer::new(player).max_decoding_message_size(GRPC_MAX_MESSAGE_SIZE),
                 )
@@ -351,6 +354,7 @@ pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<GrpcHan
         if let Err(e) = Server::builder()
             .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
             .initial_connection_window_size(Some(GRPC_WINDOW_SIZE))
+            .max_frame_size(GRPC_MAX_FRAME_SIZE)
             .add_service(
                 PartyNodeServer::new(server_handle)
                     .max_decoding_message_size(GRPC_MAX_MESSAGE_SIZE),

@@ -386,8 +386,8 @@ wait
 # bursts. Add `--dist uniform` for a uniform 32B..16KB spread instead.
 DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
 taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 21 --rounds 2000 $DIST &
-taskset -c 3-6   $BIN --party 1 --workers 3 --sessions 21 --rounds 2000 $DIST &
-taskset -c 7-9   $BIN --party 2 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 3-5   $BIN --party 1 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 6-8   $BIN --party 2 --workers 3 --sessions 21 --rounds 2000 $DIST &
 wait
 
 
