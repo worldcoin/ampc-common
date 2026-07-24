@@ -1,21 +1,66 @@
 use crate::{
-    execution::player::Identity,
-    network::{SessionId, StreamId},
+    execution::{
+        player::Identity,
+        session::{SessionId, StreamId},
+    },
     proto_generated::party_node::{party_node_client::PartyNodeClient, SendRequest, SendRequests},
 };
 use eyre::{eyre, Result};
+use futures::Stream;
 use std::{
     collections::{HashMap, HashSet},
+    pin::Pin,
     str::FromStr,
+    task::{Context, Poll},
 };
-use tokio::{
-    sync::mpsc::{self, error::TryRecvError},
-    time::{Duration, Instant},
-};
+use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tonic::{metadata::AsciiMetadataValue, transport::Channel, Request, Status};
-use tracing::error;
 
 use super::super::{GrpcConfig, OutStream, OutStreams};
+
+/// Maximum coalesced payload per batch. gRPC caps a message at 4 MiB; stay well
+/// under that.
+const MAX_COALESCED_PAYLOAD: usize = 1 << 21;
+
+/// A `Stream` that coalesces many ready per-session messages into a single
+/// `SendRequests` batch. It is handed directly to tonic and polled inside the
+/// HTTP-2 connection task, so coalescing happens with no intermediate egress
+/// channel or dedicated task (see the idealized gRPC design).
+struct CoalescingStream {
+    rx: UnboundedReceiver<SendRequest>,
+    stream_parallelism: usize,
+}
+
+impl Stream for CoalescingStream {
+    type Item = SendRequests;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.rx.poll_recv(cx) {
+            Poll::Ready(Some(first)) => {
+                let mut payload_len = first.data.len();
+                let mut requests = vec![first];
+                // Drain messages that are already queued into the same batch.
+                while requests.len() != this.stream_parallelism {
+                    match this.rx.poll_recv(cx) {
+                        Poll::Ready(Some(msg)) => {
+                            payload_len += msg.data.len();
+                            requests.push(msg);
+                            if payload_len >= MAX_COALESCED_PAYLOAD {
+                                break;
+                            }
+                        }
+                        // Nothing more ready (or the channel closed): flush now.
+                        _ => break,
+                    }
+                }
+                Poll::Ready(Some(SendRequests { requests }))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct StreamManager {
@@ -87,10 +132,14 @@ impl StreamManager {
             let round_robin = (stream_id.0 as usize) % clients.len();
             let mut client = clients[round_robin].clone();
 
-            let (hawk_tx, mut hawk_rx) = mpsc::unbounded_channel::<SendRequest>();
-            let (tonic_tx, tonic_rx) = mpsc::unbounded_channel::<SendRequests>();
-            let receiving_stream = tokio_stream::wrappers::UnboundedReceiverStream::new(tonic_rx);
-            let mut request = Request::new(receiving_stream);
+            let (hawk_tx, hawk_rx) = mpsc::unbounded_channel::<SendRequest>();
+            // The coalescing stream is handed straight to tonic; it batches ready
+            // messages inside the h2 task with no extra egress channel or task.
+            let coalescing_stream = CoalescingStream {
+                rx: hawk_rx,
+                stream_parallelism,
+            };
+            let mut request = Request::new(coalescing_stream);
             request.metadata_mut().insert(
                 "sender_id",
                 AsciiMetadataValue::from_str(&party_id.0)
@@ -105,41 +154,6 @@ impl StreamManager {
             tokio::spawn(async move {
                 let _response = client.start_message_stream(request).await?;
                 Ok::<_, Status>(())
-            });
-
-            tokio::spawn(async move {
-                while let Some(message) = hawk_rx.recv().await {
-                    let mut payload_len = message.data.len();
-                    let mut requests = vec![message];
-                    let start_time = Instant::now();
-                    while requests.len() != stream_parallelism {
-                        match hawk_rx.try_recv() {
-                            Ok(msg) => {
-                                payload_len += msg.data.len();
-                                requests.push(msg);
-                                // maximum gRPC payload size is 4MB.
-                                if payload_len >= 1 << 21 {
-                                    break;
-                                }
-                            }
-                            Err(TryRecvError::Empty) => {
-                                if start_time.elapsed() >= Duration::from_micros(500) {
-                                    break;
-                                }
-                                tokio::task::yield_now().await;
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    let requests = SendRequests { requests };
-                    if let Err(e) = tonic_tx.send(requests) {
-                        error!(
-                            "failed to send message on outbound stream {}: {:?}",
-                            stream_id.0, e
-                        );
-                        break;
-                    }
-                }
             });
 
             self.stream_channels

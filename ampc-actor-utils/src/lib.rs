@@ -6,5 +6,7 @@ pub mod constants;
 pub mod execution;
 pub mod fast_metrics;
 pub mod network;
+#[cfg(feature = "grpc")]
+pub mod proto_generated;
 pub mod protocol;
 pub mod sync;

@@ -1,6 +1,6 @@
 use crate::{
-    execution::player::Identity,
-    network::{value::NetworkValue, Networking, SessionId},
+    execution::{player::Identity, session::SessionId},
+    network::mpc::{NetworkValue, Networking},
     proto_generated::party_node::SendRequest,
 };
 use eyre::{eyre, Result};

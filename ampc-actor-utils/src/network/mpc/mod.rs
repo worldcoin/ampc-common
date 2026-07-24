@@ -37,6 +37,11 @@ impl NetworkType {
         1
     }
 
+    /// Number of application-level sessions multiplexed onto a single gRPC stream.
+    pub fn default_stream_parallelism() -> usize {
+        1
+    }
+
     pub fn default_tcp() -> Self {
         Self::Tcp {
             connection_parallelism: Self::default_connection_parallelism(),

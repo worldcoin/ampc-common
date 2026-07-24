@@ -1,6 +1,9 @@
 use crate::{
-    execution::{local::get_free_local_addresses, player::Identity},
-    network::{SessionId, StreamId},
+    execution::{
+        local::{generate_local_identities, get_free_local_addresses},
+        player::Identity,
+        session::{SessionId, StreamId},
+    },
     proto_generated::party_node::{
         party_node_client::PartyNodeClient, party_node_server::PartyNodeServer, SendRequests,
     },
@@ -10,16 +13,25 @@ use eyre::{bail, eyre, Result};
 use futures::future::JoinAll;
 use std::{
     collections::{HashMap, HashSet},
+    net::SocketAddr,
     time::Duration,
 };
-use tokio::sync::mpsc::UnboundedReceiver;
-use tonic::transport::{Channel, Server};
+use tonic::{
+    transport::{Channel, Endpoint, Server},
+    Streaming,
+};
 
 use super::handle::GrpcHandle;
 use super::{GrpcConfig, InStream, InStreams, OutStream, OutStreams};
 
 mod stream_manager;
 use stream_manager::StreamManager;
+
+/// Large HTTP-2 flow-control window. The MPC data plane keeps ~1 message per
+/// session in flight, so backpressure is provided by the OS socket buffer; we
+/// size the window generously so HTTP-2 flow control never engages (see the
+/// "large flow-control windows" note in the idealized gRPC design).
+pub(crate) const GRPC_WINDOW_SIZE: u32 = 16 * 1024 * 1024;
 
 // WARNING: this implementation assumes that messages for a specific player
 // within one session are sent in order and consecutively. Don't send messages
@@ -76,12 +88,24 @@ impl GrpcNetworking {
                 party_id
             );
         }
+        // Configure a generous HTTP-2 flow-control window so it never throttles the
+        // 1000-session fan-in (see GRPC_WINDOW_SIZE).
+        let endpoint = Endpoint::from_shared(address.to_string())?
+            .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
+            .initial_connection_window_size(Some(GRPC_WINDOW_SIZE));
         let clients = (0..self.config.connection_parallelism.max(1))
             .map(|_| {
-                let address = address.to_string();
-                (move || PartyNodeClient::connect(address.clone()))
-                    .retry(self.backoff())
-                    .sleep(tokio::time::sleep)
+                let endpoint = endpoint.clone();
+                (move || {
+                    let endpoint = endpoint.clone();
+                    async move {
+                        Ok::<_, tonic::transport::Error>(PartyNodeClient::new(
+                            endpoint.connect().await?,
+                        ))
+                    }
+                })
+                .retry(self.backoff())
+                .sleep(tokio::time::sleep)
             })
             .map(tokio::spawn)
             .collect::<JoinAll<_>>()
@@ -129,7 +153,7 @@ impl GrpcNetworking {
         &mut self,
         sender_id: Identity,
         stream_id: StreamId,
-        mut stream: UnboundedReceiver<SendRequests>,
+        mut stream: Streaming<SendRequests>,
         session_forwarder: HashMap<u32, OutStream>,
         mut inbound_sessions: HashMap<SessionId, InStream>,
     ) -> Result<()> {
@@ -162,25 +186,42 @@ impl GrpcNetworking {
             sender_id
         );
 
+        // Direct-fanout ingress: read the tonic `Streaming` straight off the h2
+        // driver and dispatch each message to its per-session channel. No
+        // intermediate relay task/channel (see the idealized gRPC design).
         tokio::spawn(async move {
-            while let Some(msg) = stream.recv().await {
-                for request in msg.requests {
-                    let session_id = request.session_id;
-                    if let Some(tx) = session_forwarder.get(&session_id) {
-                        if let Err(e) = tx.send(request) {
-                            tracing::error!(
-                                "Failed to forward message for session {:?}: {:?}",
-                                session_id,
-                                e
-                            );
+            loop {
+                match stream.message().await {
+                    Ok(Some(msg)) => {
+                        for request in msg.requests {
+                            let session_id = request.session_id;
+                            if let Some(tx) = session_forwarder.get(&session_id) {
+                                if let Err(e) = tx.send(request) {
+                                    tracing::error!(
+                                        "Failed to forward message for session {:?}: {:?}",
+                                        session_id,
+                                        e
+                                    );
+                                }
+                            } else {
+                                tracing::error!(
+                                    "{:?} sent message with invalid session id {:?} on stream {:?}",
+                                    sender_id,
+                                    session_id,
+                                    stream_id
+                                );
+                            }
                         }
-                    } else {
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
                         tracing::error!(
-                            "{:?} sent message with invalid session id {:?} on stream {:?}",
+                            "inbound stream {:?} from {:?} errored: {:?}",
+                            stream_id,
                             sender_id,
-                            session_id,
-                            stream_id
+                            e
                         );
+                        break;
                     }
                 }
             }
@@ -226,6 +267,8 @@ pub async fn setup_local_grpc_networking(
         let socket = addr.parse().unwrap();
         tokio::spawn(async move {
             Server::builder()
+                .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
+                .initial_connection_window_size(Some(GRPC_WINDOW_SIZE))
                 .add_service(PartyNodeServer::new(player))
                 .serve(socket)
                 .await
@@ -251,4 +294,70 @@ pub async fn setup_local_grpc_networking(
     tracing::debug!("Players connected to each other");
 
     Ok(players)
+}
+
+/// Arguments for [`build_network_handle`].
+pub struct GrpcNetworkHandleArgs {
+    pub party_index: usize,
+    /// Listen address for every party, indexed by party index (`host:port`).
+    pub addresses: Vec<String>,
+    /// Dial address for every party, indexed by party index (`host:port`).
+    /// Separate from `addresses` so a proxy can be inserted between parties.
+    pub outbound_addresses: Vec<String>,
+    /// Number of gRPC connections to open to each peer.
+    pub connection_parallelism: usize,
+    /// Number of application-level sessions multiplexed onto each gRPC stream.
+    pub stream_parallelism: usize,
+    /// How long `receive` waits for a message before timing out.
+    pub timeout_duration: Duration,
+}
+
+/// Build a gRPC network handle for a single party: start its server and connect
+/// to every peer. This is the gRPC analogue of the MPC `build_network_handle`.
+pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<GrpcHandle> {
+    let identities = generate_local_identities();
+
+    let config = GrpcConfig {
+        timeout_duration: args.timeout_duration,
+        connection_parallelism: args.connection_parallelism,
+        stream_parallelism: args.stream_parallelism,
+    };
+
+    let my_index = args.party_index;
+    let my_identity = identities[my_index].clone();
+
+    let net = GrpcNetworking::new(my_identity.clone(), config);
+    let handle = GrpcHandle::new(net).await?;
+
+    // Start this party's gRPC server. Each handle is also its own gRPC server,
+    // living in a detached task.
+    let socket: SocketAddr = args.addresses[my_index].parse()?;
+    let server_handle = handle.clone();
+    let server_identity = my_identity.clone();
+    tokio::spawn(async move {
+        if let Err(e) = Server::builder()
+            .initial_stream_window_size(Some(GRPC_WINDOW_SIZE))
+            .initial_connection_window_size(Some(GRPC_WINDOW_SIZE))
+            .add_service(PartyNodeServer::new(server_handle))
+            .serve(socket)
+            .await
+        {
+            tracing::error!("gRPC server for {:?} exited: {:?}", server_identity, e);
+        }
+    });
+
+    // Connect to every other party.
+    for (idx, (identity, address)) in identities
+        .iter()
+        .zip(args.outbound_addresses.iter())
+        .enumerate()
+    {
+        if idx == my_index {
+            continue;
+        }
+        let address = format!("http://{address}");
+        handle.connect_to_party(identity.clone(), &address).await?;
+    }
+
+    Ok(handle)
 }

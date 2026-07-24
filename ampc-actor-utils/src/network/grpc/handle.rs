@@ -1,6 +1,8 @@
 use crate::{
-    execution::player::Identity,
-    network::{SessionId, StreamId},
+    execution::{
+        player::Identity,
+        session::{SessionId, StreamId},
+    },
     proto_generated::party_node::{
         party_node_server::PartyNode, SendRequest, SendRequests, SendResponse,
     },
@@ -8,10 +10,7 @@ use crate::{
 use eyre::{eyre, Result};
 use std::{collections::HashMap, time::Duration};
 use tokio::{
-    sync::{
-        mpsc::{self, UnboundedReceiver},
-        oneshot,
-    },
+    sync::{mpsc, oneshot},
     time::sleep,
 };
 use tonic::{async_trait, Request, Response, Status, Streaming};
@@ -23,7 +22,7 @@ use super::{err_to_status, GrpcConfig, InStream, InStreams, OutStream, OutStream
 struct StartMessageStreamTask {
     sender: Identity,
     stream_id: StreamId,
-    stream: UnboundedReceiver<SendRequests>,
+    stream: Streaming<SendRequests>,
     inbound_forwarder: HashMap<u32, OutStream>,
     inbound_sessions: HashMap<SessionId, InStream>,
 }
@@ -163,7 +162,7 @@ impl PartyNode for GrpcHandle {
             .map_err(|_| Status::invalid_argument("Stream ID is not a u32 number"))?;
         let stream_id = StreamId::from(stream_id);
 
-        let mut incoming_stream = request.into_inner();
+        let incoming_stream = request.into_inner();
 
         tracing::debug!(
             "Player {:?} is starting message stream with player {:?} in stream {:?}",
@@ -171,14 +170,6 @@ impl PartyNode for GrpcHandle {
             sender_id,
             stream_id.0
         );
-
-        let (tx, rx) = mpsc::unbounded_channel();
-        // Spawn a task to receive messages from the incoming stream
-        tokio::spawn(async move {
-            while let Some(req) = incoming_stream.message().await.unwrap_or(None) {
-                let _ = tx.send(req);
-            }
-        });
 
         // create channels for the sessions
         let mut inbound_forwarder: HashMap<u32, OutStream> = HashMap::new();
@@ -193,7 +184,7 @@ impl PartyNode for GrpcHandle {
         let task = StartMessageStreamTask {
             sender: sender_id.clone(),
             stream_id,
-            stream: rx,
+            stream: incoming_stream,
             inbound_forwarder,
             inbound_sessions,
         };

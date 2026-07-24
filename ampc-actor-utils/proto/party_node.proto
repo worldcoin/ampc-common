@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package party_node;
+
+// A single application message tagged with the session it belongs to.
+message SendRequest {
+  uint32 session_id = 1;
+  bytes data = 2;
+}
+
+// A coalesced batch of messages from many sessions multiplexed onto one stream.
+message SendRequests {
+  repeated SendRequest requests = 1;
+}
+
+message SendResponse {}
+
+service PartyNode {
+  // One long-lived client-streaming RPC per (stream_id) carrying the coalesced
+  // messages of all sessions multiplexed onto that stream.
+  rpc StartMessageStream(stream SendRequests) returns (SendResponse);
+}

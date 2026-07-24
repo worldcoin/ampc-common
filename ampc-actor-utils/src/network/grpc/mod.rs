@@ -37,15 +37,10 @@ mod tests {
     use super::{session::GrpcSession, *};
     use crate::{
         execution::{local::generate_local_identities, player::Role, session::SessionId},
-        hawkers::aby3::{aby3_store::Aby3Query, test_utils::shared_random_setup},
-        hnsw::HnswSearcher,
-        network::{value::NetworkValue, NetworkType, Networking},
+        network::mpc::{NetworkType, NetworkValue, Networking},
     };
-    use aes_prng::AesRng;
     use futures::future::join_all;
-    use iris_mpc_common::vector_id::VectorId;
     use rand::Rng;
-    use rand::SeedableRng;
     use tokio::{task::JoinSet, time::sleep};
     use tracing_test::traced_test;
 
@@ -307,53 +302,5 @@ mod tests {
         jobs.join_all().await;
 
         Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[traced_test]
-    async fn test_hnsw_local() {
-        let mut rng = AesRng::seed_from_u64(0_u64);
-        let database_size = 2;
-        let searcher = HnswSearcher::new_with_test_parameters();
-        let mut vectors_and_graphs = shared_random_setup(
-            &mut rng,
-            database_size,
-            crate::network::NetworkType::default_grpc(),
-        )
-        .await
-        .unwrap();
-
-        for i in 0..database_size {
-            let vector_id = VectorId::from_0_index(i as u32);
-            let mut jobs = JoinSet::new();
-
-            for (store, graph) in vectors_and_graphs.iter_mut() {
-                let searcher = searcher.clone();
-                let q = store
-                    .lock()
-                    .await
-                    .storage
-                    .get_vector_or_empty(&vector_id)
-                    .await;
-                let q = Aby3Query::new(&q);
-                let store = store.clone();
-                let graph = graph.clone();
-                jobs.spawn(async move {
-                    let mut store_lock = store.lock().await;
-                    let secret_neighbors = searcher
-                        .search(&mut *store_lock, &graph, &q, 1)
-                        .await
-                        .unwrap();
-                    searcher
-                        .is_match(&mut *store_lock, &[secret_neighbors])
-                        .await
-                        .unwrap()
-                });
-            }
-            let res = jobs.join_all().await;
-            for (party_index, r) in res.iter().enumerate() {
-                assert!(r, "Failed at index {:?} by party {:?}", i, party_index);
-            }
-        }
     }
 }
