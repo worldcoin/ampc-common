@@ -65,3 +65,8 @@ path = "benches/bit_inject.rs"
 name = "reshare_mux"
 harness = false
 path = "benches/reshare_mux.rs"
+
+[[example]]
+name = "grpc_node"
+path = "examples/grpc_node.rs"
+required-features = ["grpc"]
