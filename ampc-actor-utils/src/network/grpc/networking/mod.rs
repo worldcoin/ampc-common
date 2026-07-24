@@ -234,12 +234,12 @@ impl GrpcNetworking {
 pub async fn setup_local_grpc_networking(
     parties: Vec<Identity>,
     connection_parallelism: usize,
-    stream_parallelism: usize,
+    request_parallelism: usize,
 ) -> Result<Vec<GrpcHandle>> {
     let config = GrpcConfig {
         timeout_duration: Duration::from_secs(5),
         connection_parallelism,
-        stream_parallelism,
+        request_parallelism,
     };
 
     let nets = parties
@@ -306,8 +306,10 @@ pub struct GrpcNetworkHandleArgs {
     pub outbound_addresses: Vec<String>,
     /// Number of gRPC connections to open to each peer.
     pub connection_parallelism: usize,
-    /// Number of application-level sessions multiplexed onto each gRPC stream.
-    pub stream_parallelism: usize,
+    /// Total number of application-level sessions. The number of gRPC streams is
+    /// derived as `request_parallelism / connection_parallelism` (one stream per
+    /// connection).
+    pub request_parallelism: usize,
     /// How long `receive` waits for a message before timing out.
     pub timeout_duration: Duration,
 }
@@ -320,7 +322,7 @@ pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<GrpcHan
     let config = GrpcConfig {
         timeout_duration: args.timeout_duration,
         connection_parallelism: args.connection_parallelism,
-        stream_parallelism: args.stream_parallelism,
+        request_parallelism: args.request_parallelism,
     };
 
     let my_index = args.party_index;

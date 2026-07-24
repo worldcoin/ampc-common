@@ -163,8 +163,8 @@ impl PartyNode for GrpcHandle {
         // create channels for the sessions
         let mut inbound_forwarder: HashMap<u32, OutStream> = HashMap::new();
         let mut inbound_sessions: HashMap<SessionId, InStream> = HashMap::new();
-        let start_id = stream_id.0 * self.config.stream_parallelism as u32;
-        for session_id in start_id..start_id + self.config.stream_parallelism as u32 {
+        let start_id = stream_id.0 * self.config.stream_parallelism() as u32;
+        for session_id in start_id..start_id + self.config.stream_parallelism() as u32 {
             let (hawk_tx, hawk_rx) = mpsc::unbounded_channel::<SendRequest>();
             inbound_forwarder.insert(session_id, hawk_tx);
             inbound_sessions.insert(SessionId::from(session_id), hawk_rx);

@@ -59,14 +59,11 @@ struct Args {
     #[arg(long, default_value_t = 2000)]
     rounds: usize,
 
-    /// gRPC connections per peer (connection_parallelism).
+    /// gRPC connections per peer (connection_parallelism). The number of gRPC
+    /// streams is derived as `sessions / connections` (one stream per connection),
+    /// so keep `sessions` a multiple of `connections`.
     #[arg(long, default_value_t = 4)]
     connections: usize,
-
-    /// Application-level sessions multiplexed onto each gRPC stream
-    /// (stream_parallelism).
-    #[arg(long, default_value_t = 100)]
-    stream_parallelism: usize,
 
     /// Payload bytes per message.
     #[arg(long, default_value_t = 32)]
@@ -102,14 +99,17 @@ async fn run(args: Args) -> Result<()> {
         addresses: args.addrs.clone(),
         outbound_addresses: outbound,
         connection_parallelism: args.connections,
-        stream_parallelism: args.stream_parallelism,
+        request_parallelism: args.sessions,
         timeout_duration: Duration::from_secs(args.timeout_secs),
     })
     .await?;
 
     // Rendezvous: create every session. Each `create_session` returns only once
     // all peers have created the matching id, so this is our connect barrier.
-    eprintln!("[party {}] creating {} sessions…", args.party, args.sessions);
+    eprintln!(
+        "[party {}] creating {} sessions…",
+        args.party, args.sessions
+    );
     let mut create_tasks = JoinSet::new();
     for i in 0..args.sessions {
         let handle = handle.clone();
@@ -176,13 +176,8 @@ fn report(args: &Args, total_msgs: usize, elapsed: Duration) {
     let per_round_us = (elapsed.as_nanos() as f64 / args.rounds as f64) / 1000.0;
     println!("──────── grpc_node party {} ────────", args.party);
     println!(
-        "sessions={} rounds={} connections={} stream_parallelism={} payload={}B workers={}",
-        args.sessions,
-        args.rounds,
-        args.connections,
-        args.stream_parallelism,
-        args.payload,
-        args.workers
+        "sessions={} rounds={} connections={} payload={}B workers={}",
+        args.sessions, args.rounds, args.connections, args.payload, args.workers
     );
     println!("wall-clock:        {:.3} s", secs);
     println!("this party msgs:   {} (sends; recvs equal)", total_msgs);

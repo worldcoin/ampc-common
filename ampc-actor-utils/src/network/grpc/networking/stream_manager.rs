@@ -94,7 +94,7 @@ impl StreamManager {
             ));
         }
 
-        let stream_id = StreamId::from(session_id.0 / self.config.stream_parallelism as u32);
+        let stream_id = StreamId::from(session_id.0 / self.config.stream_parallelism() as u32);
         if self.established_streams.insert(stream_id) {
             self.add_stream(party_id.clone(), clients, stream_id)?;
         }
@@ -127,7 +127,7 @@ impl StreamManager {
             clients.len()
         );
 
-        let stream_parallelism = self.config.stream_parallelism;
+        let stream_parallelism = self.config.stream_parallelism();
         for (client_id, clients) in clients.iter() {
             let round_robin = (stream_id.0 as usize) % clients.len();
             let mut client = clients[round_robin].clone();

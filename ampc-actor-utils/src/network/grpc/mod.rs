@@ -28,8 +28,18 @@ pub struct GrpcConfig {
     pub timeout_duration: Duration,
     // number of gRPC connections to create
     pub connection_parallelism: usize,
-    // number of application level sessions per gRPC stream.
-    pub stream_parallelism: usize,
+    // total number of application-level sessions across all streams
+    pub request_parallelism: usize,
+}
+
+impl GrpcConfig {
+    /// Number of application-level sessions multiplexed onto a single gRPC
+    /// stream. Derived so there is exactly one stream per connection:
+    /// `request_parallelism / connection_parallelism`. Keep `request_parallelism`
+    /// a multiple of `connection_parallelism` for a clean 1:1 mapping.
+    pub fn stream_parallelism(&self) -> usize {
+        (self.request_parallelism / self.connection_parallelism.max(1)).max(1)
+    }
 }
 
 #[cfg(test)]
@@ -83,7 +93,7 @@ mod tests {
         let players = setup_local_grpc_networking(
             identities.clone(),
             NetworkType::default_connection_parallelism(),
-            NetworkType::default_stream_parallelism(),
+            NetworkType::default_request_parallelism(),
         )
         .await?;
 
@@ -208,7 +218,7 @@ mod tests {
         let players = setup_local_grpc_networking(
             parties.clone(),
             NetworkType::default_connection_parallelism(),
-            NetworkType::default_stream_parallelism(),
+            NetworkType::default_request_parallelism(),
         )
         .await?;
 
