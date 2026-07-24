@@ -342,6 +342,7 @@ pub async fn init_heartbeat_task(
     config: &ServerCoordinationConfig,
     task_monitor: &mut TaskMonitor,
     shutdown_handler: &Arc<ShutdownHandler>,
+    verified_peers: HashSet<String>,
 ) -> Result<()> {
     let (heartbeat_tx, heartbeat_rx) = oneshot::channel();
     let mut heartbeat_tx = Some(heartbeat_tx);
@@ -355,6 +356,12 @@ pub async fn init_heartbeat_task(
     let heartbeat_interval_secs = config.heartbeat_interval_secs;
 
     let heartbeat_shutdown_handler = Arc::clone(shutdown_handler);
+
+    // `verified_peers` holds the UUIDs established during the startup handshake. On
+    // first contact the heartbeat validates each peer's UUID against this set, so a
+    // peer that restarted during the (unbounded) startup load window — before the
+    // heartbeat was armed — is caught immediately instead of being silently adopted
+    // as the baseline.
     let _heartbeat = task_monitor.spawn(async move {
         let next_node = &all_health_addresses[(party_id + 1) % 3];
         let prev_node = &all_health_addresses[(party_id + 2) % 3];
@@ -431,6 +438,12 @@ pub async fn init_heartbeat_task(
                     );
                 }
                 if last_response[i] == String::default() {
+                    if !verified_peers.contains(&probe_response.uuid) {
+                        panic!(
+                            "Node {} reported UUID {} not seen during startup handshake, killing server...",
+                            host, probe_response.uuid
+                        );
+                    }
                     last_response[i] = probe_response.uuid;
                     connected[i] = true;
 
@@ -497,31 +510,57 @@ pub fn set_node_ready(is_ready_flag: Arc<AtomicBool>) {
     is_ready_flag.store(true, Ordering::SeqCst);
 }
 
-/// Awaits until other MPC nodes respond to "ready" queries
+/// Awaits until other MPC nodes respond as ready via their "health" endpoint,
 /// indicating readiness to execute the main server loop.
-pub async fn wait_for_others_ready(config: &ServerCoordinationConfig) -> Result<()> {
+///
+/// Queries "/health" so that, in addition to checking readiness,
+/// each peer's UUID can be validated against the set established during the startup
+/// handshake (`verified_peers`). A peer reporting a UUID outside that set has
+/// restarted; since the design requires full-fleet restarts, we fail fast rather
+/// than waiting forever for a peer that can never (re)join this generation.
+pub async fn wait_for_others_ready(
+    config: &ServerCoordinationConfig,
+    verified_peers: HashSet<String>,
+) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be ready");
+
+    let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
 
     // Check other nodes and wait until all nodes are ready.
     'outer: loop {
         'retry: {
-            let connected_and_ready_res = try_get_endpoint_other_nodes(config, "ready").await;
+            let connected_health_resps = match try_get_endpoint_other_nodes(config, "health").await
+            {
+                Ok(resps) => resps,
+                Err(_) => break 'retry,
+            };
 
-            if connected_and_ready_res.is_err() {
-                break 'retry;
+            let mut all_ready = true;
+            for (_status, body) in connected_health_resps {
+                let probe_response: ReadyProbeResponse = serde_json::from_slice(&body)
+                    .wrap_err("Failed to deserialize ReadyProbeResponse")?;
+
+                // Fail fast: a peer whose UUID we never verified during startup has
+                // restarted, which requires the whole fleet to restart.
+                ensure!(
+                    verified_peers.contains(&probe_response.uuid),
+                    "Peer reported UUID {} not seen during startup handshake; a peer has \
+                     restarted and the fleet must restart",
+                    probe_response.uuid
+                );
+
+                if !probe_response.is_ready {
+                    all_ready = false;
+                }
             }
-
-            let connected_and_ready = connected_and_ready_res.unwrap();
-
-            let all_ready = connected_and_ready
-                .iter()
-                .all(|(status, _body)| status.is_success());
 
             if all_ready {
                 break 'outer;
             }
+
+            tracing::debug!("One or more nodes were not ready.  Retrying ..");
         }
-        tracing::debug!("One or more nodes were not ready.  Retrying ..");
+        tokio::time::sleep(retry_duration).await;
     }
 
     tracing::info!("All nodes are ready.");
