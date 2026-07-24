@@ -436,6 +436,7 @@ impl AnonStatsStore {
         anon_stats: &[FaceDistance],
         query_id: i64,
         origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
     ) -> Result<()> {
         let len = anon_stats.len();
         tracing::info!("Inserting {len} anon stats into table 'anon_stats_face'",);
@@ -443,10 +444,22 @@ impl AnonStatsStore {
             return Ok(());
         }
         let origin = i16::from(origin);
+        let operation = i16::from(operation);
         let bundle_bytes =
             bincode::serialize(anon_stats).expect("Failed to serialize DistanceBundle");
 
-        sqlx::query("INSERT INTO anon_stats_face (query_id, bundle, bundle_size, origin) VALUES ($1, $2, $3, $4)").bind(query_id).bind(bundle_bytes).bind(len as i64).bind(origin).execute(&self.pool).await?;
+        sqlx::query(
+            "INSERT INTO anon_stats_face \
+             (query_id, bundle, bundle_size, origin, operation) \
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(query_id)
+        .bind(bundle_bytes)
+        .bind(len as i64)
+        .bind(origin)
+        .bind(operation)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -465,20 +478,28 @@ impl AnonStatsStore {
         self.mark_anon_stats_processed(ANON_STATS_FACE_TABLE, ids)
             .await
     }
-    /// Get number of available face-ampc anon stats entries from the DB for the given origin.
-    pub async fn num_available_anon_stats_face(&self, origin: AnonStatsOrigin) -> Result<i64> {
-        let row: (i64,) = sqlx::query_as(
-            &[
-                r#"SELECT CAST(COALESCE(SUM(bundle_size), 0) as BIGINT) FROM "#,
-                ANON_STATS_FACE_TABLE,
-                r#" WHERE processed = FALSE and origin = $1
-            "#,
-            ]
-            .concat(),
-        )
-        .bind(i16::from(origin))
-        .fetch_one(&self.pool)
-        .await?;
+    /// Get number of available face-ampc anon stats entries from the DB for the given
+    /// origin and, when provided, operation.
+    pub async fn num_available_anon_stats_face(
+        &self,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+    ) -> Result<i64> {
+        let mut sql = [
+            r#"SELECT CAST(COALESCE(SUM(bundle_size), 0) as BIGINT) FROM "#,
+            ANON_STATS_FACE_TABLE,
+            " WHERE processed = FALSE AND origin = $1",
+        ]
+        .concat();
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+
+        let mut query = sqlx::query_as::<_, (i64,)>(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        let row = query.fetch_one(&self.pool).await?;
 
         Ok(row.0)
     }
@@ -488,17 +509,25 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_face(
         &self,
         origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<i64>, Vec<FaceDistance>)> {
-        let mut stream = sqlx::query_as(
-            r#"
-            SELECT id, query_id, bundle, bundle_size FROM anon_stats_face
-            WHERE processed = FALSE and origin = $1
-            ORDER BY query_id ASC
-            "#,
-        )
-        .bind(i16::from(origin))
-        .fetch(&self.pool);
+        let mut sql = [
+            "SELECT id, query_id, bundle, bundle_size FROM ",
+            ANON_STATS_FACE_TABLE,
+            " WHERE processed = FALSE AND origin = $1",
+        ]
+        .concat();
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        sql.push_str(" ORDER BY query_id ASC");
+
+        let mut query = sqlx::query_as(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        let mut stream = query.fetch(&self.pool);
 
         let mut ret = Vec::new();
         let mut ids = Vec::new();
