@@ -12,6 +12,8 @@ use crate::{
         prf::{Prf, PrfSeed},
     },
 };
+#[cfg(feature = "grpc")]
+use crate::network::grpc::setup_local_grpc_networking;
 use eyre::Result;
 use futures::future::join_all;
 use std::{
@@ -72,6 +74,18 @@ impl LocalRuntime {
         Self::mock_setup(NetworkType::Local).await
     }
 
+    #[cfg(feature = "grpc")]
+    pub async fn mock_setup_with_grpc(
+        connection_parallelism: usize,
+        request_parallelism: usize,
+    ) -> Result<Self> {
+        Self::mock_setup(NetworkType::Grpc {
+            connection_parallelism,
+            request_parallelism,
+        })
+        .await
+    }
+
     async fn new_with_network_type(
         identities: Vec<Identity>,
         seeds: Vec<PrfSeed>,
@@ -120,6 +134,43 @@ impl LocalRuntime {
 
                 interleave_vecs(network_sessions)
             }
+            #[cfg(feature = "grpc")]
+            NetworkType::Grpc {
+                connection_parallelism,
+                request_parallelism,
+            } => {
+                let networks = setup_local_grpc_networking(
+                    identities.clone(),
+                    connection_parallelism,
+                    request_parallelism,
+                )
+                .await?;
+                let mut jobs = vec![];
+                for idx in 0_u32..request_parallelism as _ {
+                    let sess_id = SessionId::from(idx);
+                    for player in networks.iter() {
+                        let player = player.clone();
+                        let task =
+                            tokio::spawn(async move { player.create_session(sess_id).await });
+                        jobs.push(task);
+                    }
+                }
+                let grpc_sessions = join_all(jobs)
+                    .await
+                    .into_iter()
+                    .map(|r| r.map_err(eyre::Report::new)?)
+                    .collect::<Result<Vec<_>>>()?;
+                grpc_sessions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, session)| NetworkSession {
+                        session_id: session.session_id,
+                        role_assignments: Arc::new(role_assignments.clone()),
+                        networking: Box::new(session),
+                        own_role: Role::new(id % seeds.len()),
+                    })
+                    .collect()
+            }
         };
 
         let mut jobs = vec![];
@@ -164,6 +215,18 @@ impl LocalRuntime {
 
     pub async fn mock_sessions_with_channel() -> Result<Vec<SessionRef>> {
         Self::mock_sessions(NetworkType::Local).await
+    }
+
+    #[cfg(feature = "grpc")]
+    pub async fn mock_sessions_with_grpc(
+        connection_parallelism: usize,
+        request_parallelism: usize,
+    ) -> Result<Vec<SessionRef>> {
+        Self::mock_sessions(NetworkType::Grpc {
+            connection_parallelism,
+            request_parallelism,
+        })
+        .await
     }
 
     pub async fn mock_sessions_with_tcp(

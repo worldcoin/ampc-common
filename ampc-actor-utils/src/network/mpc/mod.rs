@@ -26,6 +26,11 @@ pub enum NetworkType {
         connection_parallelism: usize,
         request_parallelism: usize,
     },
+    #[cfg(feature = "grpc")]
+    Grpc {
+        connection_parallelism: usize,
+        request_parallelism: usize,
+    },
 }
 
 impl NetworkType {

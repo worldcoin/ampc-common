@@ -1,18 +1,15 @@
 use std::sync::Arc;
 
 use aes_prng::AesRng;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
-use iris_mpc_cpu::{
+use ampc_actor_utils::{
     execution::{local::LocalRuntime, session::Session},
-    protocol::ops::{batch_signed_lift_vec, cross_compare},
-    shares::{share::DistanceShare, Share},
+    protocol::{fhd_ops::cross_compare, ops::batch_signed_lift_vec},
 };
-use rand::SeedableRng;
-use tokio::{sync::Mutex, task::JoinSet};
-
-use iris_mpc_cpu::shares::{IntRing2k, RingElement, Share};
-use rand::{Rng, RngCore};
+use ampc_secret_sharing::{shares::share::DistanceShare, IntRing2k, RingElement, Share};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use rand::{Rng, RngCore, SeedableRng};
 use rand_distr::{Distribution, Standard};
+use tokio::{sync::Mutex, task::JoinSet};
 
 criterion_group!(
     networking,
@@ -101,7 +98,7 @@ fn bench_is_match_batch_tcp(c: &mut Criterion) {
             let t2 = create_random_sharing(&mut rng, 10_u16);
 
             let sessions = rt
-                .block_on(async move { LocalRuntime::mock_sessions_with_tcp(cp, rp / 2).await })
+                .block_on(async move { LocalRuntime::mock_sessions_with_tcp(cp, rp).await })
                 .unwrap();
 
             let num_parties = 3;
@@ -145,36 +142,31 @@ fn bench_is_match_batch_grpc(c: &mut Criterion) {
     #[allow(clippy::single_element_loop)]
     for nj in [1024] {
         #[allow(clippy::single_element_loop)]
-        for (cp, sp, rp) in [(1, 32, 32)] {
+        for (cp, rp) in [(1, 32)] {
             let mut rng = AesRng::seed_from_u64(0_u64);
             let d1 = create_random_sharing(&mut rng, 10_u16);
             let d2 = create_random_sharing(&mut rng, 10_u16);
             let t1 = create_random_sharing(&mut rng, 10_u16);
             let t2 = create_random_sharing(&mut rng, 10_u16);
 
-            // if num_jobs is 8 and request parallelism is 16, don't do extra work.
-            let actual_rp = if nj < rp { nj } else { rp };
-
+            // `sp` (stream parallelism) is derived internally in ampc-common as
+            // `request_parallelism / connection_parallelism`, so it is not passed
+            // explicitly; it is retained in the loop/label for documentation.
             let sessions = rt
-                .block_on(
-                    async move { LocalRuntime::mock_sessions_with_grpc(cp, sp, actual_rp).await },
-                )
+                .block_on(async move { LocalRuntime::mock_sessions_with_grpc(cp, rp).await })
                 .unwrap();
 
             let num_parties = 3;
-            assert_eq!(sessions.len(), actual_rp * num_parties);
+            assert_eq!(sessions.len(), rp * num_parties);
 
             group.bench_function(
-                BenchmarkId::new(
-                    "local",
-                    format!("cp: {}, sp: {}, rp: {}, nj: {}", cp, sp, rp, nj),
-                ),
+                BenchmarkId::new("local", format!("cp: {}, rp: {}, nj: {}", cp, rp, nj)),
                 |b| {
                     b.iter(|| {
                         let (d1, d2, t1, t2) = (d1.clone(), d2.clone(), t1.clone(), t2.clone());
                         let sessions = &sessions;
                         rt.block_on(async move {
-                            for _ in 0..nj / actual_rp {
+                            for _ in 0..nj / rp {
                                 run_jobs(
                                     1,
                                     sessions,

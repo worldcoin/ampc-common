@@ -66,6 +66,12 @@ name = "reshare_mux"
 harness = false
 path = "benches/reshare_mux.rs"
 
+[[bench]]
+name = "grpc_vs_tcp"
+harness = false
+path = "benches/grpc_vs_tcp.rs"
+required-features = ["grpc"]
+
 [[example]]
 name = "grpc_node"
 path = "examples/grpc_node.rs"
