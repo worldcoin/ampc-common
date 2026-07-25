@@ -59,6 +59,8 @@ def main():
     if not data:
         sys.exit("No data parsed — check the log format.")
 
+    print_table(data)
+
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -107,6 +109,36 @@ def main():
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(args.out, dpi=130)
     print(f"wrote {args.out}")
+
+
+def print_table(data):
+    """Print a text table of average per-round latency (µs) by data size.
+
+    One table per stack: rows are data sizes (dist), columns are network
+    delays (ms), cells are the mean per-round latency over all reps.
+    """
+    dists = sorted({k[0] for k in data}, key=parse_dist_size)
+    stacks = sorted({k[1] for k in data})
+    delays = sorted({k[2] for k in data})
+
+    for stack in stacks:
+        print(f"\n=== {stack}: avg per-round latency (µs) by data size ===")
+        headers = ["data size"] + [f"{d / 1000.0:g}ms" for d in delays]
+        widths = [max(len(headers[0]), max((len(d) for d in dists), default=0))]
+        widths += [max(len(h), 10) for h in headers[1:]]
+
+        def fmt_row(cells):
+            return "  ".join(str(c).rjust(w) for c, w in zip(cells, widths))
+
+        print(fmt_row(headers))
+        print("  ".join("-" * w for w in widths))
+        for dist in dists:
+            row = [dist]
+            for delay in delays:
+                lats = data.get((dist, stack, delay))
+                row.append(f"{mean(lats):.1f}" if lats else "-")
+            print(fmt_row(row))
+    print()
 
 
 def percentile95(values):

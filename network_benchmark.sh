@@ -42,17 +42,16 @@ PAYLOAD=${PAYLOAD:-32}
 LARGE_FRAC=${LARGE_FRAC:-0.5}
 
 # Swept payload sizes for the large message in bimodal distribution
-LARGE_SIZES=("16384" "65536" "131072") # 16KB, 64KB, 128KB
-
+LARGE_SIZES=( "16384" "65536" "131072" "160768") # 16KB, 64KB, 128KB, 157KB
 DELAYS=${DELAYS:-"0 250us 1ms"}
-LOSS=${LOSS:-0.05%}
+LOSS=${LOSS:-} # 0.05%}
 JITTER=${JITTER:-100us}
 
 CORES=("0-2" "3-5" "6-8")
 
 MPC_BIN="$ROOT/target/release/examples/mpc_node"
 GRPC_BIN="$ROOT/target/release/examples/grpc_node"
-LOG_FILE="$ROOT/benchmark_raw_output_with_loss.log"
+LOG_FILE="$ROOT/benchmark_raw_output_no_loss.log"
 
 # Clear or start new log file
 echo "=== Benchmark Run: $(date -Iseconds) ===" | tee "$LOG_FILE"
