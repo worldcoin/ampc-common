@@ -18,6 +18,8 @@ criterion_group!(
 );
 criterion_main!(networking);
 
+const STREAM_PARALLELISM: usize = 16;
+
 pub fn create_random_sharing<R, ShareRing>(rng: &mut R, input: ShareRing) -> Vec<Share<ShareRing>>
 where
     R: RngCore,
@@ -82,13 +84,18 @@ fn bench_is_match_batch_tcp(c: &mut Criterion) {
     let mut group = c.benchmark_group("is_match_batch_tcp");
     group.sample_size(10);
 
+    // Pin to 3 worker threads (one per party) so the 3PC parties actually
+    // contend for cores. This is the point of the benchmark: measure behaviour
+    // when the CPU is saturated rather than letting Tokio fan out across all
+    // logical cores and hide the contention.
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(3)
         .enable_all()
         .build()
         .unwrap();
 
     #[allow(clippy::single_element_loop)]
-    for (nj, rp) in [(1024, 32)] {
+    for (nj, rp) in [(1024, STREAM_PARALLELISM)] {
         {
             let cp = 1;
             let mut rng = AesRng::seed_from_u64(0_u64);
@@ -134,7 +141,12 @@ fn bench_is_match_batch_grpc(c: &mut Criterion) {
     let mut group = c.benchmark_group("is_match_batch");
     group.sample_size(10);
 
+    // Pin to 3 worker threads (one per party) so the 3PC parties actually
+    // contend for cores. This is the point of the benchmark: measure behaviour
+    // when the CPU is saturated rather than letting Tokio fan out across all
+    // logical cores and hide the contention.
     let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(3)
         .enable_all()
         .build()
         .unwrap();
@@ -142,7 +154,7 @@ fn bench_is_match_batch_grpc(c: &mut Criterion) {
     #[allow(clippy::single_element_loop)]
     for nj in [1024] {
         #[allow(clippy::single_element_loop)]
-        for (cp, rp) in [(1, 32)] {
+        for (cp, rp) in [(1, STREAM_PARALLELISM)] {
             let mut rng = AesRng::seed_from_u64(0_u64);
             let d1 = create_random_sharing(&mut rng, 10_u16);
             let d2 = create_random_sharing(&mut rng, 10_u16);
