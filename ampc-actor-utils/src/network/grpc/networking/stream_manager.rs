@@ -3,7 +3,7 @@ use crate::{
         player::Identity,
         session::{SessionId, StreamId},
     },
-    proto_generated::party_node::{party_node_client::PartyNodeClient, SendRequest, SendRequests},
+    proto_generated::party_node::party_node_client::PartyNodeClient,
 };
 use eyre::{eyre, Result};
 use futures::Stream;
@@ -16,6 +16,7 @@ use std::{
 use tokio::sync::mpsc::{self, UnboundedReceiver};
 use tonic::{metadata::AsciiMetadataValue, transport::Channel, Request, Status};
 
+use super::super::messages::{SendRequest, SendRequests};
 use super::super::{GrpcConfig, OutStream, OutStreams};
 
 /// Maximum coalesced payload per batch. gRPC caps a message at 4 MiB; stay well
@@ -38,13 +39,13 @@ impl Stream for CoalescingStream {
         let this = self.get_mut();
         match this.rx.poll_recv(cx) {
             Poll::Ready(Some(first)) => {
-                let mut payload_len = first.data.len();
+                let mut payload_len = first.value.byte_len();
                 let mut requests = vec![first];
                 // Drain messages that are already queued into the same batch.
                 while requests.len() != this.stream_parallelism {
                     match this.rx.poll_recv(cx) {
                         Poll::Ready(Some(msg)) => {
-                            payload_len += msg.data.len();
+                            payload_len += msg.value.byte_len();
                             requests.push(msg);
                             if payload_len >= MAX_COALESCED_PAYLOAD {
                                 break;

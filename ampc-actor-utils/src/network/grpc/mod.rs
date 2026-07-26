@@ -1,15 +1,19 @@
-use crate::{execution::player::Identity, proto_generated::party_node::SendRequest};
+use crate::{execution::player::Identity, network::mpc::NetworkValue};
 use eyre::Result;
 use std::{collections::HashMap, time::Duration};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tonic::Status;
 
 // `pub(crate)` so the tonic-generated client/server (in `crate::proto_generated`)
-// can reach `RawCodec` via the `codec_path` set in `build.rs`.
+// can reach `RawCodec`/the message types via the `codec_path` and `extern_path`
+// settings in `build.rs`.
 pub(crate) mod codec;
 mod handle;
+pub(crate) mod messages;
 mod networking;
 mod session;
+
+use self::messages::SendRequest;
 
 #[allow(unused_imports)]
 pub use handle::*;
@@ -21,10 +25,15 @@ fn err_to_status(e: eyre::Error) -> Status {
     Status::internal(e.to_string())
 }
 
+// Egress: session -> coalescing stream -> codec. Carries values unserialized.
 type OutStream = UnboundedSender<SendRequest>;
 type OutStreams = HashMap<Identity, OutStream>;
-type InStream = UnboundedReceiver<SendRequest>;
+// Ingress: fanout -> session. The codec has already deserialized, so a decoded
+// `NetworkValue` (no session tag needed — the fanout demuxed by session id).
+type InStream = UnboundedReceiver<NetworkValue>;
 type InStreams = HashMap<Identity, InStream>;
+// Sender half feeding a session's inbound queue (paired with `InStream`).
+type InboundSender = UnboundedSender<NetworkValue>;
 
 #[derive(Default, Clone, Debug)]
 pub struct GrpcConfig {

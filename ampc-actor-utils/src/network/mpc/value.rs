@@ -1,7 +1,7 @@
 use ampc_secret_sharing::shares::{
     self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
 };
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::mem::size_of;
@@ -14,10 +14,10 @@ use std::mem::size_of;
 /// - On little-endian, the native byte order matches the wire format
 /// - We're only reading from the slice, not modifying it
 #[inline]
-fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
+fn serialize_vec_ring<T: IntRing2k, B: BufMut>(v: &[RingElement<T>], res: &mut B) {
     let wire_bytes = T::BYTES;
     let byte_len = v.len() * wire_bytes;
-    res.extend_from_slice(&(byte_len as u32).to_le_bytes());
+    res.put_slice(&(byte_len as u32).to_le_bytes());
 
     #[cfg(target_endian = "little")]
     {
@@ -27,7 +27,7 @@ fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
             // the memory layout matches the serialized format (little-endian bytes).
             let bytes: &[u8] =
                 unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, byte_len) };
-            res.extend_from_slice(bytes);
+            res.put_slice(bytes);
         } else {
             // Slow path: wire size differs from memory size (e.g., Ring48: 6 bytes on wire, 8 in memory).
             for x in v {
@@ -35,7 +35,7 @@ fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
                 let elem_bytes: &[u8] = unsafe {
                     std::slice::from_raw_parts(&x.0 as *const T as *const u8, size_of::<T>())
                 };
-                res.extend_from_slice(&elem_bytes[..wire_bytes]);
+                res.put_slice(&elem_bytes[..wire_bytes]);
             }
         }
     }
@@ -48,7 +48,7 @@ fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
             // then take the low wire_bytes.
             let mut le_bytes = elem_bytes.to_vec();
             le_bytes.reverse();
-            res.extend_from_slice(&le_bytes[..wire_bytes]);
+            res.put_slice(&le_bytes[..wire_bytes]);
         }
     }
 }
@@ -188,7 +188,7 @@ impl NetworkValue {
 
     // serialize_internal() doesn't allow for NetworkValue::NetworkVec. a separate code path
     // is used to handle that variant.
-    pub fn serialize(&self, res: &mut BytesMut) {
+    pub fn serialize<B: BufMut>(&self, res: &mut B) {
         match &self {
             NetworkValue::NetworkVec(v) => Self::serialize_vec(v, res),
             _ => {
@@ -197,50 +197,49 @@ impl NetworkValue {
         }
     }
 
-    fn serialize_vec(values: &Vec<Self>, res: &mut BytesMut) {
-        let res_start = res.len();
-        res.extend_from_slice(&[DescriptorByte::NetworkVec.into()]);
-        // this is a placeholder
-        let len_idx = res.len();
-        res.extend_from_slice(&[0_u8; 4]);
+    fn serialize_vec<B: BufMut>(values: &Vec<Self>, res: &mut B) {
+        // Write the payload length up front (computed from `byte_len()`, which equals
+        // the serialized size exactly) instead of back-filling a placeholder — a plain
+        // `BufMut` sink (e.g. tonic's `EncodeBuf`) has no random access to rewrite it.
+        let payload_len: usize = values.iter().map(|v| v.byte_len()).sum();
+        res.put_slice(&[DescriptorByte::NetworkVec.into()]);
+        res.put_slice(&(payload_len as u32).to_le_bytes());
         for value in values {
             value.serialize_internal(res);
         }
-        let msg_len = res.len() - res_start;
-        res[len_idx..len_idx + 4].copy_from_slice(&((msg_len - 5) as u32).to_le_bytes());
     }
 
-    fn serialize_internal(&self, res: &mut BytesMut) {
-        res.extend_from_slice(&[self.get_descriptor_byte()]);
+    fn serialize_internal<B: BufMut>(&self, res: &mut B) {
+        res.put_slice(&[self.get_descriptor_byte()]);
 
         match self {
-            NetworkValue::PrfKey(key) => res.extend_from_slice(key),
-            NetworkValue::PrfCheck(v) => res.extend_from_slice(&v.convert().to_le_bytes()),
+            NetworkValue::PrfKey(key) => res.put_slice(key),
+            NetworkValue::PrfCheck(v) => res.put_slice(&v.convert().to_le_bytes()),
             NetworkValue::RingElementBit(_) => {
                 // Do nothing, the descriptor byte already contains the bit
                 // value
             }
-            NetworkValue::RingElement16(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
-            NetworkValue::RingElement32(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
-            NetworkValue::RingElement64(x) => res.extend_from_slice(&x.convert().to_le_bytes()),
+            NetworkValue::RingElement16(x) => res.put_slice(&x.convert().to_le_bytes()),
+            NetworkValue::RingElement32(x) => res.put_slice(&x.convert().to_le_bytes()),
+            NetworkValue::RingElement64(x) => res.put_slice(&x.convert().to_le_bytes()),
             NetworkValue::VecRing16(v) => serialize_vec_ring(v, res),
             NetworkValue::VecRing32(v) => serialize_vec_ring(v, res),
             NetworkValue::VecRing64(v) => serialize_vec_ring(v, res),
             NetworkValue::RingElement48(x) => {
-                res.extend_from_slice(&x.0 .0.to_le_bytes()[..Ring48::BYTES]);
+                res.put_slice(&x.0 .0.to_le_bytes()[..Ring48::BYTES]);
             }
             NetworkValue::VecRing48(v) => serialize_vec_ring(v, res),
             NetworkValue::StateChecksum(checksums) => {
-                res.extend_from_slice(&u64::to_le_bytes(checksums.irises));
-                res.extend_from_slice(&u64::to_le_bytes(checksums.graph));
+                res.put_slice(&u64::to_le_bytes(checksums.irises));
+                res.put_slice(&u64::to_le_bytes(checksums.graph));
             }
             NetworkValue::Bytes(v) => {
-                res.extend_from_slice(&(v.len() as u32).to_le_bytes());
-                res.extend_from_slice(v);
+                res.put_slice(&(v.len() as u32).to_le_bytes());
+                res.put_slice(v);
             }
             NetworkValue::VecRingBit(bytes, bit_count) => {
-                res.extend_from_slice(&(*bit_count as u32).to_le_bytes());
-                res.extend_from_slice(bytes);
+                res.put_slice(&(*bit_count as u32).to_le_bytes());
+                res.put_slice(bytes);
             }
             NetworkValue::NetworkVec(_v) => unreachable!(),
         }

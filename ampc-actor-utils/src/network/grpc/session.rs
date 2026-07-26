@@ -1,8 +1,9 @@
 use crate::{
     execution::{player::Identity, session::SessionId},
     network::mpc::{NetworkValue, Networking},
-    proto_generated::party_node::SendRequest,
 };
+
+use super::messages::SendRequest;
 use eyre::{eyre, Result};
 use std::collections::HashMap;
 use tokio::time::timeout;
@@ -22,15 +23,15 @@ pub struct GrpcSession {
 #[async_trait]
 impl Networking for GrpcSession {
     async fn send(&mut self, value: NetworkValue, receiver: &Identity) -> Result<()> {
-        let value = value.to_network();
-
         let outgoing_stream = self.out_streams.get(receiver).ok_or(eyre!(
             "Outgoing stream for {receiver:?} in {:?} not found",
             self.session_id
         ))?;
+        // Hand the value off unserialized; the codec serializes it exactly once,
+        // straight into the gRPC frame buffer.
         let request = SendRequest {
             session_id: self.session_id.0,
-            data: value,
+            value,
         };
         outgoing_stream
             .send(request)
@@ -44,9 +45,8 @@ impl Networking for GrpcSession {
             self.session_id
         ))?;
         match timeout(self.config.timeout_duration, incoming_stream.recv()).await {
-            Ok(res) => res
-                .ok_or(eyre!("No message received"))
-                .and_then(|msg| NetworkValue::deserialize(&msg.data)),
+            // Already deserialized by the codec's decoder.
+            Ok(res) => res.ok_or(eyre!("No message received")),
             Err(_) => Err(eyre!(
                 "{:?}: Timeout while waiting for message from {sender:?} in \
                  {:?}",

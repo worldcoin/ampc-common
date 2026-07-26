@@ -3,9 +3,8 @@ use crate::{
         player::Identity,
         session::{SessionId, StreamId},
     },
-    proto_generated::party_node::{
-        party_node_server::PartyNode, SendRequest, SendRequests, SendResponse,
-    },
+    network::mpc::NetworkValue,
+    proto_generated::party_node::party_node_server::PartyNode,
 };
 use eyre::{eyre, Result};
 use std::{collections::HashMap, sync::Arc, time::Duration};
@@ -15,9 +14,10 @@ use tokio::{
 };
 use tonic::{async_trait, Request, Response, Status, Streaming};
 
+use super::messages::{SendRequests, SendResponse};
 use super::networking::GrpcNetworking;
 use super::session::GrpcSession;
-use super::{GrpcConfig, InStream, InStreams, OutStream, OutStreams, TonicResult};
+use super::{GrpcConfig, InStream, InStreams, InboundSender, OutStreams, TonicResult};
 
 struct ConnectToPartyTask {
     party_id: Identity,
@@ -161,11 +161,11 @@ impl PartyNode for GrpcHandle {
         );
 
         // create channels for the sessions
-        let mut inbound_forwarder: HashMap<u32, OutStream> = HashMap::new();
+        let mut inbound_forwarder: HashMap<u32, InboundSender> = HashMap::new();
         let mut inbound_sessions: HashMap<SessionId, InStream> = HashMap::new();
         let start_id = stream_id.0 * self.config.stream_parallelism() as u32;
         for session_id in start_id..start_id + self.config.stream_parallelism() as u32 {
-            let (hawk_tx, hawk_rx) = mpsc::unbounded_channel::<SendRequest>();
+            let (hawk_tx, hawk_rx) = mpsc::unbounded_channel::<NetworkValue>();
             inbound_forwarder.insert(session_id, hawk_tx);
             inbound_sessions.insert(SessionId::from(session_id), hawk_rx);
         }

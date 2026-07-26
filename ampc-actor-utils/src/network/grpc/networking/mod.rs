@@ -5,7 +5,7 @@ use crate::{
         session::{SessionId, StreamId},
     },
     proto_generated::party_node::{
-        party_node_client::PartyNodeClient, party_node_server::PartyNodeServer, SendRequests,
+        party_node_client::PartyNodeClient, party_node_server::PartyNodeServer,
     },
 };
 use backon::{ExponentialBuilder, Retryable};
@@ -22,7 +22,8 @@ use tonic::{
 };
 
 use super::handle::GrpcHandle;
-use super::{GrpcConfig, InStream, InStreams, OutStream, OutStreams};
+use super::messages::SendRequests;
+use super::{GrpcConfig, InStream, InStreams, InboundSender, OutStreams};
 
 mod stream_manager;
 use stream_manager::StreamManager;
@@ -165,7 +166,7 @@ impl GrpcNetworking {
         sender_id: Identity,
         stream_id: StreamId,
         mut stream: Streaming<SendRequests>,
-        session_forwarder: HashMap<u32, OutStream>,
+        session_forwarder: HashMap<u32, InboundSender>,
         mut inbound_sessions: HashMap<SessionId, InStream>,
     ) -> Result<()> {
         if sender_id == self.party_id {
@@ -207,7 +208,7 @@ impl GrpcNetworking {
                         for request in msg.requests {
                             let session_id = request.session_id;
                             if let Some(tx) = session_forwarder.get(&session_id) {
-                                if let Err(e) = tx.send(request) {
+                                if let Err(e) = tx.send(request.value) {
                                     tracing::error!(
                                         "Failed to forward message for session {:?}: {:?}",
                                         session_id,
