@@ -1,3 +1,5 @@
+#[cfg(feature = "grpc")]
+use crate::network::grpc::setup_local_grpc_networking;
 use crate::{
     execution::{
         player::*,
@@ -12,8 +14,6 @@ use crate::{
         prf::{Prf, PrfSeed},
     },
 };
-#[cfg(feature = "grpc")]
-use crate::network::grpc::setup_local_grpc_networking;
 use eyre::Result;
 use futures::future::join_all;
 use std::{

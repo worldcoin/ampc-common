@@ -4,6 +4,9 @@ use std::{collections::HashMap, time::Duration};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tonic::Status;
 
+// `pub(crate)` so the tonic-generated client/server (in `crate::proto_generated`)
+// can reach `RawCodec` via the `codec_path` set in `build.rs`.
+pub(crate) mod codec;
 mod handle;
 mod networking;
 mod session;
