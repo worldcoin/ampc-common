@@ -353,20 +353,12 @@ BIN=./target/release/examples/mpc_node
 # so RTT ≈ 2 × delay.
 sudo tc qdisc add dev lo root netem delay 500us 100us distribution normal loss 0.05%
 
-# Launch 3 parties pinned to DISJOINT core sets. Match --workers to the core count
-# (≈ 1 worker thread per core — do NOT oversubscribe; this is async, non-blocking I/O).
-# Adjust core ranges to your machine (this assumes ≥12 cores).
-taskset -c 0-3  perf stat -d -o perf.p0.txt $BIN --party 0 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 4-7  perf stat -d -o perf.p1.txt $BIN --party 1 --workers 4 --sessions 1000 --rounds 2000 &
-taskset -c 8-11 perf stat -d -o perf.p2.txt $BIN --party 2 --workers 4 --sessions 1000 --rounds 2000 &
-wait
-
 # Bimodal payloads (the fair comparison against grpc_node's flow-control stress):
 # mostly 32B, 5% 16KB bursts. Add `--dist uniform` for a uniform spread instead.
 DIST="--dist bimodal --payload 32 --large 16384 --large-frac 0.5"
-taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 90 --rounds 2000 $DIST &
-taskset -c 3-6   $BIN --party 1 --workers 3 --sessions 90 --rounds 2000 $DIST &
-taskset -c 7-9   $BIN --party 2 --workers 3 --sessions 90 --rounds 2000 $DIST &
+taskset -c 0-2   $BIN --party 0 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 3-5   $BIN --party 1 --workers 3 --sessions 21 --rounds 2000 $DIST &
+taskset -c 6-8   $BIN --party 2 --workers 3 --sessions 21 --rounds 2000 $DIST &
 wait
 
 

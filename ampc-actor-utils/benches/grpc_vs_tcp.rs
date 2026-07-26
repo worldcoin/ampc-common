@@ -154,7 +154,10 @@ fn bench_is_match_batch_grpc(c: &mut Criterion) {
     #[allow(clippy::single_element_loop)]
     for nj in [1024] {
         #[allow(clippy::single_element_loop)]
-        for (cp, rp) in [(1, STREAM_PARALLELISM)] {
+        for (cp, rp) in [
+            (STREAM_PARALLELISM, STREAM_PARALLELISM),
+            (1, STREAM_PARALLELISM),
+        ] {
             let mut rng = AesRng::seed_from_u64(0_u64);
             let d1 = create_random_sharing(&mut rng, 10_u16);
             let d2 = create_random_sharing(&mut rng, 10_u16);

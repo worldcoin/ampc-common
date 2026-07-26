@@ -43,7 +43,7 @@ LARGE_FRAC=${LARGE_FRAC:-0.5}
 
 # Swept payload sizes for the large message in bimodal distribution
 LARGE_SIZES=( "16384" "65536" "131072" "160768") # 16KB, 64KB, 128KB, 157KB
-DELAYS=${DELAYS:-"0 250us 1ms"}
+DELAYS=${DELAYS:-"0"} #  250us 1ms"}
 LOSS=${LOSS:-} # 0.05%}
 JITTER=${JITTER:-100us}
 
