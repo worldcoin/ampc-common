@@ -294,9 +294,11 @@ where
 ///   fresh startup sync that verifies us). Note the heartbeat polls `/health`, which
 ///   always returns HTTP 200, so its consecutive-failure path does NOT fire for a
 ///   merely-unready peer — the UUID mismatch is the healing mechanism.
+///
 /// Residual case: a ready peer that already holds our CURRENT UUID but not in its
 /// `verified_peers` will never re-verify us; we then wait out the deadline and exit —
 /// identical to the previous one-shot behavior (slow-fail, no regression).
+///
 /// Bound: `try_get_endpoint_other_nodes` applies its own `startup_sync_timeout_secs`
 /// budget per call, so total wall-clock here is ≈2× that value in the worst case.
 pub async fn wait_for_others_unready(
@@ -361,7 +363,7 @@ pub async fn wait_for_others_unready(
 
         // Warn on the first round and every 10th after that; debug otherwise — a
         // recoverable race at a short retry cadence must not flood the log pipeline.
-        if attempt == 1 || attempt % 10 == 0 {
+        if attempt == 1 || attempt.is_multiple_of(10) {
             tracing::warn!(
                 "Nodes {:?} are ready but have not verified our UUID {} (attempt {}); \
                  retrying in {:?} with a stable UUID so peers can re-verify us",
