@@ -279,6 +279,18 @@ where
 /// However, due to race conditions where a peer might restart and become ready (200 OK)
 /// before we check it, we also accept 200 OK *IF* the peer can prove it saw us during its startup.
 /// This is verified by checking if the peer's `verified_peers` list contains our UUID.
+///
+/// An unsafe round (a ready peer that has not verified us) is retried IN-PROCESS until
+/// `startup_sync_timeout_secs` elapses, instead of failing immediately. Exiting the
+/// process here is what created unrecoverable fleet wedges: the exit kills this node's
+/// health listener and mints a new UUID on the next boot, so peers polling us see
+/// connect-refused / an unknown UUID, and kubelet's uncoordinated crash backoff makes
+/// the three parties chase each other's dead incarnations indefinitely (observed on the
+/// DI anon-stats fleet, 2026-07-27). Retrying in-process keeps our UUID stable and our
+/// health endpoint serving, which is exactly what peers need to re-verify us: a booting
+/// peer records our UUID on its next poll, and a fully-ready-but-stale peer self-heals
+/// through its heartbeat (consecutive non-ready responses from us trigger its graceful
+/// restart, after which it re-runs startup sync and verifies us).
 pub async fn wait_for_others_unready(
     config: &ServerCoordinationConfig,
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
@@ -286,53 +298,69 @@ pub async fn wait_for_others_unready(
 ) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
 
-    // We use "/health" to check state and verified peers.
-    let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
+    let deadline = Instant::now() + Duration::from_secs(config.startup_sync_timeout_secs);
+    let retry_delay = Duration::from_millis(config.http_query_retry_delay_ms);
+    let mut attempt: u32 = 0;
 
-    let mut all_safe = true;
+    loop {
+        attempt += 1;
 
-    for (_status, body) in connected_health_resps {
-        let probe_response: ReadyProbeResponse =
-            serde_json::from_slice(&body).wrap_err("Failed to deserialize ReadyProbeResponse")?;
+        // We use "/health" to check state and verified peers.
+        let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
 
-        // 1. Add their UUID to our list (so we can prove to them we saw them later)
-        my_verified_peers
-            .lock()
-            .await
-            .insert(probe_response.uuid.clone());
+        let mut unverified_ready_peers = Vec::new();
 
-        // 2. Check status
-        if !probe_response.is_ready {
-            // They are unready (503 equivalent). Safe.
-        } else {
-            // They are ready (200 equivalent).
-            // Check if they verified us.
-            if probe_response.verified_peers.contains(my_uuid) {
-                // They verified us. Safe (Race condition handled).
-                tracing::info!(
-                    "Peer {} is already ready but verified us. Accepting as race condition.",
-                    probe_response.uuid
-                );
+        for (_status, body) in connected_health_resps {
+            let probe_response: ReadyProbeResponse = serde_json::from_slice(&body)
+                .wrap_err("Failed to deserialize ReadyProbeResponse")?;
+
+            // 1. Add their UUID to our list (so we can prove to them we saw them later)
+            my_verified_peers
+                .lock()
+                .await
+                .insert(probe_response.uuid.clone());
+
+            // 2. Check status
+            if !probe_response.is_ready {
+                // They are unready (503 equivalent). Safe.
             } else {
-                // They are ready but didn't verify us. BAD.
-                tracing::error!(
-                    "Node {} is ready but did not verify our UUID {}",
-                    probe_response.uuid,
-                    my_uuid
-                );
-                all_safe = false;
+                // They are ready (200 equivalent).
+                // Check if they verified us.
+                if probe_response.verified_peers.contains(my_uuid) {
+                    // They verified us. Safe (Race condition handled).
+                    tracing::info!(
+                        "Peer {} is already ready but verified us. Accepting as race condition.",
+                        probe_response.uuid
+                    );
+                } else {
+                    // They are ready but didn't verify us: not safe yet — retry below.
+                    unverified_ready_peers.push(probe_response.uuid);
+                }
             }
         }
+
+        if unverified_ready_peers.is_empty() {
+            tracing::info!("All nodes are starting up (or validly raced ahead).");
+            return Ok(());
+        }
+
+        ensure!(
+            Instant::now() < deadline,
+            "One or more nodes were not unready (and did not verify us) within {}s: {:?}",
+            config.startup_sync_timeout_secs,
+            unverified_ready_peers
+        );
+
+        tracing::warn!(
+            "Nodes {:?} are ready but have not verified our UUID {} (attempt {}); retrying \
+             in {:?} with a stable UUID so peers can re-verify us",
+            unverified_ready_peers,
+            my_uuid,
+            attempt,
+            retry_delay
+        );
+        tokio::time::sleep(retry_delay).await;
     }
-
-    ensure!(
-        all_safe,
-        "One or more nodes were not unready (and did not verify us)."
-    );
-
-    tracing::info!("All nodes are starting up (or validly raced ahead).");
-
-    Ok(())
 }
 
 /// Starts a heartbeat task which periodically polls the "health" endpoints of
