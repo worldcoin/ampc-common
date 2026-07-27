@@ -287,10 +287,18 @@ where
 /// connect-refused / an unknown UUID, and kubelet's uncoordinated crash backoff makes
 /// the three parties chase each other's dead incarnations indefinitely (observed on the
 /// DI anon-stats fleet, 2026-07-27). Retrying in-process keeps our UUID stable and our
-/// health endpoint serving, which is exactly what peers need to re-verify us: a booting
-/// peer records our UUID on its next poll, and a fully-ready-but-stale peer self-heals
-/// through its heartbeat (consecutive non-ready responses from us trigger its graceful
-/// restart, after which it re-runs startup sync and verifies us).
+/// health endpoint serving, which is what peers need to re-verify us:
+/// - a peer still in its own startup records our UUID on its next `/health` poll;
+/// - a fully-ready peer that recorded our PREVIOUS incarnation's UUID self-heals via
+///   its heartbeat's UUID-mismatch check ("seems to have restarted" panic → restart →
+///   fresh startup sync that verifies us). Note the heartbeat polls `/health`, which
+///   always returns HTTP 200, so its consecutive-failure path does NOT fire for a
+///   merely-unready peer — the UUID mismatch is the healing mechanism.
+/// Residual case: a ready peer that already holds our CURRENT UUID but not in its
+/// `verified_peers` will never re-verify us; we then wait out the deadline and exit —
+/// identical to the previous one-shot behavior (slow-fail, no regression).
+/// Bound: `try_get_endpoint_other_nodes` applies its own `startup_sync_timeout_secs`
+/// budget per call, so total wall-clock here is ≈2× that value in the worst case.
 pub async fn wait_for_others_unready(
     config: &ServerCoordinationConfig,
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
@@ -351,14 +359,25 @@ pub async fn wait_for_others_unready(
             unverified_ready_peers
         );
 
-        tracing::warn!(
-            "Nodes {:?} are ready but have not verified our UUID {} (attempt {}); retrying \
-             in {:?} with a stable UUID so peers can re-verify us",
-            unverified_ready_peers,
-            my_uuid,
-            attempt,
-            retry_delay
-        );
+        // Warn on the first round and every 10th after that; debug otherwise — a
+        // recoverable race at a short retry cadence must not flood the log pipeline.
+        if attempt == 1 || attempt % 10 == 0 {
+            tracing::warn!(
+                "Nodes {:?} are ready but have not verified our UUID {} (attempt {}); \
+                 retrying in {:?} with a stable UUID so peers can re-verify us",
+                unverified_ready_peers,
+                my_uuid,
+                attempt,
+                retry_delay
+            );
+        } else {
+            tracing::debug!(
+                "Nodes {:?} still have not verified our UUID {} (attempt {})",
+                unverified_ready_peers,
+                my_uuid,
+                attempt
+            );
+        }
         tokio::time::sleep(retry_delay).await;
     }
 }
