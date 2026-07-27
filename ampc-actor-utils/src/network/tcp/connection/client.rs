@@ -65,6 +65,42 @@ impl TlsClient {
                     .with_client_auth_cert(certs, key)
                     .map_err(|e| TlsError::ConfigError(e.to_string()))?
             }
+            TlsClientConfig::ServerOnlyPem { root_certs_pem } => {
+                for root_cert in &root_certs_pem {
+                    for cert in CertificateDer::pem_slice_iter(root_cert.as_bytes()) {
+                        let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                        roots
+                            .add(cert)
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
+                    }
+                }
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth()
+            }
+            TlsClientConfig::MutualPem {
+                root_certs_pem,
+                key_pem,
+                cert_pem,
+            } => {
+                for root_cert in &root_certs_pem {
+                    for cert in CertificateDer::pem_slice_iter(root_cert.as_bytes()) {
+                        let cert = cert.map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                        roots
+                            .add(cert)
+                            .map_err(|e| TlsError::CertificateValidation(e.to_string()))?;
+                    }
+                }
+                let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| TlsError::CertificateError(e.to_string()))?;
+                let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+                    .map_err(|e| TlsError::PrivateKeyError(e.to_string()))?;
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_client_auth_cert(certs, key)
+                    .map_err(|e| TlsError::ConfigError(e.to_string()))?
+            }
         };
         let tls_connector = TlsConnector::from(Arc::new(client_config));
         Ok(Self { tls_connector })

@@ -9,7 +9,9 @@ pub mod streams;
 pub mod types;
 
 use crate::execution::player::Identity;
+use secrecy::SecretString;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use thiserror::Error;
@@ -67,6 +69,23 @@ pub enum TlsClientConfig {
         /// the client cert
         cert_file: String,
     },
+    /// only the server is authenticated, with PEM contents given inline
+    /// rather than as paths (e.g. certs sourced from a secret manager /
+    /// env var, which have no filesystem representation)
+    ServerOnlyPem {
+        /// the root certs for the server (PEM contents)
+        root_certs_pem: Vec<String>,
+    },
+    /// both the client and server are authenticated, with PEM contents
+    /// given inline rather than as paths
+    MutualPem {
+        /// the root certs for the server (PEM contents)
+        root_certs_pem: Vec<String>,
+        /// the client key (PEM content)
+        key_pem: String,
+        /// the client cert (PEM content)
+        cert_pem: String,
+    },
 }
 
 /// TLS configuration for a server. Used by the workpool
@@ -87,6 +106,43 @@ pub enum TlsServerConfig {
         /// the server cert
         cert_file: String,
     },
+    /// PEM contents given inline rather than as paths (e.g. certs sourced
+    /// from a secret manager / env var, which have no filesystem
+    /// representation)
+    ServerOnlyPem {
+        /// the server key (PEM content)
+        key_pem: String,
+        /// the server cert (PEM content)
+        cert_pem: String,
+    },
+    /// PEM contents given inline rather than as paths
+    MutualPem {
+        /// the client certs (PEM contents)
+        root_certs_pem: Vec<String>,
+        /// the server key (PEM content)
+        key_pem: String,
+        /// the server cert (PEM content)
+        cert_pem: String,
+    },
+}
+
+/// How to interpret `TlsConfig`'s key/cert material.
+///
+/// `File` (the default) is the original, backwards-compatible behavior:
+/// `private_key` / `leaf_cert` / `root_certs` are filesystem paths. `Pem`
+/// is for values that are already PEM contents (e.g. sourced from a secret
+/// manager / env var, which have no filesystem representation) — in this
+/// mode the private key is read from `private_key_pem` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum TlsSource {
+    #[default]
+    File,
+    Pem,
+}
+
+fn parse_secret_string(s: &str) -> Result<SecretString, Infallible> {
+    Ok(SecretString::from(s.to_string()))
 }
 
 /// TLS configuration for secure network communication. This gets passed
@@ -95,9 +151,28 @@ pub enum TlsServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
 #[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
 pub struct TlsConfig {
+    /// Selects whether the key/cert material below is file paths (using
+    /// `private_key`) or inline PEM contents (using `private_key_pem`
+    /// instead). Defaults to `File` so existing configs and callers keep
+    /// working unchanged.
+    #[arg(required = false, value_enum, default_value_t = TlsSource::File)]
+    #[serde(default)]
+    pub source: TlsSource,
+
+    /// Path to the private key file. Used when `source` is `File` (the
+    /// default).
     #[arg(required = false)]
     #[serde(default)]
     pub private_key: Option<String>,
+
+    /// Inline PEM content of the private key. Used when `source` is `Pem`.
+    /// Confidential: wrapped so it never gets printed via Debug/logged, and
+    /// is skipped by Serialize (e.g. accidentally re-serializing this
+    /// config to JSON logs). Defaults to absent, like every other TLS field
+    /// here.
+    #[arg(required = false, value_parser = parse_secret_string)]
+    #[serde(default, skip_serializing)]
+    pub private_key_pem: Option<SecretString>,
 
     #[arg(required = false)]
     #[serde(default)]
@@ -171,4 +246,67 @@ where
 {
     let value: String = Deserialize::deserialize(deserializer)?;
     serde_json::from_str(&value).map_err(serde::de::Error::custom)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PRIVATE_KEY_PEM_MARKER: &str = "-----BEGIN PRIVATE KEY-----super-secret-material";
+
+    fn sample_config_file() -> serde_json::Value {
+        serde_json::json!({
+            "private_key": "/etc/mesh/key.pem",
+            "leaf_cert": "-----BEGIN CERTIFICATE-----leaf",
+            "root_certs": "[\"-----BEGIN CERTIFICATE-----root\"]",
+        })
+    }
+
+    fn sample_config_pem() -> serde_json::Value {
+        serde_json::json!({
+            "source": "pem",
+            "private_key_pem": PRIVATE_KEY_PEM_MARKER,
+            "leaf_cert": "-----BEGIN CERTIFICATE-----leaf",
+            "root_certs": "[\"-----BEGIN CERTIFICATE-----root\"]",
+        })
+    }
+
+    #[test]
+    fn private_key_pem_is_never_printed_via_debug() {
+        let config: TlsConfig = serde_json::from_value(sample_config_pem()).unwrap();
+        let debug_output = format!("{config:?}");
+        assert!(!debug_output.contains(PRIVATE_KEY_PEM_MARKER));
+        assert!(debug_output.contains("REDACTED"));
+        // leaf_cert / root_certs are public, so they're still visible.
+        assert!(debug_output.contains("leaf_cert"));
+    }
+
+    #[test]
+    fn private_key_pem_is_never_printed_via_serialize() {
+        let config: TlsConfig = serde_json::from_value(sample_config_pem()).unwrap();
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains(PRIVATE_KEY_PEM_MARKER));
+    }
+
+    #[test]
+    fn source_defaults_to_file_when_omitted() {
+        // Existing configs / env vars that predate `source` must keep working
+        // unchanged, which means defaulting to the original file-path behavior.
+        let config: TlsConfig = serde_json::from_value(sample_config_file()).unwrap();
+        assert_eq!(config.source, TlsSource::File);
+        assert_eq!(config.private_key.as_deref(), Some("/etc/mesh/key.pem"));
+        assert!(config.private_key_pem.is_none());
+    }
+
+    #[test]
+    fn private_key_pem_defaults_to_none_when_omitted() {
+        let config: TlsConfig = serde_json::from_value(sample_config_file()).unwrap();
+        assert!(config.private_key_pem.is_none());
+    }
+
+    #[test]
+    fn source_pem_round_trips() {
+        let config: TlsConfig = serde_json::from_value(sample_config_pem()).unwrap();
+        assert_eq!(config.source, TlsSource::Pem);
+    }
 }
