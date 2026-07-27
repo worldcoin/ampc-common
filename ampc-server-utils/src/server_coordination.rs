@@ -354,12 +354,20 @@ pub async fn wait_for_others_unready(
             return Ok(());
         }
 
+        let now = Instant::now();
         ensure!(
-            Instant::now() < deadline,
+            now < deadline,
             "One or more nodes were not unready (and did not verify us) within {}s: {:?}",
             config.startup_sync_timeout_secs,
             unverified_ready_peers
         );
+
+        // Cap the sleep at the remaining budget so a retry delay larger than the
+        // budget cannot carry the loop past the deadline, and re-check the deadline
+        // after sleeping so no new request is issued once it has expired (each
+        // request has its own full `startup_sync_timeout_secs` budget inside
+        // `try_get_endpoint_other_nodes`).
+        let sleep_for = retry_delay.min(deadline.duration_since(now));
 
         // Warn on the first round and every 10th after that; debug otherwise — a
         // recoverable race at a short retry cadence must not flood the log pipeline.
@@ -370,7 +378,7 @@ pub async fn wait_for_others_unready(
                 unverified_ready_peers,
                 my_uuid,
                 attempt,
-                retry_delay
+                sleep_for
             );
         } else {
             tracing::debug!(
@@ -380,7 +388,14 @@ pub async fn wait_for_others_unready(
                 attempt
             );
         }
-        tokio::time::sleep(retry_delay).await;
+        tokio::time::sleep(sleep_for).await;
+
+        ensure!(
+            Instant::now() < deadline,
+            "One or more nodes were not unready (and did not verify us) within {}s: {:?}",
+            config.startup_sync_timeout_secs,
+            unverified_ready_peers
+        );
     }
 }
 
