@@ -1,17 +1,29 @@
 use crate::{
     execution::{
-        player::Identity,
-        session::{SessionId, StreamId},
+        local::generate_local_identities,
+        player::{Identity, Role, RoleAssignment},
+        scheduler::parallelize,
+        session::{NetworkSession, Session, SessionId, StreamId},
     },
-    network::mpc::NetworkValue,
+    network::mpc::{handle::control_channel::ControlChannel, NetworkHandle, NetworkValue},
     proto_generated::party_node::party_node_server::PartyNode,
+    protocol::ops::setup_replicated_prf,
 };
-use eyre::{eyre, Result};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use eyre::{bail, eyre, Result};
+use rand::{thread_rng, Rng};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::sleep,
 };
+use tokio_util::sync::CancellationToken;
 use tonic::{async_trait, Request, Response, Status, Streaming};
 
 use super::messages::{SendRequests, SendResponse};
@@ -50,6 +62,9 @@ pub struct GrpcHandle {
     job_queue: mpsc::Sender<MessageJob>,
     party_id: Identity,
     config: GrpcConfig,
+    /// Guards the one-shot `NetworkHandle::make_network_sessions`. Shared across
+    /// clones so a cloned handle cannot re-create the same session ids.
+    sessions_created: Arc<AtomicBool>,
 }
 
 impl GrpcHandle {
@@ -107,6 +122,7 @@ impl GrpcHandle {
             party_id,
             job_queue: tx,
             config,
+            sessions_created: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -251,5 +267,92 @@ impl GrpcHandle {
             sleep(Duration::from_millis(100)).await;
         }
         Ok(())
+    }
+}
+
+/// gRPC session ids are structural: the server maps an incoming stream to the
+/// session id range `stream_id * stream_parallelism .. + stream_parallelism`, so
+/// the session ids a party may create are fixed at `0..request_parallelism`. That
+/// makes `make_network_sessions` one-shot — a second call would re-create ids that
+/// already exist and block forever waiting on peers, so it returns an error
+/// instead. Reconnecting means building a new handle.
+///
+/// Unlike the MPC handle there is no session error token: each handle is also its
+/// own gRPC server living in a detached task, so nothing is cancelled when the
+/// sessions are dropped. The returned `CancellationToken` is inert.
+#[async_trait]
+impl NetworkHandle for GrpcHandle {
+    async fn make_network_sessions(&mut self) -> Result<(Vec<NetworkSession>, CancellationToken)> {
+        if self.sessions_created.swap(true, Ordering::SeqCst) {
+            bail!("make_network_sessions may only be called once per GrpcHandle");
+        }
+
+        let identities = generate_local_identities();
+        let own_role = identities
+            .iter()
+            .position(|id| *id == self.party_id)
+            .map(Role::new)
+            .ok_or_else(|| eyre!("{:?} is not one of the local identities", self.party_id))?;
+        let role_assignments: Arc<RoleAssignment> = Arc::new(
+            identities
+                .iter()
+                .enumerate()
+                .map(|(idx, id)| (Role::new(idx), id.clone()))
+                .collect(),
+        );
+
+        // Every party creates the same id set concurrently; `create_session`
+        // returns only once all peers have created the matching id, so this is
+        // the connect rendezvous.
+        let num_sessions = self.config.request_parallelism;
+        let mut tasks = Vec::with_capacity(num_sessions);
+        for idx in 0..num_sessions as u32 {
+            let handle = self.clone();
+            tasks.push(tokio::spawn(async move {
+                handle.create_session(SessionId::from(idx)).await
+            }));
+        }
+
+        let mut network_sessions = Vec::with_capacity(num_sessions);
+        for task in tasks {
+            let session = task.await??;
+            network_sessions.push(NetworkSession {
+                session_id: session.session_id,
+                role_assignments: role_assignments.clone(),
+                networking: Box::new(session),
+                own_role,
+            });
+        }
+
+        tracing::info!(
+            "make_network_sessions succeeded for {:?}: {} sessions",
+            self.party_id,
+            network_sessions.len()
+        );
+
+        Ok((network_sessions, CancellationToken::new()))
+    }
+
+    async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)> {
+        let (network_sessions, ct) = self.make_network_sessions().await?;
+
+        let mut session_futures = vec![];
+        for mut network_session in network_sessions.into_iter() {
+            session_futures.push(async move {
+                let my_session_seed = thread_rng().gen();
+                let prf = setup_replicated_prf(&mut network_session, my_session_seed).await?;
+                Ok::<Session, eyre::Report>(Session {
+                    network_session,
+                    prf,
+                })
+            });
+        }
+
+        let sessions = parallelize(session_futures.into_iter()).await?;
+        Ok((sessions, ct))
+    }
+
+    async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>> {
+        bail!("control_channel is not implemented for the gRPC network handle")
     }
 }

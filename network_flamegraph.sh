@@ -40,7 +40,7 @@ LARGE_FRAC=${LARGE_FRAC:-0.5}
 
 # The single distribution to profile.
 DIST=${DIST:-bimodal}        # bimodal | fixed
-LARGE=${LARGE:-16384}        # large-message size for bimodal (16KB default)
+LARGE=${LARGE:-65536}        # large-message size for bimodal (16KB default)
 
 FREQ=${FREQ:-997}            # perf sampling frequency (Hz)
 OUT_DIR=${OUT_DIR:-"$ROOT/flamegraphs"}

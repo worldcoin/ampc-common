@@ -6,12 +6,11 @@
 //! server (in a detached task) plus outbound clients to the other two parties,
 //! exactly like the `grpc` networking stack in prod but on one box.
 //!
-//! Unlike the MPC handle there is no `make_network_sessions()` rendezvous: each
-//! party creates sessions `0..sessions` explicitly via `create_session`, and
-//! `create_session` blocks (polling `is_session_ready`) until every peer has
-//! created the matching session id. Because all three processes create the same
-//! id set concurrently, they rendezvous per-session — launch order does not
-//! matter within the retry/connect window.
+//! `make_network_sessions()` is the rendezvous: it creates sessions
+//! `0..sessions`, and each session creation blocks (polling `is_session_ready`)
+//! until every peer has created the matching session id. Because all three
+//! processes create the same id set concurrently, they rendezvous per-session —
+//! launch order does not matter within the retry/connect window.
 //!
 //! Each session then runs R rounds of `send(next); recv(prev)` on the ring and
 //! the process prints its own wall-clock — the three should be near-identical.
@@ -25,9 +24,9 @@ use std::time::{Duration, Instant};
 
 use ampc_actor_utils::execution::local::generate_local_identities;
 use ampc_actor_utils::execution::player::{Identity, Role};
-use ampc_actor_utils::execution::session::SessionId;
+use ampc_actor_utils::execution::session::NetworkingImpl;
 use ampc_actor_utils::network::grpc::{build_network_handle, GrpcNetworkHandleArgs};
-use ampc_actor_utils::network::mpc::{NetworkValue, Networking};
+use ampc_actor_utils::network::mpc::{NetworkHandle, NetworkValue};
 use clap::Parser;
 use eyre::Result;
 use tokio::task::JoinSet;
@@ -210,7 +209,7 @@ async fn run(args: Args) -> Result<()> {
     let identities = generate_local_identities();
     let outbound = args.outbound.clone().unwrap_or_else(|| args.addrs.clone());
 
-    let handle = build_network_handle(GrpcNetworkHandleArgs {
+    let mut handle = build_network_handle(GrpcNetworkHandleArgs {
         party_index: args.party,
         addresses: args.addrs.clone(),
         outbound_addresses: outbound,
@@ -220,27 +219,18 @@ async fn run(args: Args) -> Result<()> {
     })
     .await?;
 
-    // Rendezvous: create every session. Each `create_session` returns only once
-    // all peers have created the matching id, so this is our connect barrier.
+    // Rendezvous: `make_network_sessions` returns only once all peers have
+    // created the matching ids, so this is our connect barrier.
     eprintln!(
         "[party {}] creating {} sessions…",
         args.party, args.sessions
     );
-    let mut create_tasks = JoinSet::new();
-    for i in 0..args.sessions {
-        let handle = handle.clone();
-        create_tasks.spawn(async move {
-            handle
-                .create_session(SessionId::from(i as u32))
-                .await
-                .map(|s| (i as u32, s))
-        });
-    }
+    let (network_sessions, _session_ct) = handle.make_network_sessions().await?;
     // Tag each session with its id so the receiver can validate every message.
-    let mut sessions = Vec::with_capacity(args.sessions);
-    for res in create_tasks.join_all().await {
-        sessions.push(res?);
-    }
+    let sessions: Vec<(u32, NetworkingImpl)> = network_sessions
+        .into_iter()
+        .map(|s| (s.session_id.0, s.networking))
+        .collect();
     eprintln!(
         "[party {}] connected: {} sessions ready",
         args.party,
@@ -280,8 +270,8 @@ async fn run(args: Args) -> Result<()> {
 /// (see `check_msg`), so a dropped, reordered, misrouted, truncated, or
 /// corrupted message panics the benchmark instead of passing silently.
 #[allow(clippy::too_many_arguments)]
-async fn ping_pong<S>(
-    sessions: Vec<(u32, S)>,
+async fn ping_pong(
+    sessions: Vec<(u32, NetworkingImpl)>,
     next_id: Identity,
     prev_id: Identity,
     rounds: usize,
@@ -289,9 +279,7 @@ async fn ping_pong<S>(
     dist: Dist,
     large: usize,
     large_frac: f64,
-) where
-    S: Networking + Send + 'static,
-{
+) {
     let mut tasks = JoinSet::new();
     for (session_id, mut session) in sessions.into_iter() {
         let next_id = next_id.clone();

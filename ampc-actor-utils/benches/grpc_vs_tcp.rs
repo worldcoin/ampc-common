@@ -56,24 +56,32 @@ async fn run_jobs(
         let t1i = t1[index % 3].clone();
         let t2i = t2[index % 3].clone();
         let player_session = player_session.clone();
+        const MULT: usize = 65536;
         jobs.spawn(async move {
             let mut player_session = player_session.lock().await;
+            let mut v1 = Vec::with_capacity(MULT * 4 * std::mem::size_of::<Share<u16>>());
+            let ds = vec![d1i.clone(), d2i.clone(), t1i.clone(), t2i.clone()];
+
+            for _ in 0..MULT {
+                v1.extend_from_slice(&ds);
+            }
             for _ in 0..num_iterations {
-                let ds_and_ts = batch_signed_lift_vec(
-                    &mut player_session,
-                    vec![d1i.clone(), d2i.clone(), t1i.clone(), t2i.clone()],
-                )
-                .await
-                .unwrap();
-                cross_compare(
-                    &mut player_session,
-                    &[(
-                        DistanceShare::new(ds_and_ts[0].clone(), ds_and_ts[1].clone()),
-                        DistanceShare::new(ds_and_ts[2].clone(), ds_and_ts[3].clone()),
-                    )],
-                )
-                .await
-                .unwrap();
+                let ds_and_ts = batch_signed_lift_vec(&mut player_session, v1.clone())
+                    .await
+                    .unwrap();
+                let ds2 = &[(
+                    DistanceShare::new(ds_and_ts[0].clone(), ds_and_ts[1].clone()),
+                    DistanceShare::new(ds_and_ts[2].clone(), ds_and_ts[3].clone()),
+                )];
+
+                let mut v2 =
+                    Vec::with_capacity(MULT * std::mem::size_of::<DistanceShare<u16>>() * 2);
+
+                for _ in 0..MULT {
+                    v2.extend_from_slice(ds2);
+                }
+
+                cross_compare(&mut player_session, &v2).await.unwrap();
             }
         });
     }
@@ -154,10 +162,7 @@ fn bench_is_match_batch_grpc(c: &mut Criterion) {
     #[allow(clippy::single_element_loop)]
     for nj in [1024] {
         #[allow(clippy::single_element_loop)]
-        for (cp, rp) in [
-            (STREAM_PARALLELISM, STREAM_PARALLELISM),
-            (1, STREAM_PARALLELISM),
-        ] {
+        for (cp, rp) in [(1, STREAM_PARALLELISM)] {
             let mut rng = AesRng::seed_from_u64(0_u64);
             let d1 = create_random_sharing(&mut rng, 10_u16);
             let d2 = create_random_sharing(&mut rng, 10_u16);

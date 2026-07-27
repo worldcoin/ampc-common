@@ -4,6 +4,7 @@ use crate::{
         player::Identity,
         session::{SessionId, StreamId},
     },
+    network::mpc::NetworkHandle,
     proto_generated::party_node::{
         party_node_client::PartyNodeClient, party_node_server::PartyNodeServer,
     },
@@ -331,7 +332,7 @@ pub struct GrpcNetworkHandleArgs {
 
 /// Build a gRPC network handle for a single party: start its server and connect
 /// to every peer. This is the gRPC analogue of the MPC `build_network_handle`.
-pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<GrpcHandle> {
+pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<Box<dyn NetworkHandle>> {
     let identities = generate_local_identities();
 
     let config = GrpcConfig {
@@ -380,5 +381,5 @@ pub async fn build_network_handle(args: GrpcNetworkHandleArgs) -> Result<GrpcHan
         handle.connect_to_party(identity.clone(), &address).await?;
     }
 
-    Ok(handle)
+    Ok(Box::new(handle))
 }
