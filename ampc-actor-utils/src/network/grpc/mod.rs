@@ -8,6 +8,7 @@ use tonic::Status;
 // can reach `RawCodec`/the message types via the `codec_path` and `extern_path`
 // settings in `build.rs`.
 pub(crate) mod codec;
+mod control_channel;
 mod handle;
 pub(crate) mod messages;
 mod networking;
@@ -59,7 +60,10 @@ mod tests {
     use super::{session::GrpcSession, *};
     use crate::{
         execution::{local::generate_local_identities, player::Role, session::SessionId},
-        network::mpc::{NetworkType, NetworkValue, Networking},
+        network::mpc::{
+            handle::control_channel::ControlChannel, NetworkHandle, NetworkType, NetworkValue,
+            Networking,
+        },
     };
     use futures::future::join_all;
     use rand::Rng;
@@ -322,6 +326,63 @@ mod tests {
         }
 
         jobs.join_all().await;
+
+        Ok(())
+    }
+
+    /// Every party opens a control channel, barriers on `sync()`, then sends a
+    /// payload tagged with its own role to `next` and reads from `prev`. Proves
+    /// that the control channel lands on a stream of its own (the data plane has
+    /// already claimed ids `0..request_parallelism`, spread over two streams)
+    /// and that next/prev are wired to the right peers.
+    #[tokio::test(flavor = "multi_thread")]
+    #[traced_test]
+    async fn test_grpc_control_channel() -> Result<()> {
+        let identities = generate_local_identities();
+        let num_parties = identities.len();
+        let players = setup_local_grpc_networking(identities.clone(), 2, 4).await?;
+
+        // Claim the data-plane session ids first, so the control channel has to
+        // pick ids that don't collide with them.
+        {
+            let tasks = players
+                .iter()
+                .map(|player| {
+                    let mut player = player.clone();
+                    tokio::spawn(async move { player.make_network_sessions().await })
+                })
+                .collect::<Vec<_>>();
+            for task in tasks {
+                task.await??;
+            }
+        }
+
+        let tasks = players
+            .iter()
+            .enumerate()
+            .map(|(party_index, player)| {
+                let mut player = player.clone();
+                tokio::spawn(async move {
+                    let mut cc = player.control_channel().await?;
+                    cc.sync().await?;
+
+                    cc.send_next(NetworkValue::Bytes(vec![party_index as u8]))
+                        .await?;
+                    let received = cc.recv_prev().await?;
+
+                    let expected = ((party_index + num_parties - 1) % num_parties) as u8;
+                    match received {
+                        NetworkValue::Bytes(b) => assert_eq!(b, vec![expected]),
+                        other => panic!("party {party_index}: unexpected variant {other:?}"),
+                    }
+                    Ok::<(), eyre::Report>(())
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for task in tasks {
+            task.await??;
+        }
 
         Ok(())
     }

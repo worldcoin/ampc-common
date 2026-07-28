@@ -31,14 +31,16 @@ pub trait NetworkHandle: Send + Sync {
     async fn make_sessions(&mut self) -> Result<(Vec<Session>, CancellationToken)>;
     /// Establish a dedicated control-plane channel to each ring neighbour.
     ///
-    /// Unlike sessions returned by `make_sessions`, sends on the returned
-    /// `ControlChannel` block until the data is flushed to the wire. Use this
-    /// for coordination and phase-transition signalling, not data-plane throughput.
+    /// Unlike sessions returned by `make_sessions`, the returned `ControlChannel`
+    /// has no background dispatch: a send goes straight to the wire. Use this for
+    /// coordination and phase-transition signalling, not data-plane throughput.
     ///
-    /// Opens new TCP/TLS connections on every call. Returns an error if connections
-    /// cannot be established. If a connection drops during use, operations on the
-    /// channel return an error immediately — there is no retry; call this method
-    /// again to reconnect.
+    /// Opens transport dedicated to the control plane on every call (new TCP/TLS
+    /// connections, or a dedicated gRPC stream), and returns an error if that
+    /// fails. All parties must call this the same number of times and in the same
+    /// order — the call only completes once the peers have made the matching call.
+    /// If the transport drops during use, operations on the channel return an
+    /// error immediately — there is no retry; call this method again to reconnect.
     async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>>;
 }
 

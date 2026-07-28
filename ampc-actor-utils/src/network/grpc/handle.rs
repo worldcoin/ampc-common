@@ -14,7 +14,7 @@ use rand::{thread_rng, Rng};
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -26,6 +26,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tonic::{async_trait, Request, Response, Status, Streaming};
 
+use super::control_channel::GrpcControlChannel;
 use super::messages::{SendRequests, SendResponse};
 use super::networking::GrpcNetworking;
 use super::session::GrpcSession;
@@ -65,6 +66,9 @@ pub struct GrpcHandle {
     /// Guards the one-shot `NetworkHandle::make_network_sessions`. Shared across
     /// clones so a cloned handle cannot re-create the same session ids.
     sessions_created: Arc<AtomicBool>,
+    /// Number of control channels opened so far, used to pick the next control
+    /// session id. Shared across clones so each one gets a distinct id.
+    control_channels_created: Arc<AtomicU32>,
 }
 
 impl GrpcHandle {
@@ -123,6 +127,7 @@ impl GrpcHandle {
             job_queue: tx,
             config,
             sessions_created: Arc::new(AtomicBool::new(false)),
+            control_channels_created: Arc::new(AtomicU32::new(0)),
         })
     }
 
@@ -253,6 +258,22 @@ impl GrpcHandle {
         })
     }
 
+    /// Session id for the next control channel.
+    ///
+    /// The server pre-creates inbound queues for the whole session id range of
+    /// whichever stream a request arrives on, so a control channel must start a
+    /// stream of its own: the id is the first of the range belonging to the
+    /// stream after those the data plane reserves. Every party derives this from
+    /// the same config, so the nth `control_channel()` call on each party
+    /// rendezvous on the same id.
+    fn next_control_session_id(&self) -> SessionId {
+        let stream_parallelism = self.config.stream_parallelism() as u32;
+        let data_plane_streams =
+            (self.config.request_parallelism as u32).div_ceil(stream_parallelism);
+        let nth = self.control_channels_created.fetch_add(1, Ordering::SeqCst);
+        SessionId::from((data_plane_streams + nth) * stream_parallelism)
+    }
+
     // This function should be called after all parties have called `create_session`
     pub async fn wait_for_session(&self, session_id: SessionId) -> Result<()> {
         while matches!(
@@ -272,10 +293,13 @@ impl GrpcHandle {
 
 /// gRPC session ids are structural: the server maps an incoming stream to the
 /// session id range `stream_id * stream_parallelism .. + stream_parallelism`, so
-/// the session ids a party may create are fixed at `0..request_parallelism`. That
-/// makes `make_network_sessions` one-shot — a second call would re-create ids that
+/// the data-plane session ids are fixed at `0..request_parallelism`. That makes
+/// `make_network_sessions` one-shot — a second call would re-create ids that
 /// already exist and block forever waiting on peers, so it returns an error
 /// instead. Reconnecting means building a new handle.
+///
+/// `control_channel` takes ids past that range (see `next_control_session_id`),
+/// one fresh stream per call, so it stays callable regardless of the data plane.
 ///
 /// Unlike the MPC handle there is no session error token: each handle is also its
 /// own gRPC server living in a detached task, so nothing is cancelled when the
@@ -353,6 +377,21 @@ impl NetworkHandle for GrpcHandle {
     }
 
     async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>> {
-        bail!("control_channel is not implemented for the gRPC network handle")
+        let identities = generate_local_identities();
+        let num_parties = identities.len();
+        let own_role = identities
+            .iter()
+            .position(|id| *id == self.party_id)
+            .map(Role::new)
+            .ok_or_else(|| eyre!("{:?} is not one of the local identities", self.party_id))?;
+
+        let next_id = identities[own_role.next(num_parties as u8).index()].clone();
+        let prev_id = identities[own_role.prev(num_parties as u8).index()].clone();
+
+        // `create_session` returns only once every peer has created the same id,
+        // so this is the control-plane rendezvous.
+        let session = self.create_session(self.next_control_session_id()).await?;
+
+        Ok(Box::new(GrpcControlChannel::new(session, next_id, prev_id)))
     }
 }

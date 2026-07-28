@@ -42,7 +42,25 @@ pub trait ControlChannel: Send {
     /// Sends are issued before receives to avoid deadlock: because TCP buffers
     /// small messages, all parties can complete their sends before blocking on
     /// receives.
-    async fn sync(&mut self) -> Result<()>;
+    async fn sync(&mut self) -> Result<()> {
+        let token = NetworkValue::Bytes(SYNC_TOKEN_BYTES.to_vec());
+        self.send_next(token.clone()).await?;
+        self.send_prev(token).await?;
+
+        let next_token = self.recv_next().await?;
+        match next_token {
+            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
+            _ => bail!("invalid sync token received from next party"),
+        }
+
+        let prev_token = self.recv_prev().await?;
+        match prev_token {
+            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
+            _ => bail!("invalid sync token received from prev party"),
+        }
+
+        Ok(())
+    }
 }
 
 /// [`ControlChannel`] implementation over a generic [`NetworkConnection`] stream.
@@ -147,25 +165,5 @@ impl<T: NetworkConnection> ControlChannel for TcpControlChannel<T> {
 
     async fn recv_prev(&mut self) -> Result<NetworkValue> {
         read_value(&mut self.prev_stream, &self.shutdown_ct).await
-    }
-
-    async fn sync(&mut self) -> Result<()> {
-        let token = NetworkValue::Bytes(SYNC_TOKEN_BYTES.to_vec());
-        self.send_next(token.clone()).await?;
-        self.send_prev(token).await?;
-
-        let next_token = self.recv_next().await?;
-        match next_token {
-            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
-            _ => bail!("invalid sync token received from next party"),
-        }
-
-        let prev_token = self.recv_prev().await?;
-        match prev_token {
-            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
-            _ => bail!("invalid sync token received from prev party"),
-        }
-
-        Ok(())
     }
 }
