@@ -127,6 +127,8 @@ async fn process_2d_inner(
         crate::types::DistanceFunction::FHD,
         AnonStatsResultSource::Aggregator,
         operation,
+        None,
+        None,
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
     anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
@@ -280,6 +282,8 @@ async fn process_2d_anon_stats_score_normalization_inner(
         crate::types::DistanceFunction::NHD,
         AnonStatsResultSource::Aggregator,
         operation,
+        None,
+        None,
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
     anon_stats.fill_buckets(&buckets, upper_threshold, start_timestamp);
@@ -378,6 +382,8 @@ pub async fn process_di_2d_anon_stats_job(
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
+    left_opposite_mirror_match: bool,
+    right_opposite_mirror_match: bool,
 ) -> Result<BucketStatistics2D> {
     let thresholds = &config.di_2d_bucket_thresholds;
     let n_buckets = thresholds.len();
@@ -429,6 +435,8 @@ pub async fn process_di_2d_anon_stats_job(
         crate::types::DistanceFunction::QuantizedCosine,
         AnonStatsResultSource::Aggregator,
         operation,
+        Some(left_opposite_mirror_match),
+        Some(right_opposite_mirror_match),
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
 
@@ -650,6 +658,8 @@ pub mod test_helper {
                 crate::types::DistanceFunction::FHD,
                 AnonStatsResultSource::Aggregator,
                 None,
+                None,
+                None,
             );
             anon_stats.fill_buckets(&expected, MATCH_THRESHOLD_RATIO, None);
             anon_stats
@@ -719,6 +729,8 @@ pub mod test_helper {
                 0,
                 crate::types::DistanceFunction::NHD,
                 AnonStatsResultSource::Aggregator,
+                None,
+                None,
                 None,
             );
             anon_stats.fill_buckets(&expected, MATCH_THRESHOLD_RATIO, None);
@@ -817,6 +829,8 @@ pub mod test_helper {
                 crate::types::DistanceFunction::QuantizedCosine,
                 AnonStatsResultSource::Aggregator,
                 operation,
+                None,
+                None,
             );
             anon_stats.fill_buckets_di(&cumulative, thresholds, None);
             anon_stats
@@ -1068,6 +1082,8 @@ mod tests {
                     &config,
                     operation,
                     None,
+                    false,
+                    false,
                 )
                 .await
                 .unwrap()

@@ -217,6 +217,10 @@ pub struct BucketStatistics2D {
     // Flag to indicate if these statistics are from mirror orientation processing
     #[serde(default)]
     pub is_mirror_orientation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_opposite_mirror_match: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub right_opposite_mirror_match: Option<bool>,
 }
 
 impl BucketStatistics2D {
@@ -257,6 +261,8 @@ impl BucketStatistics2D {
         distance_function: DistanceFunction,
         source: AnonStatsResultSource,
         operation: Option<AnonStatsOperation>,
+        left_opposite_mirror_match: Option<bool>,
+        right_opposite_mirror_match: Option<bool>,
     ) -> Self {
         Self {
             buckets: Vec::with_capacity(n_buckets_per_side * n_buckets_per_side),
@@ -270,6 +276,8 @@ impl BucketStatistics2D {
             end_time_utc_timestamp: None,
             next_start_time_utc_timestamp: None,
             is_mirror_orientation: false,
+            left_opposite_mirror_match,
+            right_opposite_mirror_match,
         }
     }
 
