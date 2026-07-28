@@ -546,6 +546,8 @@ mod tests {
             DistanceFunction::FHD,
             AnonStatsResultSource::Legacy,
             None,
+            None,
+            None,
         );
 
         let nn = n * n;

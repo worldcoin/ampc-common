@@ -382,8 +382,6 @@ pub async fn process_di_2d_anon_stats_job(
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
-    left_opposite_mirror_match: bool,
-    right_opposite_mirror_match: bool,
 ) -> Result<BucketStatistics2D> {
     let thresholds = &config.di_2d_bucket_thresholds;
     let n_buckets = thresholds.len();
@@ -435,8 +433,8 @@ pub async fn process_di_2d_anon_stats_job(
         crate::types::DistanceFunction::QuantizedCosine,
         AnonStatsResultSource::Aggregator,
         operation,
-        Some(left_opposite_mirror_match),
-        Some(right_opposite_mirror_match),
+        origin.left_opposite_mirror_match,
+        origin.right_opposite_mirror_match,
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
 
@@ -893,6 +891,8 @@ mod tests {
                 side: None,
                 orientation,
                 context: crate::AnonStatsContext::GPU,
+                left_opposite_mirror_match: None,
+                right_opposite_mirror_match: None,
             };
 
             tasks.push(tokio::task::spawn(async move {
@@ -976,6 +976,8 @@ mod tests {
                 side: None,
                 orientation,
                 context: crate::AnonStatsContext::GPU,
+                left_opposite_mirror_match: None,
+                right_opposite_mirror_match: None,
             };
 
             tasks.push(tokio::task::spawn(async move {
@@ -1063,6 +1065,8 @@ mod tests {
                 side: None,
                 orientation,
                 context: crate::AnonStatsContext::DI,
+                left_opposite_mirror_match: None,
+                right_opposite_mirror_match: None,
             };
 
             // process jobs async
@@ -1082,8 +1086,6 @@ mod tests {
                     &config,
                     operation,
                     None,
-                    false,
-                    false,
                 )
                 .await
                 .unwrap()
