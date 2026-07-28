@@ -504,7 +504,25 @@ pub async fn init_heartbeat_task(
                         }
                     }
                 } else if probe_response.uuid != last_response[i] {
-                    panic!("Node {} seems to have restarted, killing server...", host);
+                    // A peer's UUID changed → it restarted, so any MPC/session state we
+                    // share with it is stale and we must restart too. Trigger a graceful
+                    // shutdown (same as the branches below) rather than `panic!`: the
+                    // panic only unwinds this spawned heartbeat task and is swallowed by
+                    // the process's panic hook, leaving us alive and "ready" while holding
+                    // the peer's dead UUID — the peer-side half of the startup wedge (a
+                    // restarted peer then never gets re-verified and loops its startup
+                    // retry to the deadline). Shutting down cleanly makes us re-run startup
+                    // sync and re-verify the restarted peer.
+                    tracing::error!(
+                        "Node {} seems to have restarted (uuid {} → {}); triggering graceful \
+                         shutdown to re-sync",
+                        host,
+                        last_response[i],
+                        probe_response.uuid
+                    );
+                    if !heartbeat_shutdown_handler.is_shutting_down() {
+                        heartbeat_shutdown_handler.trigger_manual_shutdown();
+                    }
                 } else if probe_response.shutting_down {
                     tracing::info!("Node {} has started graceful shutdown", host);
 
