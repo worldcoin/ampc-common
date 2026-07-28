@@ -22,7 +22,6 @@ use crate::network::tcp::{
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
-use secrecy::ExposeSecret;
 use tokio_util::sync::CancellationToken;
 
 #[async_trait]
@@ -155,9 +154,7 @@ pub async fn build_network_handle(
                 let private_key_pem = tls
                     .private_key_pem
                     .as_ref()
-                    .ok_or(eyre::eyre!("Private key is required for TLS"))?
-                    .expose_secret()
-                    .to_string();
+                    .ok_or(eyre::eyre!("Private key is required for TLS"))?;
 
                 let listener = TlsServer::new(
                     my_addr,
@@ -170,7 +167,7 @@ pub async fn build_network_handle(
                 .await?;
                 let connector = TlsClient::new(TlsClientConfig::MutualPem {
                     root_certs_pem: root_certs,
-                    key_pem: private_key_pem,
+                    key_pem: private_key_pem.clone(),
                     cert_pem: leaf_cert.clone(),
                 })
                 .await?;

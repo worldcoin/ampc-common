@@ -4,6 +4,7 @@ use crate::network::tcp::{
 };
 use async_trait::async_trait;
 use eyre::Result;
+use secrecy::ExposeSecret;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::{
@@ -94,7 +95,7 @@ impl TlsClient {
                 let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| TlsError::CertificateError(e.to_string()))?;
-                let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
+                let key = PrivateKeyDer::from_pem_slice(key_pem.expose_secret().as_bytes())
                     .map_err(|e| TlsError::PrivateKeyError(e.to_string()))?;
                 ClientConfig::builder()
                     .with_root_certificates(roots)

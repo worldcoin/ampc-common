@@ -11,7 +11,6 @@ pub mod types;
 use crate::execution::player::Identity;
 use secrecy::SecretString;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Once};
 use thiserror::Error;
@@ -82,7 +81,7 @@ pub enum TlsClientConfig {
         /// the root certs for the server (PEM contents)
         root_certs_pem: Vec<String>,
         /// the client key (PEM content)
-        key_pem: String,
+        key_pem: SecretString,
         /// the client cert (PEM content)
         cert_pem: String,
     },
@@ -111,7 +110,7 @@ pub enum TlsServerConfig {
     /// representation)
     ServerOnlyPem {
         /// the server key (PEM content)
-        key_pem: String,
+        key_pem: SecretString,
         /// the server cert (PEM content)
         cert_pem: String,
     },
@@ -120,7 +119,7 @@ pub enum TlsServerConfig {
         /// the client certs (PEM contents)
         root_certs_pem: Vec<String>,
         /// the server key (PEM content)
-        key_pem: String,
+        key_pem: SecretString,
         /// the server cert (PEM content)
         cert_pem: String,
     },
@@ -139,10 +138,6 @@ pub enum TlsSource {
     #[default]
     File,
     Pem,
-}
-
-fn parse_secret_string(s: &str) -> Result<SecretString, Infallible> {
-    Ok(SecretString::from(s.to_string()))
 }
 
 /// TLS configuration for secure network communication. This gets passed
@@ -173,7 +168,7 @@ pub struct TlsConfig {
     /// is skipped by Serialize (e.g. accidentally re-serializing this
     /// config to JSON logs). Defaults to absent, like every other TLS field
     /// here. Requires `leaf_cert` and `root_certs`, mirroring `private_key`.
-    #[arg(required = false, value_parser = parse_secret_string, requires_all = ["leaf_cert", "root_certs"])]
+    #[arg(required = false, requires_all = ["leaf_cert", "root_certs"])]
     #[serde(default, skip_serializing)]
     pub private_key_pem: Option<SecretString>,
 
