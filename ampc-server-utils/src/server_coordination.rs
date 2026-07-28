@@ -279,6 +279,28 @@ where
 /// However, due to race conditions where a peer might restart and become ready (200 OK)
 /// before we check it, we also accept 200 OK *IF* the peer can prove it saw us during its startup.
 /// This is verified by checking if the peer's `verified_peers` list contains our UUID.
+///
+/// An unsafe round (a ready peer that has not verified us) is retried IN-PROCESS until
+/// `startup_sync_timeout_secs` elapses, instead of failing immediately. Exiting the
+/// process here is what created unrecoverable fleet wedges: the exit kills this node's
+/// health listener and mints a new UUID on the next boot, so peers polling us see
+/// connect-refused / an unknown UUID, and kubelet's uncoordinated crash backoff makes
+/// the three parties chase each other's dead incarnations indefinitely (observed on the
+/// DI anon-stats fleet, 2026-07-27). Retrying in-process keeps our UUID stable and our
+/// health endpoint serving, which is what peers need to re-verify us:
+/// - a peer still in its own startup records our UUID on its next `/health` poll;
+/// - a fully-ready peer that recorded our PREVIOUS incarnation's UUID self-heals via
+///   its heartbeat's UUID-mismatch check ("seems to have restarted" panic → restart →
+///   fresh startup sync that verifies us). Note the heartbeat polls `/health`, which
+///   always returns HTTP 200, so its consecutive-failure path does NOT fire for a
+///   merely-unready peer — the UUID mismatch is the healing mechanism.
+///
+/// Residual case: a ready peer that already holds our CURRENT UUID but not in its
+/// `verified_peers` will never re-verify us; we then wait out the deadline and exit —
+/// identical to the previous one-shot behavior (slow-fail, no regression).
+///
+/// Bound: `try_get_endpoint_other_nodes` applies its own `startup_sync_timeout_secs`
+/// budget per call, so total wall-clock here is ≈2× that value in the worst case.
 pub async fn wait_for_others_unready(
     config: &ServerCoordinationConfig,
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
@@ -286,53 +308,95 @@ pub async fn wait_for_others_unready(
 ) -> Result<()> {
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be un-ready (syncing on startup)");
 
-    // We use "/health" to check state and verified peers.
-    let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
+    let deadline = Instant::now() + Duration::from_secs(config.startup_sync_timeout_secs);
+    let retry_delay = Duration::from_millis(config.http_query_retry_delay_ms);
+    let mut attempt: u32 = 0;
 
-    let mut all_safe = true;
+    loop {
+        attempt += 1;
 
-    for (_status, body) in connected_health_resps {
-        let probe_response: ReadyProbeResponse =
-            serde_json::from_slice(&body).wrap_err("Failed to deserialize ReadyProbeResponse")?;
+        // We use "/health" to check state and verified peers.
+        let connected_health_resps = try_get_endpoint_other_nodes(config, "health").await?;
 
-        // 1. Add their UUID to our list (so we can prove to them we saw them later)
-        my_verified_peers
-            .lock()
-            .await
-            .insert(probe_response.uuid.clone());
+        let mut unverified_ready_peers = Vec::new();
 
-        // 2. Check status
-        if !probe_response.is_ready {
-            // They are unready (503 equivalent). Safe.
-        } else {
-            // They are ready (200 equivalent).
-            // Check if they verified us.
-            if probe_response.verified_peers.contains(my_uuid) {
-                // They verified us. Safe (Race condition handled).
-                tracing::info!(
-                    "Peer {} is already ready but verified us. Accepting as race condition.",
-                    probe_response.uuid
-                );
+        for (_status, body) in connected_health_resps {
+            let probe_response: ReadyProbeResponse = serde_json::from_slice(&body)
+                .wrap_err("Failed to deserialize ReadyProbeResponse")?;
+
+            // 1. Add their UUID to our list (so we can prove to them we saw them later)
+            my_verified_peers
+                .lock()
+                .await
+                .insert(probe_response.uuid.clone());
+
+            // 2. Check status
+            if !probe_response.is_ready {
+                // They are unready (503 equivalent). Safe.
             } else {
-                // They are ready but didn't verify us. BAD.
-                tracing::error!(
-                    "Node {} is ready but did not verify our UUID {}",
-                    probe_response.uuid,
-                    my_uuid
-                );
-                all_safe = false;
+                // They are ready (200 equivalent).
+                // Check if they verified us.
+                if probe_response.verified_peers.contains(my_uuid) {
+                    // They verified us. Safe (Race condition handled).
+                    tracing::info!(
+                        "Peer {} is already ready but verified us. Accepting as race condition.",
+                        probe_response.uuid
+                    );
+                } else {
+                    // They are ready but didn't verify us: not safe yet — retry below.
+                    unverified_ready_peers.push(probe_response.uuid);
+                }
             }
         }
+
+        if unverified_ready_peers.is_empty() {
+            tracing::info!("All nodes are starting up (or validly raced ahead).");
+            return Ok(());
+        }
+
+        let now = Instant::now();
+        ensure!(
+            now < deadline,
+            "One or more nodes were not unready (and did not verify us) within {}s: {:?}",
+            config.startup_sync_timeout_secs,
+            unverified_ready_peers
+        );
+
+        // Cap the sleep at the remaining budget so a retry delay larger than the
+        // budget cannot carry the loop past the deadline, and re-check the deadline
+        // after sleeping so no new request is issued once it has expired (each
+        // request has its own full `startup_sync_timeout_secs` budget inside
+        // `try_get_endpoint_other_nodes`).
+        let sleep_for = retry_delay.min(deadline.duration_since(now));
+
+        // Warn on the first round and every 10th after that; debug otherwise — a
+        // recoverable race at a short retry cadence must not flood the log pipeline.
+        if attempt == 1 || attempt.is_multiple_of(10) {
+            tracing::warn!(
+                "Nodes {:?} are ready but have not verified our UUID {} (attempt {}); \
+                 retrying in {:?} with a stable UUID so peers can re-verify us",
+                unverified_ready_peers,
+                my_uuid,
+                attempt,
+                sleep_for
+            );
+        } else {
+            tracing::debug!(
+                "Nodes {:?} still have not verified our UUID {} (attempt {})",
+                unverified_ready_peers,
+                my_uuid,
+                attempt
+            );
+        }
+        tokio::time::sleep(sleep_for).await;
+
+        ensure!(
+            Instant::now() < deadline,
+            "One or more nodes were not unready (and did not verify us) within {}s: {:?}",
+            config.startup_sync_timeout_secs,
+            unverified_ready_peers
+        );
     }
-
-    ensure!(
-        all_safe,
-        "One or more nodes were not unready (and did not verify us)."
-    );
-
-    tracing::info!("All nodes are starting up (or validly raced ahead).");
-
-    Ok(())
 }
 
 /// Starts a heartbeat task which periodically polls the "health" endpoints of
@@ -440,7 +504,25 @@ pub async fn init_heartbeat_task(
                         }
                     }
                 } else if probe_response.uuid != last_response[i] {
-                    panic!("Node {} seems to have restarted, killing server...", host);
+                    // A peer's UUID changed → it restarted, so any MPC/session state we
+                    // share with it is stale and we must restart too. Trigger a graceful
+                    // shutdown (same as the branches below) rather than `panic!`: the
+                    // panic only unwinds this spawned heartbeat task and is swallowed by
+                    // the process's panic hook, leaving us alive and "ready" while holding
+                    // the peer's dead UUID — the peer-side half of the startup wedge (a
+                    // restarted peer then never gets re-verified and loops its startup
+                    // retry to the deadline). Shutting down cleanly makes us re-run startup
+                    // sync and re-verify the restarted peer.
+                    tracing::error!(
+                        "Node {} seems to have restarted (uuid {} → {}); triggering graceful \
+                         shutdown to re-sync",
+                        host,
+                        last_response[i],
+                        probe_response.uuid
+                    );
+                    if !heartbeat_shutdown_handler.is_shutting_down() {
+                        heartbeat_shutdown_handler.trigger_manual_shutdown();
+                    }
                 } else if probe_response.shutting_down {
                     tracing::info!("Node {} has started graceful shutdown", host);
 
