@@ -149,9 +149,9 @@ fn parse_secret_string(s: &str) -> Result<SecretString, Infallible> {
 /// to build_network_handle() for the MPC networking stack.
 /// It is also used to deserialize inputs from a yaml file.
 #[derive(Debug, Clone, Serialize, Deserialize, clap::Args)]
-#[group(requires_all = ["private_key", "leaf_cert", "root_certs"])]
+#[group(requires_all = ["leaf_cert", "root_certs"])]
 pub struct TlsConfig {
-    /// Selects whether the key/cert material below is file paths (using
+    /// Selects whether the key/cert material is file paths (using
     /// `private_key`) or inline PEM contents (using `private_key_pem`
     /// instead). Defaults to `File` so existing configs and callers keep
     /// working unchanged.
@@ -160,8 +160,11 @@ pub struct TlsConfig {
     pub source: TlsSource,
 
     /// Path to the private key file. Used when `source` is `File` (the
-    /// default).
-    #[arg(required = false)]
+    /// default). Requires `leaf_cert` and `root_certs` rather than the whole
+    /// struct requiring `private_key` unconditionally, so `Pem` configs
+    /// (which use `private_key_pem` instead) aren't forced to also provide a
+    /// file path.
+    #[arg(required = false, requires_all = ["leaf_cert", "root_certs"])]
     #[serde(default)]
     pub private_key: Option<String>,
 
@@ -169,8 +172,8 @@ pub struct TlsConfig {
     /// Confidential: wrapped so it never gets printed via Debug/logged, and
     /// is skipped by Serialize (e.g. accidentally re-serializing this
     /// config to JSON logs). Defaults to absent, like every other TLS field
-    /// here.
-    #[arg(required = false, value_parser = parse_secret_string)]
+    /// here. Requires `leaf_cert` and `root_certs`, mirroring `private_key`.
+    #[arg(required = false, value_parser = parse_secret_string, requires_all = ["leaf_cert", "root_certs"])]
     #[serde(default, skip_serializing)]
     pub private_key_pem: Option<SecretString>,
 
