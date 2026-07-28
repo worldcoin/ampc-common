@@ -16,7 +16,9 @@ use crate::execution::session::{NetworkSession, Session};
 use crate::network::mpc::handle::control_channel::ControlChannel;
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
-use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
+use crate::network::tcp::{
+    self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig, TlsSource,
+};
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -114,36 +116,64 @@ pub async fn build_network_handle(
         let root_certs = tls.clone().root_certs;
 
         tracing::info!("Running in full app TLS mode.");
-        if tls.private_key.is_none() || tls.leaf_cert.is_none() {
-            return Err(eyre::eyre!(
-                "TLS configuration is required for this operation"
-            ));
-        }
-        let private_key = tls
-            .private_key
-            .as_ref()
-            .ok_or(eyre::eyre!("Private key is required for TLS"))?;
 
         let leaf_cert = tls
             .leaf_cert
             .as_ref()
             .ok_or(eyre::eyre!("Leaf certificate is required for TLS"))?;
 
-        let listener = TlsServer::new(
-            my_addr,
-            TlsServerConfig::Mutual {
-                root_certs: root_certs.clone(),
-                key_file: private_key.clone(),
-                cert_file: leaf_cert.clone(),
-            },
-        )
-        .await?;
-        let connector = TlsClient::new(TlsClientConfig::Mutual {
-            root_certs,
-            key_file: private_key.clone(),
-            cert_file: leaf_cert.clone(),
-        })
-        .await?;
+        // `source` selects whether the key material is a file path
+        // (`private_key`, the original, default behavior) or inline PEM
+        // content (`private_key_pem`, e.g. sourced from a secret manager /
+        // env var, which have no filesystem representation).
+        let (listener, connector) = match tls.source {
+            TlsSource::File => {
+                let private_key = tls
+                    .private_key
+                    .as_ref()
+                    .ok_or(eyre::eyre!("Private key is required for TLS"))?;
+
+                let listener = TlsServer::new(
+                    my_addr,
+                    TlsServerConfig::Mutual {
+                        root_certs: root_certs.clone(),
+                        key_file: private_key.clone(),
+                        cert_file: leaf_cert.clone(),
+                    },
+                )
+                .await?;
+                let connector = TlsClient::new(TlsClientConfig::Mutual {
+                    root_certs,
+                    key_file: private_key.clone(),
+                    cert_file: leaf_cert.clone(),
+                })
+                .await?;
+                (listener, connector)
+            }
+            TlsSource::Pem => {
+                let private_key_pem = tls
+                    .private_key_pem
+                    .as_ref()
+                    .ok_or(eyre::eyre!("Private key is required for TLS"))?;
+
+                let listener = TlsServer::new(
+                    my_addr,
+                    TlsServerConfig::MutualPem {
+                        root_certs_pem: root_certs.clone(),
+                        key_pem: private_key_pem.clone(),
+                        cert_pem: leaf_cert.clone(),
+                    },
+                )
+                .await?;
+                let connector = TlsClient::new(TlsClientConfig::MutualPem {
+                    root_certs_pem: root_certs,
+                    key_pem: private_key_pem.clone(),
+                    cert_pem: leaf_cert.clone(),
+                })
+                .await?;
+                (listener, connector)
+            }
+        };
         build_network_handle!(listener, connector)
     } else {
         tracing::info!(

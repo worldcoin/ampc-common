@@ -43,11 +43,23 @@ mod cert_utils {
         pub server_key_path: String,
         pub client_cert_path: String,
         pub client_key_path: String,
+        // PEM contents, mirroring the paths above — exercises the *Pem config
+        // variants (certs sourced from a secret manager / env var, which have
+        // no filesystem representation).
+        pub ca_cert_pem: String,
+        pub server_cert_pem: String,
+        pub server_key_pem: String,
+        pub client_cert_pem: String,
+        pub client_key_pem: String,
     }
 
     impl CertificateBundle {
         pub fn root_certs(&self) -> Vec<String> {
             vec![self.ca_cert_path.clone()]
+        }
+
+        pub fn root_certs_pem(&self) -> Vec<String> {
+            vec![self.ca_cert_pem.clone()]
         }
     }
 
@@ -248,6 +260,11 @@ mod cert_utils {
             server_key_path: server_key_path.to_str().unwrap().to_string(),
             client_cert_path: client_cert_path.to_str().unwrap().to_string(),
             client_key_path: client_key_path.to_str().unwrap().to_string(),
+            ca_cert_pem,
+            server_cert_pem,
+            server_key_pem,
+            client_cert_pem,
+            client_key_pem,
         })
     }
 
@@ -482,6 +499,98 @@ async fn test_server_only_connection_with_mutual_tls() -> Result<()> {
             root_certs: certs.root_certs(),
             key_file: certs.client_key_path.clone(),
             cert_file: certs.client_cert_path.clone(),
+        })
+        .await?,
+    );
+    let client_task = cert_utils::spawn_test_client(
+        ConnectionId::new(0),
+        client_id.clone(),
+        ConnectionConfig::Client {
+            peer: peer.clone(),
+            client: client.clone(),
+        },
+        shutdown_ct.clone(),
+        TEST_MESSAGE,
+        0,
+    )
+    .await;
+
+    // Wait for both tasks to complete
+    timeout(TEST_TIMEOUT, server_task)
+        .await
+        .expect("timeout")?
+        .expect("failed");
+    timeout(TEST_TIMEOUT, client_task)
+        .await
+        .expect("timeout")?
+        .expect("failed");
+
+    // Clean up
+    shutdown_ct.cancel();
+    timeout(Duration::from_secs(1), accept_task).await.ok();
+
+    Ok(())
+}
+
+/// Test ServerOnly connection with Mutual TLS, using inline PEM contents
+/// (MutualPem) instead of file paths — mirrors certs sourced from a secret
+/// manager / env var, which have no filesystem representation.
+#[serial]
+#[traced_test]
+#[tokio::test(flavor = "multi_thread")]
+async fn test_server_only_connection_with_mutual_tls_pem() -> Result<()> {
+    let setup = cert_utils::get_client_server_setup().await?;
+    let cert_utils::ClientServerTestSetup {
+        certs,
+        addr,
+        server_id,
+        client_id,
+        peer,
+    } = setup;
+
+    // Create TLS server with Mutual auth (requires and verifies client cert),
+    // from inline PEM contents.
+    let listener = TlsServer::new(
+        to_inaddr_any(addr),
+        TlsServerConfig::MutualPem {
+            root_certs_pem: certs.root_certs_pem(),
+            key_pem: certs.server_key_pem.clone(),
+            cert_pem: certs.server_cert_pem.clone(),
+        },
+    )
+    .await?;
+
+    let shutdown_ct = CancellationToken::new();
+
+    // Spawn accept loop task
+    let (conn_req_tx, conn_req_rx) = mpsc::unbounded_channel::<ConnectionRequest<TlsStreamConn>>();
+    let accept_task = {
+        let shutdown = shutdown_ct.clone();
+        tokio::spawn(async move {
+            accept_loop(listener, conn_req_rx, shutdown).await;
+        })
+    };
+
+    // Server-side echo handler
+    let server_task = cert_utils::spawn_echo_server(
+        ConnectionId::new(0),
+        server_id.clone(),
+        ConnectionConfig::Server {
+            peer_id: client_id.clone(),
+            conn_cmd_tx: conn_req_tx.clone(),
+        },
+        shutdown_ct.clone(),
+        TEST_MESSAGE.len(),
+    )
+    .await;
+
+    // Client connects using TlsClient with Mutual auth (presents client cert),
+    // from inline PEM contents.
+    let client = Arc::new(
+        TlsClient::new(TlsClientConfig::MutualPem {
+            root_certs_pem: certs.root_certs_pem(),
+            key_pem: certs.client_key_pem.clone(),
+            cert_pem: certs.client_cert_pem.clone(),
         })
         .await?,
     );
