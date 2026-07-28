@@ -576,8 +576,6 @@ mod tests {
                 side: Some(crate::types::Eye::Left),
                 orientation: crate::AnonStatsOrientation::Normal,
                 context: crate::AnonStatsContext::GPU,
-                left_opposite_mirror_match: None,
-                right_opposite_mirror_match: None,
             };
 
             tasks.push(tokio::task::spawn(async move {
@@ -665,8 +663,6 @@ mod tests {
                 side: Some(crate::types::Eye::Left),
                 orientation: crate::AnonStatsOrientation::Normal,
                 context: crate::AnonStatsContext::GPU,
-                left_opposite_mirror_match: None,
-                right_opposite_mirror_match: None,
             };
 
             tasks.push(tokio::task::spawn(async move {

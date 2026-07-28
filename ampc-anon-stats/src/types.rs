@@ -92,8 +92,6 @@ pub struct AnonStatsOrigin {
     pub side: Option<Eye>,
     pub orientation: AnonStatsOrientation,
     pub context: AnonStatsContext,
-    pub left_opposite_mirror_match: Option<bool>,
-    pub right_opposite_mirror_match: Option<bool>,
 }
 
 impl From<AnonStatsOrigin> for i16 {
@@ -107,20 +105,8 @@ impl From<AnonStatsOrigin> for i16 {
             AnonStatsOrientation::Normal => 0,
             AnonStatsOrientation::Mirror => 1,
         };
-        // Base encoding: 2 bits side + 1 bit orientation + 8 bits context.
-        let mut encoded = (side_val << 9) | (orientation_val << 8) | (origin.context as i16);
-        // Only encode the opposite-mirror-match fields when they are set. Leaving the
-        // bits at 0 when the field is `None` keeps the encoding backwards compatible:
-        // origins written before these fields existed produce the exact same i16 as
-        // before, so they still match rows stored in the DB under the old encoding.
-        if let Some(m) = origin.left_opposite_mirror_match {
-            // 0 => unset (never reached here), 1 => false, 2 => true
-            encoded |= (if m { 2 } else { 1 }) << 11;
-        }
-        if let Some(m) = origin.right_opposite_mirror_match {
-            encoded |= (if m { 2 } else { 1 }) << 13;
-        }
-        encoded
+        // 2 bits side + 1 bit orientation + 8 bits context
+        (side_val << 9) | (orientation_val << 8) | (origin.context as i16)
     }
 }
 
