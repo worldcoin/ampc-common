@@ -234,8 +234,16 @@ impl Display for BucketStatistics2D {
         writeln!(f, "    party_id: {}", self.party_id)?;
         writeln!(f, "    source: {:?}", self.source)?;
         writeln!(f, "    start_time_utc: {}", self.start_time_utc_timestamp)?;
-        writeln!(f, "    left_opposite_mirror_match: {:?}", self.left_opposite_mirror_match)?;
-        writeln!(f, "    right_opposite_mirror_match: {:?}", self.right_opposite_mirror_match)?;
+        writeln!(
+            f,
+            "    left_opposite_mirror_match: {:?}",
+            self.left_opposite_mirror_match
+        )?;
+        writeln!(
+            f,
+            "    right_opposite_mirror_match: {:?}",
+            self.right_opposite_mirror_match
+        )?;
         match &self.end_time_utc_timestamp {
             Some(end) => writeln!(f, "    end_time_utc: {}", end)?,
             None => writeln!(f, "    end_time_utc: <none>")?,
@@ -256,6 +264,7 @@ impl Display for BucketStatistics2D {
 }
 
 impl BucketStatistics2D {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         match_distances_buffer_size: usize,
         n_buckets_per_side: usize,

@@ -374,7 +374,7 @@ async fn compare_against_thresholds_di(
     }
     Ok(comparisons)
 }
-
+#[allow(clippy::too_many_arguments)]
 pub async fn process_di_2d_anon_stats_job(
     session: &mut Session,
     job: AnonStatsMapping<(Share<u16>, Share<u16>)>,
