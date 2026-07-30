@@ -76,7 +76,8 @@ pub struct ServerCoordinationConfig {
     #[serde(default = "default_startup_sync_timeout_secs")]
     pub startup_sync_timeout_secs: u64,
 
-    /// Kill switch for the mutual-visibility phase of `wait_for_startup_sync`.
+    /// Kill switch for the mutual-visibility phase of
+    /// [`crate::server_coordination::wait_for_startup_barriers`].
     /// When true, startup runs the unready barrier only (pre-POP-4162
     /// behavior). Deployable per binary via env override — an incident
     /// escape hatch that avoids an image rollback.
