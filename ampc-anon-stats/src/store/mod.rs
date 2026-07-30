@@ -211,9 +211,9 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
-        limit: usize,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
+        limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
         let sql = format!(
             "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1 
