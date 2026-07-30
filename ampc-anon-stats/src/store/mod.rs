@@ -102,24 +102,19 @@ impl AnonStatsStore {
     pub async fn num_available_anon_stats_2d_di(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
     ) -> Result<i64> {
-        let mut sql = format!(
-            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND left_opposite_mirror_match = $2 AND right_opposite_mirror_match = $3",
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
             ANON_STATS_2D_TABLE_DI
         );
-        if operation.is_some() {
-            sql.push_str(" AND operation = $2");
-        }
-        let mut query = sqlx::query_as::<_, (i64,)>(&sql)
+        let query = sqlx::query_as::<_, (i64,)>(&sql)
             .bind(i16::from(origin))
+            .bind(i16::from(operation))
             .bind(left_opposite_mirror_match)
             .bind(right_opposite_mirror_match);
-        if let Some(operation) = operation {
-            query = query.bind(i16::from(operation));
-        }
         let row = query.fetch_one(&self.pool).await?;
         Ok(row.0)
     }
