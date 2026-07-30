@@ -75,6 +75,13 @@ pub struct ServerCoordinationConfig {
     /// Startup sync timeout in seconds
     #[serde(default = "default_startup_sync_timeout_secs")]
     pub startup_sync_timeout_secs: u64,
+
+    /// Kill switch for the mutual-visibility phase of `wait_for_startup_sync`.
+    /// When true, startup runs the unready barrier only (pre-POP-4162
+    /// behavior). Deployable per binary via env override — an incident
+    /// escape hatch that avoids an image rollback.
+    #[serde(default)]
+    pub startup_visibility_barrier_disabled: bool,
 }
 
 fn default_node_hostnames() -> Vec<String> {

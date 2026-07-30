@@ -426,8 +426,25 @@ pub async fn wait_for_startup_sync(
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
     my_uuid: &str,
 ) -> Result<()> {
+    let started = Instant::now();
     wait_for_others_unready(config, my_verified_peers, my_uuid).await?;
-    wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await
+    let unready_elapsed = started.elapsed();
+
+    if config.startup_visibility_barrier_disabled {
+        tracing::warn!(
+            ?unready_elapsed,
+            "Startup visibility barrier DISABLED by config; proceeding after unready barrier only"
+        );
+        return Ok(());
+    }
+
+    wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await?;
+    tracing::info!(
+        ?unready_elapsed,
+        visibility_elapsed = ?(started.elapsed() - unready_elapsed),
+        "Startup sync complete (unready + full peer visibility)"
+    );
+    Ok(())
 }
 
 /// Starts a heartbeat task which periodically polls the "health" endpoints of
