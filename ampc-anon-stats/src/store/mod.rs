@@ -215,29 +215,24 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_2d_di<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
         limit: usize,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        let mut sql = format!(
-            "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1 AND left_opposite_mirror_match = $2 AND right_opposite_mirror_match = $3",
+        let sql = format!(
+            "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1 
+            AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4
+            ORDER BY id ASC LIMIT $5",
             ANON_STATS_2D_TABLE_DI
         );
-        if operation.is_some() {
-            sql.push_str(" AND operation = $2");
-        }
-        let limit_param = if operation.is_some() { "$3" } else { "$2" };
-        sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit_param));
 
-        let mut query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql)
+        let query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql)
             .bind(i16::from(origin))
+            .bind(i16::from(operation))
             .bind(left_opposite_mirror_match)
-            .bind(right_opposite_mirror_match);
-        if let Some(operation) = operation {
-            query = query.bind(i16::from(operation));
-        }
-        query = query.bind(limit as i64);
+            .bind(right_opposite_mirror_match)
+            .bind(limit as i64);
 
         let res: Vec<(i64, i64, Vec<u8>)> = query.fetch_all(&self.pool).await?;
 
