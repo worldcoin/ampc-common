@@ -399,6 +399,37 @@ pub async fn wait_for_others_unready(
     }
 }
 
+/// Combined startup barrier: the pairwise unready sync followed by the full
+/// mutual-visibility barrier. This is the intended startup entry point for
+/// every consumer binary.
+///
+/// The two phases close two distinct wedge classes:
+/// - [`wait_for_others_unready`] proves THIS node saw its peers and no peer
+///   raced ahead without verifying us (in-process retry keeps our UUID stable —
+///   the restart-wedge fix, #130);
+/// - [`wait_until_startup_visibility_is_complete`] proves EVERY peer has seen
+///   every current UUID before we proceed to heavy work (DB load, graph load),
+///   so no node progresses while a peer is still blocked polling its health
+///   endpoint (the initial-deploy fix, iris-mpc#2152).
+///
+/// Historically only the HNSW server ran the second phase (iris-mpc#2152 was
+/// never migrated to the other consumers); every other binary was opt-in and
+/// forgot. Calling this single function makes both barriers the default
+/// (POP-4162). The individual functions stay exported for callers with a
+/// genuinely different ordering.
+///
+/// Both phases share the same configuration: each applies its own
+/// `startup_sync_timeout_secs` budget, so worst-case wall-clock is the sum of
+/// the two phase budgets.
+pub async fn wait_for_startup_sync(
+    config: &ServerCoordinationConfig,
+    my_verified_peers: &Arc<Mutex<HashSet<String>>>,
+    my_uuid: &str,
+) -> Result<()> {
+    wait_for_others_unready(config, my_verified_peers, my_uuid).await?;
+    wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await
+}
+
 /// Starts a heartbeat task which periodically polls the "health" endpoints of
 /// all other MPC nodes to ensure that the other nodes are still running and
 /// responding to network requests.
