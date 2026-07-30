@@ -418,10 +418,16 @@ pub async fn wait_for_others_unready(
 /// (POP-4162). The individual functions stay exported for callers with a
 /// genuinely different ordering.
 ///
-/// Both phases share the same configuration: each applies its own
-/// `startup_sync_timeout_secs` budget, so worst-case wall-clock is the sum of
-/// the two phase budgets.
-pub async fn wait_for_startup_sync(
+/// Set `startup_visibility_barrier_disabled` to skip the second phase and get
+/// the pre-POP-4162 behavior (unready barrier only) — an incident escape hatch
+/// that does not need an image rollback.
+///
+/// Worst-case wall-clock is ≈4× `startup_sync_timeout_secs`, not 2×: each phase
+/// checks its deadline only *after* `try_get_endpoint_other_nodes` returns, and
+/// that call carries its own full `startup_sync_timeout_secs` budget, so a poll
+/// launched just under a phase deadline can add another full budget — ≈2T per
+/// phase. Size Kubernetes `startupProbe` budgets against 4T.
+pub async fn wait_for_startup_barriers(
     config: &ServerCoordinationConfig,
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
     my_uuid: &str,
@@ -808,9 +814,11 @@ pub async fn try_get_endpoint_other_nodes(
 /// Waits until every node has observed every other node during startup.
 ///
 /// `wait_for_others_unready` proves that this node saw its peers, but not that
-/// all peers have also observed each other. HNSW startup does heavy loading
-/// immediately after the startup checks, so hold here until cluster visibility
-/// is complete.
+/// all peers have also observed each other. Consumers move straight from the
+/// startup checks into heavy work (DB load, graph load, session setup), so hold
+/// here until cluster visibility is complete. Prefer calling
+/// [`wait_for_startup_barriers`], which runs this after the unready barrier;
+/// call this directly only if your startup needs a different ordering.
 pub async fn wait_until_startup_visibility_is_complete(
     config: &ServerCoordinationConfig,
     verified_peers: &Arc<Mutex<HashSet<String>>>,
@@ -937,6 +945,17 @@ mod tests {
             missing_startup_visibility(&expected, "node-1", &verified),
             vec!["node-2".to_string()]
         );
+    }
+
+    /// The kill switch must default to "barrier enabled" — a config that omits
+    /// the field, or a future serde refactor, must never silently skip the
+    /// visibility phase.
+    #[test]
+    fn visibility_barrier_is_enabled_by_default() {
+        let config: ServerCoordinationConfig = serde_json::from_str(r#"{"party_id": 0}"#)
+            .expect("minimal coordination config deserializes");
+
+        assert!(!config.startup_visibility_barrier_disabled);
     }
 
     #[test]
