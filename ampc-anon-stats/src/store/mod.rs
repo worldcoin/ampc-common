@@ -103,10 +103,27 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: Option<AnonStatsOperation>,
+        left_opposite_mirror_match: bool,
+        right_opposite_mirror_match: bool,
     ) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
-            .await
+        let mut sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND left_opposite_mirror_match = $2 AND right_opposite_mirror_match = $3",
+            ANON_STATS_2D_TABLE_DI
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        let mut query = sqlx::query_as::<_, (i64,)>(&sql)
+            .bind(i16::from(origin))
+            .bind(left_opposite_mirror_match)
+            .bind(right_opposite_mirror_match);
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        let row = query.fetch_one(&self.pool).await?;
+        Ok(row.0)
     }
+
     /// Get number of available lifted anon stats entries from the DB for the given origin.
     pub async fn num_available_anon_stats_2d_lifted(
         &self,
@@ -358,9 +375,24 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: Option<AnonStatsOperation>,
+        left_opposite_mirror_match: bool,
+        right_opposite_mirror_match: bool,
     ) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
-            .await
+        let mut sql = format!(
+            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND left_opposite_mirror_match = $2 AND right_opposite_mirror_match = $3",
+            ANON_STATS_2D_TABLE_DI
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        let mut query = sqlx::query(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        query = query.bind(left_opposite_mirror_match);
+        query = query.bind(right_opposite_mirror_match);
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn clear_unprocessed_anon_stats_2d_lifted(
