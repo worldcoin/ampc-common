@@ -352,23 +352,18 @@ impl AnonStatsStore {
     pub async fn clear_unprocessed_anon_stats_2d_di(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
     ) -> Result<u64> {
-        let mut sql = format!(
-            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND left_opposite_mirror_match = $2 AND right_opposite_mirror_match = $3",
+        let sql = format!(
+            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
             ANON_STATS_2D_TABLE_DI
         );
-        if operation.is_some() {
-            sql.push_str(" AND operation = $2");
-        }
-        let mut query = sqlx::query(&sql).bind(i16::from(origin));
-        if let Some(operation) = operation {
-            query = query.bind(i16::from(operation));
-        }
-        query = query.bind(left_opposite_mirror_match);
-        query = query.bind(right_opposite_mirror_match);
+        let query = sqlx::query(&sql).bind(i16::from(origin))
+            .bind(i16::from(operation))
+            .bind(left_opposite_mirror_match)
+            .bind(right_opposite_mirror_match);
         let result = query.execute(&self.pool).await?;
         Ok(result.rows_affected())
     }
