@@ -160,6 +160,50 @@ impl AnonStatsStore {
         Ok((ids, distance_bundles))
     }
 
+    async fn get_available_anon_stats_with_counterparty_matches<T: for<'a> Deserialize<'a>>(
+        &self,
+        table_name: &'static str,
+        origin: AnonStatsOrigin,
+        operation: Option<AnonStatsOperation>,
+        limit: usize,
+    ) -> Result<(Vec<i64>, Vec<(i64, bool, bool, T)>)> {
+        let mut sql = format!(
+            "SELECT id, match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle FROM {} WHERE processed = FALSE and origin = $1",
+            table_name
+        );
+        if operation.is_some() {
+            sql.push_str(" AND operation = $2");
+        }
+        let limit_param = if operation.is_some() { "$3" } else { "$2" };
+        sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit_param));
+
+        let mut query =
+            sqlx::query_as::<_, (i64, i64, bool, bool, Vec<u8>)>(&sql).bind(i16::from(origin));
+        if let Some(operation) = operation {
+            query = query.bind(i16::from(operation));
+        }
+        query = query.bind(limit as i64);
+
+        let res: Vec<(i64, i64, bool, bool, Vec<u8>)> = query.fetch_all(&self.pool).await?;
+
+        let (ids, distance_bundles) = res
+            .into_iter()
+            .map(|(id, match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle_bytes)| {
+                let bundle: T = bincode::deserialize(&bundle_bytes).map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to deserialize distance bundle from table {} for anon_stats id {}: {:?}",
+                        table_name,
+                        id,
+                        e
+                    )
+                })?;
+                Result::<_, eyre::Report>::Ok((id, (match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)))
+            })
+            .collect::<Result<(Vec<_>, Vec<_>), eyre::Report>>()?;
+
+        Ok((ids, distance_bundles))
+    }
+
     /// Get available anon stats entries from the DB for the given origin, up to the given limit.
     /// Returns a tuple of (ids, Vec<(match_id, T)>)
     pub async fn get_available_anon_stats_1d<T: for<'a> Deserialize<'a>>(
@@ -200,9 +244,14 @@ impl AnonStatsStore {
         origin: AnonStatsOrigin,
         operation: Option<AnonStatsOperation>,
         limit: usize,
-    ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
-        self.get_available_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation, limit)
-            .await
+    ) -> Result<(Vec<i64>, Vec<(i64, bool, bool, T)>)> {
+        self.get_available_anon_stats_with_counterparty_matches(
+            ANON_STATS_2D_TABLE_DI,
+            origin,
+            operation,
+            limit,
+        )
+        .await
     }
 
     /// Get available lifted anon stats entries from the DB for the given origin, up to the given limit.
@@ -379,6 +428,69 @@ impl AnonStatsStore {
         Ok(())
     }
 
+    async fn insert_anon_stats_batch_with_counterparty_matches<T: Serialize>(
+        &self,
+        table_name: &'static str,
+        anon_stats: &[(i64, bool, bool, T)],
+        origin: AnonStatsOrigin,
+        operation: AnonStatsOperation,
+    ) -> Result<()> {
+        tracing::info!(
+            "Inserting {} anon stats into table {}",
+            anon_stats.len(),
+            table_name
+        );
+
+        if anon_stats.is_empty() {
+            return Ok(());
+        }
+        let origin = i16::from(origin);
+        let operation = i16::from(operation);
+        let mut tx = self.pool.begin().await?;
+        for chunk in anon_stats.chunks(Self::ANON_STATS_INSERT_BATCH_SIZE) {
+            let mapped_chunk = chunk.iter().map(
+                |(id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)| {
+                    let bundle_bytes =
+                        bincode::serialize(bundle).expect("Failed to serialize DistanceBundle");
+                    (
+                        id,
+                        bundle_bytes,
+                        left_opposite_mirror_match,
+                        right_opposite_mirror_match,
+                    )
+                },
+            );
+            let mut query = sqlx::QueryBuilder::new(
+                [
+                    "INSERT INTO ",
+                    table_name,
+                    r#" (match_id, bundle, origin, operation, left_opposite_mirror_match, right_opposite_mirror_match)"#,
+                ]
+                .concat(),
+            );
+            query.push_values(mapped_chunk, |mut query, (id, bytes, left_opposite_mirror_match, right_opposite_mirror_match)| {
+                query.push_bind(id);
+                query.push_bind(bytes);
+                query.push_bind(origin);
+                query.push_bind(operation);
+                query.push_bind(left_opposite_mirror_match);
+                query.push_bind(right_opposite_mirror_match);
+            });
+
+            let res = query.build().execute(&mut *tx).await?;
+            if res.rows_affected() != chunk.len() as u64 {
+                bail!(
+                    "Expected to insert {} rows, but only inserted {} rows",
+                    chunk.len(),
+                    res.rows_affected()
+                );
+            }
+        }
+        tx.commit().await?;
+
+        Ok(())
+    }
+
     pub async fn insert_anon_stats_batch_1d<T: Serialize>(
         &self,
         anon_stats: &[(i64, T)],
@@ -406,15 +518,22 @@ impl AnonStatsStore {
         self.insert_anon_stats_batch(ANON_STATS_2D_TABLE, anon_stats, origin, operation)
             .await
     }
+
     /// Deep Identifier 2D table variant (dedicated table, not context-routed).
+    /// Takes a slice of tuples of (id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)
     pub async fn insert_anon_stats_batch_2d_di<T: Serialize>(
         &self,
-        anon_stats: &[(i64, T)],
+        anon_stats: &[(i64, bool, bool, T)],
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch(ANON_STATS_2D_TABLE_DI, anon_stats, origin, operation)
-            .await
+        self.insert_anon_stats_batch_with_counterparty_matches(
+            ANON_STATS_2D_TABLE_DI,
+            anon_stats,
+            origin,
+            operation,
+        )
+        .await
     }
     pub async fn insert_anon_stats_batch_2d_lifted<T: Serialize>(
         &self,
