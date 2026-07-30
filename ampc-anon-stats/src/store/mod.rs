@@ -360,7 +360,8 @@ impl AnonStatsStore {
             "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
             ANON_STATS_2D_TABLE_DI
         );
-        let query = sqlx::query(&sql).bind(i16::from(origin))
+        let query = sqlx::query(&sql)
+            .bind(i16::from(origin))
             .bind(i16::from(operation))
             .bind(left_opposite_mirror_match)
             .bind(right_opposite_mirror_match);
