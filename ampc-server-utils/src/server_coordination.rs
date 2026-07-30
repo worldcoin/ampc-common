@@ -399,6 +399,60 @@ pub async fn wait_for_others_unready(
     }
 }
 
+/// Combined startup barrier: the pairwise unready sync followed by the full
+/// mutual-visibility barrier. This is the intended startup entry point for
+/// every consumer binary.
+///
+/// The two phases close two distinct wedge classes:
+/// - [`wait_for_others_unready`] proves THIS node saw its peers and no peer
+///   raced ahead without verifying us (in-process retry keeps our UUID stable —
+///   the restart-wedge fix, #130);
+/// - [`wait_until_startup_visibility_is_complete`] proves EVERY peer has seen
+///   every current UUID before we proceed to heavy work (DB load, graph load),
+///   so no node progresses while a peer is still blocked polling its health
+///   endpoint (the initial-deploy fix, iris-mpc#2152).
+///
+/// Historically only the HNSW server ran the second phase (iris-mpc#2152 was
+/// never migrated to the other consumers); every other binary was opt-in and
+/// forgot. Calling this single function makes both barriers the default
+/// (POP-4162). The individual functions stay exported for callers with a
+/// genuinely different ordering.
+///
+/// Set `startup_visibility_barrier_disabled` to skip the second phase and get
+/// the pre-POP-4162 behavior (unready barrier only) — an incident escape hatch
+/// that does not need an image rollback.
+///
+/// Worst-case wall-clock is ≈4× `startup_sync_timeout_secs`, not 2×: each phase
+/// checks its deadline only *after* `try_get_endpoint_other_nodes` returns, and
+/// that call carries its own full `startup_sync_timeout_secs` budget, so a poll
+/// launched just under a phase deadline can add another full budget — ≈2T per
+/// phase. Size Kubernetes `startupProbe` budgets against 4T.
+pub async fn wait_for_startup_barriers(
+    config: &ServerCoordinationConfig,
+    my_verified_peers: &Arc<Mutex<HashSet<String>>>,
+    my_uuid: &str,
+) -> Result<()> {
+    let started = Instant::now();
+    wait_for_others_unready(config, my_verified_peers, my_uuid).await?;
+    let unready_elapsed = started.elapsed();
+
+    if config.startup_visibility_barrier_disabled {
+        tracing::warn!(
+            ?unready_elapsed,
+            "Startup visibility barrier DISABLED by config; proceeding after unready barrier only"
+        );
+        return Ok(());
+    }
+
+    wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await?;
+    tracing::info!(
+        ?unready_elapsed,
+        visibility_elapsed = ?(started.elapsed() - unready_elapsed),
+        "Startup sync complete (unready + full peer visibility)"
+    );
+    Ok(())
+}
+
 /// Starts a heartbeat task which periodically polls the "health" endpoints of
 /// all other MPC nodes to ensure that the other nodes are still running and
 /// responding to network requests.
@@ -760,9 +814,11 @@ pub async fn try_get_endpoint_other_nodes(
 /// Waits until every node has observed every other node during startup.
 ///
 /// `wait_for_others_unready` proves that this node saw its peers, but not that
-/// all peers have also observed each other. HNSW startup does heavy loading
-/// immediately after the startup checks, so hold here until cluster visibility
-/// is complete.
+/// all peers have also observed each other. Consumers move straight from the
+/// startup checks into heavy work (DB load, graph load, session setup), so hold
+/// here until cluster visibility is complete. Prefer calling
+/// [`wait_for_startup_barriers`], which runs this after the unready barrier;
+/// call this directly only if your startup needs a different ordering.
 pub async fn wait_until_startup_visibility_is_complete(
     config: &ServerCoordinationConfig,
     verified_peers: &Arc<Mutex<HashSet<String>>>,
@@ -889,6 +945,17 @@ mod tests {
             missing_startup_visibility(&expected, "node-1", &verified),
             vec!["node-2".to_string()]
         );
+    }
+
+    /// The kill switch must default to "barrier enabled" — a config that omits
+    /// the field, or a future serde refactor, must never silently skip the
+    /// visibility phase.
+    #[test]
+    fn visibility_barrier_is_enabled_by_default() {
+        let config: ServerCoordinationConfig = serde_json::from_str(r#"{"party_id": 0}"#)
+            .expect("minimal coordination config deserializes");
+
+        assert!(!config.startup_visibility_barrier_disabled);
     }
 
     #[test]
