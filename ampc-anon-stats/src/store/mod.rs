@@ -102,11 +102,23 @@ impl AnonStatsStore {
     pub async fn num_available_anon_stats_2d_di(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
+        left_opposite_mirror_match: bool,
+        right_opposite_mirror_match: bool,
     ) -> Result<i64> {
-        self.num_available_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
-            .await
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
+            ANON_STATS_2D_TABLE_DI
+        );
+        let query = sqlx::query_as::<_, (i64,)>(&sql)
+            .bind(i16::from(origin))
+            .bind(i16::from(operation))
+            .bind(left_opposite_mirror_match)
+            .bind(right_opposite_mirror_match);
+        let row = query.fetch_one(&self.pool).await?;
+        Ok(row.0)
     }
+
     /// Get number of available lifted anon stats entries from the DB for the given origin.
     pub async fn num_available_anon_stats_2d_lifted(
         &self,
@@ -160,50 +172,6 @@ impl AnonStatsStore {
         Ok((ids, distance_bundles))
     }
 
-    async fn get_available_anon_stats_with_counterparty_matches<T: for<'a> Deserialize<'a>>(
-        &self,
-        table_name: &'static str,
-        origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
-        limit: usize,
-    ) -> Result<(Vec<i64>, Vec<(i64, bool, bool, T)>)> {
-        let mut sql = format!(
-            "SELECT id, match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle FROM {} WHERE processed = FALSE and origin = $1",
-            table_name
-        );
-        if operation.is_some() {
-            sql.push_str(" AND operation = $2");
-        }
-        let limit_param = if operation.is_some() { "$3" } else { "$2" };
-        sql.push_str(&format!(" ORDER BY id ASC LIMIT {}", limit_param));
-
-        let mut query =
-            sqlx::query_as::<_, (i64, i64, bool, bool, Vec<u8>)>(&sql).bind(i16::from(origin));
-        if let Some(operation) = operation {
-            query = query.bind(i16::from(operation));
-        }
-        query = query.bind(limit as i64);
-
-        let res: Vec<(i64, i64, bool, bool, Vec<u8>)> = query.fetch_all(&self.pool).await?;
-
-        let (ids, distance_bundles) = res
-            .into_iter()
-            .map(|(id, match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle_bytes)| {
-                let bundle: T = bincode::deserialize(&bundle_bytes).map_err(|e| {
-                    eyre::eyre!(
-                        "Failed to deserialize distance bundle from table {} for anon_stats id {}: {:?}",
-                        table_name,
-                        id,
-                        e
-                    )
-                })?;
-                Result::<_, eyre::Report>::Ok((id, (match_id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)))
-            })
-            .collect::<Result<(Vec<_>, Vec<_>), eyre::Report>>()?;
-
-        Ok((ids, distance_bundles))
-    }
-
     /// Get available anon stats entries from the DB for the given origin, up to the given limit.
     /// Returns a tuple of (ids, Vec<(match_id, T)>)
     pub async fn get_available_anon_stats_1d<T: for<'a> Deserialize<'a>>(
@@ -242,16 +210,43 @@ impl AnonStatsStore {
     pub async fn get_available_anon_stats_2d_di<T: for<'a> Deserialize<'a>>(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
+        left_opposite_mirror_match: bool,
+        right_opposite_mirror_match: bool,
         limit: usize,
-    ) -> Result<(Vec<i64>, Vec<(i64, bool, bool, T)>)> {
-        self.get_available_anon_stats_with_counterparty_matches(
-            ANON_STATS_2D_TABLE_DI,
-            origin,
-            operation,
-            limit,
-        )
-        .await
+    ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
+        let sql = format!(
+            "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1 
+            AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4
+            ORDER BY id ASC LIMIT $5",
+            ANON_STATS_2D_TABLE_DI
+        );
+
+        let query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql)
+            .bind(i16::from(origin))
+            .bind(i16::from(operation))
+            .bind(left_opposite_mirror_match)
+            .bind(right_opposite_mirror_match)
+            .bind(limit as i64);
+
+        let res: Vec<(i64, i64, Vec<u8>)> = query.fetch_all(&self.pool).await?;
+
+        let (ids, distance_bundles) = res
+            .into_iter()
+            .map(|(id, match_id, bundle_bytes)| {
+                let bundle: T = bincode::deserialize(&bundle_bytes).map_err(|e| {
+                    eyre::eyre!(
+                        "Failed to deserialize distance bundle from table {} for anon_stats id {}: {:?}",
+                        ANON_STATS_2D_TABLE_DI,
+                        id,
+                        e
+                    )
+                })?;
+                Result::<_, eyre::Report>::Ok((id, (match_id, bundle)))
+            })
+            .collect::<Result<(Vec<_>, Vec<_>), eyre::Report>>()?;
+
+        Ok((ids, distance_bundles))
     }
 
     /// Get available lifted anon stats entries from the DB for the given origin, up to the given limit.
@@ -357,10 +352,21 @@ impl AnonStatsStore {
     pub async fn clear_unprocessed_anon_stats_2d_di(
         &self,
         origin: AnonStatsOrigin,
-        operation: Option<AnonStatsOperation>,
+        operation: AnonStatsOperation,
+        left_opposite_mirror_match: bool,
+        right_opposite_mirror_match: bool,
     ) -> Result<u64> {
-        self.clear_unprocessed_anon_stats(ANON_STATS_2D_TABLE_DI, origin, operation)
-            .await
+        let sql = format!(
+            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
+            ANON_STATS_2D_TABLE_DI
+        );
+        let query = sqlx::query(&sql)
+            .bind(i16::from(origin))
+            .bind(i16::from(operation))
+            .bind(left_opposite_mirror_match)
+            .bind(right_opposite_mirror_match);
+        let result = query.execute(&self.pool).await?;
+        Ok(result.rows_affected())
     }
 
     pub async fn clear_unprocessed_anon_stats_2d_lifted(
