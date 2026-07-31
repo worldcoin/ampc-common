@@ -432,25 +432,87 @@ pub async fn wait_for_startup_barriers(
     my_verified_peers: &Arc<Mutex<HashSet<String>>>,
     my_uuid: &str,
 ) -> Result<()> {
+    let party_id = config.party_id.to_string();
+
     let started = Instant::now();
-    wait_for_others_unready(config, my_verified_peers, my_uuid).await?;
+    let unready = wait_for_others_unready(config, my_verified_peers, my_uuid).await;
     let unready_elapsed = started.elapsed();
+    record_barrier_phase(BARRIER_PHASE_UNREADY, &party_id, unready_elapsed, &unready);
+    unready?;
 
     if config.startup_visibility_barrier_disabled {
         tracing::warn!(
             ?unready_elapsed,
             "Startup visibility barrier DISABLED by config; proceeding after unready barrier only"
         );
+        metrics::counter!(
+            STARTUP_BARRIER_SKIPPED,
+            "phase" => BARRIER_PHASE_VISIBILITY,
+            "party_id" => party_id,
+        )
+        .increment(1);
         return Ok(());
     }
 
-    wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await?;
+    let visibility_started = Instant::now();
+    let visibility =
+        wait_until_startup_visibility_is_complete(config, my_verified_peers, my_uuid).await;
+    let visibility_elapsed = visibility_started.elapsed();
+    record_barrier_phase(
+        BARRIER_PHASE_VISIBILITY,
+        &party_id,
+        visibility_elapsed,
+        &visibility,
+    );
+    visibility?;
+
     tracing::info!(
         ?unready_elapsed,
-        visibility_elapsed = ?(started.elapsed() - unready_elapsed),
+        ?visibility_elapsed,
         "Startup sync complete (unready + full peer visibility)"
     );
     Ok(())
+}
+
+/// Metric names for the startup barriers. Kept as constants so the Datadog
+/// monitors that alert on them can be grepped back to this file.
+pub const STARTUP_BARRIER_DURATION: &str = "startup_barrier.duration_seconds";
+pub const STARTUP_BARRIER_OUTCOME: &str = "startup_barrier.outcome";
+pub const STARTUP_BARRIER_SKIPPED: &str = "startup_barrier.skipped";
+
+const BARRIER_PHASE_UNREADY: &str = "unready";
+const BARRIER_PHASE_VISIBILITY: &str = "visibility";
+
+/// Emit duration + outcome for one barrier phase.
+///
+/// Duration is recorded on failure as well as success: a phase that burns its
+/// whole budget and then exits is exactly the case worth seeing, and recording
+/// only successes would make the histogram silently survivorship-biased. The
+/// process dies right after a failure, so the emit has to happen here rather
+/// than at a call site.
+fn record_barrier_phase<T>(
+    phase: &'static str,
+    party_id: &str,
+    elapsed: Duration,
+    result: &Result<T>,
+) {
+    let outcome = if result.is_ok() { "ok" } else { "failed" };
+
+    metrics::histogram!(
+        STARTUP_BARRIER_DURATION,
+        "phase" => phase,
+        "party_id" => party_id.to_owned(),
+        "outcome" => outcome,
+    )
+    .record(elapsed.as_secs_f64());
+
+    metrics::counter!(
+        STARTUP_BARRIER_OUTCOME,
+        "phase" => phase,
+        "party_id" => party_id.to_owned(),
+        "outcome" => outcome,
+    )
+    .increment(1);
 }
 
 /// Starts a heartbeat task which periodically polls the "health" endpoints of

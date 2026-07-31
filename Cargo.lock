@@ -176,6 +176,7 @@ dependencies = [
  "futures",
  "hex",
  "itertools 0.13.0",
+ "metrics",
  "pprof",
  "reqwest",
  "serde",
