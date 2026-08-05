@@ -104,6 +104,10 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
 
+    #[serde(default = "default_min_2d_job_size_opposite_mirror_match")]
+    /// Minimum job size for 2D anon stats computation with opposite mirror match.
+    pub min_2d_job_size_opposite_mirror_match: usize,
+
     #[serde(default = "default_min_face_job_size")]
     /// Minimum job size for Face anon stats computation.
     /// If the available job size is smaller than this, the party will wait until enough data is available.
@@ -232,6 +236,10 @@ fn default_min_1d_job_size() -> usize {
 
 fn default_min_2d_job_size() -> usize {
     1000
+}
+
+fn default_min_2d_job_size_opposite_mirror_match() -> usize {
+    20
 }
 
 fn default_min_face_job_size() -> usize {
