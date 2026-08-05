@@ -344,6 +344,7 @@ impl AnonStatsServerConfig {
             shutdown_last_results_sync_timeout_secs:
                 default_shutdown_last_results_sync_timeout_secs(),
             tls: None,
+            min_2d_job_size_opposite_mirror_match: default_min_2d_job_size_opposite_mirror_match(),
         }
     }
 
