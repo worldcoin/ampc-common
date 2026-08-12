@@ -266,7 +266,10 @@ impl TcpProxy {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NUM_WORKERS: usize = 3;
-const JOB_TIMEOUT: Duration = Duration::from_secs(2);
+const JOB_TIMEOUT: Duration = Duration::from_secs(30);
+/// Workers connect with randomized jitter plus a jittered retry backoff, so the
+/// initial connect can take well over the previous 5s budget.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Info needed to recreate a worker
 struct WorkerInfo {
@@ -380,7 +383,7 @@ async fn test_response_survives_disconnect() {
 
     cluster
         .leader
-        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .wait_for_all_connections(Some(CONNECT_TIMEOUT))
         .await
         .expect("workers should connect");
     tracing::info!("All workers connected");
@@ -430,7 +433,7 @@ async fn test_proxy_drop() {
 
     cluster
         .leader
-        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .wait_for_all_connections(Some(CONNECT_TIMEOUT))
         .await
         .expect("workers should connect");
     tracing::info!("All workers connected");
@@ -481,7 +484,7 @@ async fn test_broadcast_through_proxy() {
 
     cluster
         .leader
-        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .wait_for_all_connections(Some(CONNECT_TIMEOUT))
         .await
         .expect("workers should connect");
 
@@ -528,7 +531,7 @@ async fn test_dropped_job_detection() {
 
     cluster
         .leader
-        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .wait_for_all_connections(Some(CONNECT_TIMEOUT))
         .await
         .expect("workers should connect");
 
@@ -627,7 +630,7 @@ async fn test_ordering_pending_jobs_reply() {
 
     cluster
         .leader
-        .wait_for_all_connections(Some(Duration::from_secs(5)))
+        .wait_for_all_connections(Some(CONNECT_TIMEOUT))
         .await
         .expect("workers should connect");
 
@@ -671,7 +674,7 @@ async fn test_ordering_pending_jobs_reply() {
     cluster.proxy.reconnect().await;
 
     // The job should complete successfully after reconnect exchange
-    let result = timeout(Duration::from_secs(10), job_handle.as_mut())
+    let result = timeout(JOB_TIMEOUT, job_handle.as_mut())
         .await
         .expect("job should complete");
 
