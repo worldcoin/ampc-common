@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use self::config::MpcConfig;
+pub use self::config::SessionConnectionPolicy;
 use self::network_handle::MpcNetworkHandle;
 use crate::execution::local::generate_local_identities;
 use crate::execution::player::{Role, RoleAssignment};
@@ -60,6 +61,14 @@ pub async fn build_network_handle(
     args: NetworkHandleArgs,
     shutdown_ct: CancellationToken,
 ) -> Result<Box<dyn NetworkHandle>> {
+    build_network_handle_with_policy(args, shutdown_ct, SessionConnectionPolicy::Striped).await
+}
+
+pub async fn build_network_handle_with_policy(
+    args: NetworkHandleArgs,
+    shutdown_ct: CancellationToken,
+    session_connection_policy: SessionConnectionPolicy,
+) -> Result<Box<dyn NetworkHandle>> {
     tcp::init_rustls_crypto_provider();
 
     let identities = generate_local_identities();
@@ -75,10 +84,11 @@ pub async fn build_network_handle(
     let my_address = &args.addresses[my_index];
     let my_addr = tcp::to_inaddr_any(my_address.parse::<SocketAddr>()?);
 
-    let tcp_config = MpcConfig::new(
+    let tcp_config = MpcConfig::new_with_policy(
         Duration::from_secs(10),
         args.connection_parallelism,
         args.request_parallelism * args.sessions_per_request,
+        session_connection_policy,
     );
 
     let peers = izip!(identities, &args.outbound_addresses)

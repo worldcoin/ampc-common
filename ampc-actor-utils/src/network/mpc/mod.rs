@@ -7,7 +7,10 @@ pub mod local;
 mod value;
 
 // Re-export commonly used types for convenience
-pub use handle::{build_network_handle, NetworkHandle, NetworkHandleArgs};
+pub use handle::{
+    build_network_handle, build_network_handle_with_policy, NetworkHandle, NetworkHandleArgs,
+    SessionConnectionPolicy,
+};
 pub use local::LocalNetworkingStore;
 pub use value::{NetworkInt, NetworkValue, StateChecksum};
 

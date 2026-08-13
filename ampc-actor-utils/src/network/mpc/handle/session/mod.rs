@@ -427,10 +427,15 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
         let mut rx = Vec::with_capacity(peer_ids.len());
 
         for peer_id in &peer_ids {
-            // Rotate the starting connection per session for small messages;
-            // large messages use this entire vector concurrently.
             let first_connection = idx as u32 % num_connections;
-            let outbound_tx = (0..num_connections)
+            let connection_count = match config.session_connection_policy {
+                super::config::SessionConnectionPolicy::Striped => num_connections,
+                super::config::SessionConnectionPolicy::Affine => 1,
+            };
+            // Striped sessions rotate their first connection but retain every
+            // flow. Affine sessions retain only their round-robin assignment,
+            // activating TcpSession's direct, unfragmented transport path.
+            let outbound_tx = (0..connection_count)
                 .map(|offset| ConnectionId::from((first_connection + offset) % num_connections))
                 .map(|connection_id| {
                     sc.outbound_tx
@@ -517,6 +522,22 @@ mod tests {
         let fragments = drain_fragments(&mut outbound);
         assert_eq!(fragments.len(), 4);
         assert!(outbound.iter().all(UnboundedReceiver::is_empty));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn one_connection_uses_direct_unframed_transport() -> Result<()> {
+        let (mut session, peer, mut outbound, inbound) = test_session(1);
+        let value = NetworkValue::VecRing16(vec![RingElement(42); 1_000_000]);
+
+        session.send(value.clone(), &peer).await?;
+        let (session_id, sent) = outbound[0].recv().await.unwrap();
+        assert_eq!(session_id, SessionId::from(7));
+        assert_eq!(sent, value);
+        assert!(Fragment::decode(sent).is_err());
+
+        inbound.send(value.clone())?;
+        assert_eq!(session.receive(&peer).await?, value);
         Ok(())
     }
 
