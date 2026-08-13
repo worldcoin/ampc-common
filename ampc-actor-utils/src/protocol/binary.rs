@@ -224,6 +224,42 @@ where
     Ok(complete_shares)
 }
 
+/// Evaluate several independent packed AND groups in one communication
+/// round, then restore their original group boundaries.
+async fn and_many_grouped<T>(
+    session: &mut Session,
+    groups: Vec<(SliceShare<'_, T>, SliceShare<'_, T>)>,
+) -> Result<Vec<VecShare<T>>, Error>
+where
+    T: NetworkInt + RingRandFillable,
+    Standard: Distribution<T>,
+{
+    let mut sizes = Vec::with_capacity(groups.len());
+    let mut total = 0;
+    for (left, right) in &groups {
+        if left.len() != right.len() {
+            bail!("InvalidSize in and_many_grouped");
+        }
+        sizes.push(left.len());
+        total += left.len();
+    }
+
+    let left = groups.iter().flat_map(|(left, _)| left.iter().copied());
+    let right = groups.iter().flat_map(|(_, right)| right.iter().copied());
+    let local = and_many_iter_send(session, left, right, total).await?;
+    let remote = and_many_receive(session).await?;
+    if local.len() != total || remote.len() != total {
+        bail!("InvalidSize returned by grouped AND");
+    }
+
+    let mut local = local.into_iter();
+    let mut remote = remote.into_iter();
+    Ok(sizes
+        .into_iter()
+        .map(|size| VecShare::from_iter_ab(local.by_ref().take(size), remote.by_ref().take(size)))
+        .collect())
+}
+
 /// Reduce the given vector of bit-vector shares by computing their element-wise AND.
 ///
 /// Each vector in `v` is expected to have `len` bits.
@@ -388,6 +424,245 @@ where
     res2.truncate(truncate_len);
 
     Ok((res1, res2))
+}
+
+/// Return the MSB of the sum of three binary-shared integers.
+///
+/// This follows the threshold-ring circuit used by the GPU implementation:
+/// first reduce three inputs to `2*c + s`, then ripple only the carry needed
+/// for the result MSB. It avoids the communicated two-way split used by the
+/// generic [`extract_msb`] path.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+async fn binary_add_3_get_top_two(
+    session: &mut Session,
+    x1: Vec<VecShare<u64>>,
+    x2: Vec<VecShare<u64>>,
+    x3: Vec<VecShare<u64>>,
+) -> Result<(VecShare<u64>, VecShare<u64>), Error> {
+    let len = x1.len();
+    if len != x2.len() || len != x3.len() {
+        bail!(
+            "Inputs have different length {} {} {}",
+            len,
+            x2.len(),
+            x3.len()
+        );
+    }
+    if len < 3 {
+        bail!("Input length must be at least three bits");
+    }
+
+    // x1 + x2 + x3 = 2*c + s.
+    let mut x2x3 = x2;
+    transposed_pack_xor_assign(&mut x2x3, &x3);
+    let mut s = transposed_pack_xor(&x1, &x2x3);
+    let mut x1x3 = x1;
+    transposed_pack_xor_assign(&mut x1x3, &x3);
+
+    // The top bit of c is shifted out of the ring and is irrelevant.
+    x1x3.pop();
+    x2x3.pop();
+    let mut x3_without_msb = x3;
+    x3_without_msb.pop();
+    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
+    transposed_pack_xor_assign(&mut c, &x3_without_msb);
+
+    // Add 2*c and s, retaining only the carry into the result MSB.
+    let mut carry = and_many(session, s[1].as_slice(), c[0].as_slice()).await?;
+    let mut next_to_msb = None;
+    for (round, (s_bit, c_bit)) in s
+        .iter_mut()
+        .skip(2)
+        .take(len - 3)
+        .zip(c.iter_mut().skip(1).take(len - 3))
+        .enumerate()
+    {
+        if round == len - 4 {
+            let mut bit = s_bit.clone();
+            bit ^= c_bit.as_slice();
+            bit ^= carry.as_slice();
+            next_to_msb = Some(bit);
+        }
+        *s_bit ^= carry.as_slice();
+        *c_bit ^= carry.as_slice();
+        let next = and_many(session, s_bit.as_slice(), c_bit.as_slice()).await?;
+        carry ^= next;
+    }
+
+    let mut result = s.pop().ok_or_else(|| eyre!("missing MSB"))?;
+    result ^= c[len - 2].as_slice();
+    result ^= carry;
+    Ok((
+        next_to_msb.ok_or_else(|| eyre!("missing next-to-MSB"))?,
+        result,
+    ))
+}
+
+async fn binary_add_3_get_msb(
+    session: &mut Session,
+    x1: Vec<VecShare<u64>>,
+    x2: Vec<VecShare<u64>>,
+    x3: Vec<VecShare<u64>>,
+) -> Result<VecShare<u64>, Error> {
+    let len = x1.len();
+    if len != x2.len() || len != x3.len() {
+        bail!(
+            "Inputs have different length {} {} {}",
+            len,
+            x2.len(),
+            x3.len()
+        );
+    }
+    if len == 2 {
+        // Preserve the tiny-input behavior of the original helper. Production
+        // callers use 18 or 32 bits.
+        let mut x2x3 = x2;
+        transposed_pack_xor_assign(&mut x2x3, &x3);
+        let mut s = transposed_pack_xor(&x1, &x2x3);
+        let mut x1x3 = x1;
+        transposed_pack_xor_assign(&mut x1x3, &x3);
+        x1x3.pop();
+        x2x3.pop();
+        let mut x3_without_msb = x3;
+        x3_without_msb.pop();
+        let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
+        transposed_pack_xor_assign(&mut c, &x3_without_msb);
+        let mut result = s.pop().ok_or_else(|| eyre!("missing MSB"))?;
+        result ^= c[0].as_slice();
+        return Ok(result);
+    }
+    Ok(binary_add_3_get_top_two(session, x1, x2, x3).await?.1)
+}
+
+/// Evaluate the two independent adders used by the fixed anonymous threshold
+/// in lockstep. This preserves the exact gates and traffic of the individual
+/// 16-bit mask-carry and 18-bit expression adders, but combines equal-depth
+/// AND layers into 17 communication rounds instead of running 35 rounds
+/// sequentially.
+async fn binary_add_anon_threshold_fused(
+    session: &mut Session,
+    mask_x1: Vec<VecShare<u64>>,
+    mask_x2: Vec<VecShare<u64>>,
+    mask_x3: Vec<VecShare<u64>>,
+    expression_x1: Vec<VecShare<u64>>,
+    expression_x2: Vec<VecShare<u64>>,
+    expression_x3: Vec<VecShare<u64>>,
+) -> Result<VecShare<u64>, Error> {
+    const MASK_BITS: usize = 16;
+    const EXPRESSION_BITS: usize = 18;
+    if mask_x1.len() != MASK_BITS
+        || mask_x2.len() != MASK_BITS
+        || mask_x3.len() != MASK_BITS
+        || expression_x1.len() != EXPRESSION_BITS
+        || expression_x2.len() != EXPRESSION_BITS
+        || expression_x3.len() != EXPRESSION_BITS
+    {
+        bail!("invalid bit width for fused anonymous-threshold adder");
+    }
+
+    // Reduce each three-input addition to 2*c+s. Their initial AND layers are
+    // independent, so send all 16+17 packed gates together.
+    let mut mask_x2x3 = mask_x2;
+    transposed_pack_xor_assign(&mut mask_x2x3, &mask_x3);
+    let mut mask_s = transposed_pack_xor(&mask_x1, &mask_x2x3);
+    let mut mask_x1x3 = mask_x1;
+    transposed_pack_xor_assign(&mut mask_x1x3, &mask_x3);
+
+    let mut expression_x2x3 = expression_x2;
+    transposed_pack_xor_assign(&mut expression_x2x3, &expression_x3);
+    let mut expression_s = transposed_pack_xor(&expression_x1, &expression_x2x3);
+    let mut expression_x1x3 = expression_x1;
+    transposed_pack_xor_assign(&mut expression_x1x3, &expression_x3);
+    expression_x1x3.pop();
+    expression_x2x3.pop();
+    let mut expression_x3_without_msb = expression_x3;
+    expression_x3_without_msb.pop();
+
+    let initial_groups = mask_x1x3
+        .iter()
+        .zip(&mask_x2x3)
+        .chain(expression_x1x3.iter().zip(&expression_x2x3))
+        .map(|(left, right)| (left.as_slice(), right.as_slice()))
+        .collect();
+    let mut carries = and_many_grouped(session, initial_groups).await?;
+    let mut expression_c = carries.split_off(MASK_BITS);
+    let mut mask_c = carries;
+    transposed_pack_xor_assign(&mut mask_c, &mask_x3);
+    transposed_pack_xor_assign(&mut expression_c, &expression_x3_without_msb);
+
+    let mask_c_msb = mask_c.pop().ok_or_else(|| eyre!("missing mask carry"))?;
+
+    // First ripple gate for each adder.
+    let mut first = and_many_grouped(
+        session,
+        vec![
+            (mask_s[1].as_slice(), mask_c[0].as_slice()),
+            (expression_s[1].as_slice(), expression_c[0].as_slice()),
+        ],
+    )
+    .await?;
+    let mut mask_carry = first.remove(0);
+    let mut expression_carry = first.remove(0);
+
+    // Fourteen carry layers are shared by both adders.
+    for offset in 0..14 {
+        let mask_s_bit = &mut mask_s[offset + 2];
+        let mask_c_bit = &mut mask_c[offset + 1];
+        *mask_s_bit ^= mask_carry.as_slice();
+        *mask_c_bit ^= mask_carry.as_slice();
+
+        let expression_s_bit = &mut expression_s[offset + 2];
+        let expression_c_bit = &mut expression_c[offset + 1];
+        *expression_s_bit ^= expression_carry.as_slice();
+        *expression_c_bit ^= expression_carry.as_slice();
+
+        let mut next = and_many_grouped(
+            session,
+            vec![
+                (mask_s_bit.as_slice(), mask_c_bit.as_slice()),
+                (expression_s_bit.as_slice(), expression_c_bit.as_slice()),
+            ],
+        )
+        .await?;
+        mask_carry ^= next.remove(0);
+        expression_carry ^= next.remove(0);
+    }
+
+    // The expression has one final ripple layer. In the same round, compute
+    // the mask's top overflow carry and the final correction AND, whose inputs
+    // are already available locally at this depth.
+    let mut mask_carry_16 = mask_c_msb.clone();
+    mask_carry_16 ^= mask_carry.as_slice();
+
+    let expression_s_16 = &mut expression_s[16];
+    let expression_c_15 = &mut expression_c[15];
+    let mut expression_bit_16 = expression_s_16.clone();
+    expression_bit_16 ^= expression_c_15.as_slice();
+    expression_bit_16 ^= expression_carry.as_slice();
+    *expression_s_16 ^= expression_carry.as_slice();
+    *expression_c_15 ^= expression_carry.as_slice();
+
+    let mut final_round = and_many_grouped(
+        session,
+        vec![
+            (expression_s_16.as_slice(), expression_c_15.as_slice()),
+            (mask_c_msb.as_slice(), mask_carry.as_slice()),
+            (expression_bit_16.as_slice(), mask_carry_16.as_slice()),
+        ],
+    )
+    .await?;
+    expression_carry ^= final_round.remove(0);
+    let mask_carry_17 = final_round.remove(0);
+    let carry_into_sign = final_round.remove(0);
+
+    let mut result = expression_s
+        .pop()
+        .ok_or_else(|| eyre!("missing expression sign bit"))?;
+    result ^= expression_c[16].as_slice();
+    result ^= expression_carry;
+    result ^= mask_carry_17.as_slice();
+    result ^= carry_into_sign.as_slice();
+    Ok(result)
 }
 
 /// Conducts a 3 party protocol to inject bits into shares of type T.
@@ -1259,6 +1534,134 @@ where
     }
 
     Ok(res)
+}
+
+fn split_packed_additive_components(
+    session: &Session,
+    packed: Vec<VecShare<u64>>,
+) -> Result<(Vec<VecShare<u64>>, Vec<VecShare<u64>>, Vec<VecShare<u64>>)> {
+    let packed_len = packed.len();
+    let mut x1 = Vec::with_capacity(packed_len);
+    let mut x2 = Vec::with_capacity(packed_len);
+    let mut x3 = Vec::with_capacity(packed_len);
+    for bit_slice in packed {
+        let words = bit_slice.len();
+        let mut x1_slice = VecShare::with_capacity(words);
+        let mut x2_slice = VecShare::with_capacity(words);
+        let mut x3_slice = VecShare::with_capacity(words);
+        for word in bit_slice {
+            let (a, b, c) = a2b_pre(session, word)?;
+            x1_slice.push(a);
+            x2_slice.push(b);
+            x3_slice.push(c);
+        }
+        x1.push(x1_slice);
+        x2.push(x2_slice);
+        x3.push(x3_slice);
+    }
+    Ok((x1, x2, x3))
+}
+
+/// Extract MSBs using the same local three-way split and adder circuit as the
+/// GPU threshold implementation.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn extract_msb_batch_three_way<T>(
+    session: &mut Session,
+    x: &[Share<T>],
+) -> Result<Vec<Share<Bit>>>
+where
+    T: NetworkInt + RingRandFillable,
+    VecShare<T>: Transpose64,
+    Standard: Distribution<T>,
+{
+    let result_len = x.len();
+    // Transpose the replicated input once, then split the packed additive
+    // components into three binary sharings.  Splitting scalar inputs first
+    // creates three N-element arrays (two thirds of which are zero) and runs
+    // the expensive transpose three times.  Transpose and a2b_pre commute, so
+    // doing the split on N/64 packed words is the same protocol with a small
+    // fraction of the memory traffic.  This is also the ordering used by the
+    // GPU threshold-ring implementation.
+    let packed = VecShare::new_vec(x.to_vec()).transpose_pack_u64();
+    let (x1, x2, x3) = split_packed_additive_components(session, packed)?;
+    let packed_msbs = binary_add_3_get_msb(session, x1, x2, x3).await?;
+    let mut result = Vec::with_capacity(result_len);
+    'outer: for packed_msb in packed_msbs {
+        let (a, b) = packed_msb.get_ab();
+        for bit in 0..64 {
+            result.push(Share::new(a.get_bit_as_bit(bit), b.get_bit_as_bit(bit)));
+            if result.len() == result_len {
+                break 'outer;
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Extract the sign of the anonymous-statistics FHD threshold expression
+/// directly from replicated 16-bit code and mask dot products.
+///
+/// For the fixed anonymous threshold `t = 0.375`, `A = 2^14` and `B = 2^16`:
+///
+/// `code * B - mask * A = (4 * code - mask) * 2^14`.
+///
+/// Its 32-bit sign is therefore bit 17 of the expression in the 18-bit ring.
+/// The mask is shared modulo 2^16, so the two overflow bits from adding its
+/// three additive components are carried directly into bits 16 and 17. This
+/// avoids lifting every mask to arithmetic u32 shares and avoids bit-injecting
+/// the lift corrections. The resulting bit is exactly the same one returned
+/// by `extract_msb_batch` after the generic lift/multiply/subtract path.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn extract_anon_stats_msb_batch(
+    session: &mut Session,
+    code_dots: &[Share<u16>],
+    mask_dots: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>> {
+    if code_dots.len() != mask_dots.len() {
+        bail!("code and mask batches must have equal lengths");
+    }
+    if code_dots.is_empty() {
+        return Ok(Vec::new());
+    }
+    const BITS: usize = 18;
+    const RING_MASK: u32 = (1_u32 << BITS) - 1;
+    let result_len = code_dots.len();
+
+    // Compute the quotient q in x0+x1+x2 = mask + q*2^16 while evaluating the
+    // 18-bit threshold expression. Equal-depth gates from the two independent
+    // adders are combined into the same communication rounds.
+    let packed_masks = VecShare::new_vec(mask_dots.to_vec()).transpose_pack_u64();
+    let (mask_x1, mask_x2, mask_x3) = split_packed_additive_components(session, packed_masks)?;
+
+    // Add the three local components of 4*code-mask modulo 2^18. Reducing
+    // each component independently is valid in the target power-of-two ring.
+    let raw_expression = code_dots
+        .iter()
+        .zip(mask_dots)
+        .map(|(code, mask)| {
+            let component = |code: RingElement<u16>, mask: RingElement<u16>| {
+                RingElement(((u32::from(code.0) << 2).wrapping_sub(u32::from(mask.0))) & RING_MASK)
+            };
+            Share::new(component(code.a, mask.a), component(code.b, mask.b))
+        })
+        .collect::<Vec<_>>();
+    let mut packed_expression = VecShare::new_vec(raw_expression).transpose_pack_u64();
+    packed_expression.truncate(BITS);
+    let (expression_x1, expression_x2, expression_x3) =
+        split_packed_additive_components(session, packed_expression)?;
+    let bit_17 = binary_add_anon_threshold_fused(
+        session,
+        mask_x1,
+        mask_x2,
+        mask_x3,
+        expression_x1,
+        expression_x2,
+        expression_x3,
+    )
+    .await?;
+    let mut result = bit_17.convert_to_bits();
+    result.truncate(result_len);
+    Ok(result.inner())
 }
 
 /// Opens a vector of binary additive replicated secret shares as described in the ABY3 framework.
