@@ -427,15 +427,10 @@ async fn make_sessions_inner<T: NetworkConnection + 'static>(
         let mut rx = Vec::with_capacity(peer_ids.len());
 
         for peer_id in &peer_ids {
+            // Rotate the starting connection per session for small messages;
+            // large messages use this entire vector concurrently.
             let first_connection = idx as u32 % num_connections;
-            let connection_count = match config.session_connection_policy {
-                super::config::SessionConnectionPolicy::Striped => num_connections,
-                super::config::SessionConnectionPolicy::Affine => 1,
-            };
-            // Striped sessions rotate their first connection but retain every
-            // flow. Affine sessions retain only their round-robin assignment,
-            // activating TcpSession's direct, unfragmented transport path.
-            let outbound_tx = (0..connection_count)
+            let outbound_tx = (0..num_connections)
                 .map(|offset| ConnectionId::from((first_connection + offset) % num_connections))
                 .map(|connection_id| {
                     sc.outbound_tx
