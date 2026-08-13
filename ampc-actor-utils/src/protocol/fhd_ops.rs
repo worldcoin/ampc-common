@@ -1,6 +1,6 @@
 use ampc_secret_sharing::{
     shares::{bit::Bit, DistanceShare, VecShare},
-    Share,
+    RingElement, Share,
 };
 use eyre::Result;
 use tracing::instrument;
@@ -9,12 +9,59 @@ use crate::{
     execution::session::Session,
     protocol::{
         binary::{
-            bit_inject, extract_anon_stats_msb_batch, extract_msb_batch,
-            extract_msb_batch_three_way, lift, mul_lift_2k_to_32, open_bin,
+            bit_inject, extract_anon_stats_msb_batch, extract_anon_stats_msb_batch_from_components,
+            extract_msb_batch, extract_msb_batch_three_way, lift, mul_lift_2k_to_32, open_bin,
         },
-        ops::{conditionally_select_distance, reshare_products, DistancePair, B},
+        ops::{
+            conditionally_select_distance, galois_ring_to_rep3_components, reshare_products,
+            DistancePair, B,
+        },
     },
 };
+
+pub type FhdDotSharePair = (Vec<Share<u16>>, Vec<Share<u16>>);
+
+/// Refreshed Rep3 dot products retained by the fused exact-scan threshold
+/// path. Scalar [`Share`] values are materialized only for public candidate
+/// indices after the dense anonymous-statistics comparison has completed.
+#[derive(Debug)]
+pub struct FusedFhdDotShares {
+    local: Vec<RingElement<u16>>,
+    previous: Vec<RingElement<u16>>,
+}
+
+impl FusedFhdDotShares {
+    /// Number of interleaved `(code, mask)` comparisons retained.
+    pub fn len(&self) -> usize {
+        self.local.len() / 2
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.local.is_empty()
+    }
+
+    /// Reconstruct selected scalar Rep3 code and mask shares. Indices address
+    /// comparisons, and output order (including duplicate indices) is
+    /// preserved.
+    pub fn select(&self, indices: &[usize]) -> Result<FhdDotSharePair> {
+        let mut codes = Vec::with_capacity(indices.len());
+        let mut masks = Vec::with_capacity(indices.len());
+        for &index in indices {
+            eyre::ensure!(
+                index < self.len(),
+                "dot-product index {index} is out of bounds for {} comparisons",
+                self.len()
+            );
+            let offset = index * 2;
+            codes.push(Share::new(self.local[offset], self.previous[offset]));
+            masks.push(Share::new(
+                self.local[offset + 1],
+                self.previous[offset + 1],
+            ));
+        }
+        Ok((codes, masks))
+    }
+}
 
 /// Computes the `A` term of the threshold comparison based on the formula `A = ((1. - 2. * t) * B)`.
 #[inline]
@@ -92,6 +139,28 @@ pub async fn fhd_greater_than_threshold_pre_lifted_masks(
         .map(|(code_dot, mask_dot)| mul_lift_2k_to_32::<16>(code_dot) - *mask_dot * a)
         .collect::<Vec<_>>();
     extract_msb_batch_three_way(session, &diffs).await
+}
+
+/// Refresh local interleaved Galois-ring dot contributions into Rep3 and run
+/// the fixed anonymous-statistics threshold without materializing the dense
+/// scalar Rep3 batch.
+///
+/// The refresh is exactly the one used by `galois_ring_to_rep3`: it consumes
+/// the same PRF values, sends one `VecRing16` to the next party, and receives
+/// the previous party's refreshed components. The returned holder can later
+/// materialize only the publicly selected candidate code and mask shares.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn fhd_greater_than_anon_stats_from_galois(
+    session: &mut Session,
+    interleaved_dots: Vec<RingElement<u16>>,
+) -> Result<(Vec<Share<Bit>>, FusedFhdDotShares)> {
+    eyre::ensure!(
+        interleaved_dots.len().is_multiple_of(2),
+        "anonymous-threshold input must contain interleaved code/mask pairs"
+    );
+    let (local, previous) = galois_ring_to_rep3_components(session, interleaved_dots).await?;
+    let bits = extract_anon_stats_msb_batch_from_components(session, &local, &previous).await?;
+    Ok((bits, FusedFhdDotShares { local, previous }))
 }
 
 /// Dense exact-scan comparison for the fixed anonymous-statistics threshold.
@@ -199,7 +268,10 @@ mod tests {
             local::{generate_local_identities, LocalRuntime},
             session::SessionHandles,
         },
-        protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing},
+        protocol::{
+            ops::{batch_signed_lift_vec, galois_ring_to_rep3, open_ring},
+            test_utils::create_array_sharing,
+        },
     };
 
     use super::*;
@@ -477,5 +549,78 @@ mod tests {
         assert_eq!(results[0], results[1]);
         assert_eq!(results[1], results[2]);
         assert_eq!(results[0].0, results[0].1);
+    }
+
+    #[tokio::test]
+    async fn fused_galois_anon_threshold_matches_dense_rep3_and_selects_candidates() {
+        const N: usize = 257;
+        let mut rng = AesRng::seed_from_u64(0xf053_d375_u64);
+        let mut values = vec![
+            125_u16,
+            500_u16, // exact 0.375 threshold
+            124,
+            500, // immediately above threshold
+            u16::MAX,
+            200, // negative signed code dot
+            10,
+            0, // zero mask
+        ];
+        values.extend((values.len()..2 * N).map(|_| rng.gen::<u16>()));
+        let additive_shares = create_array_sharing(&mut rng, &values);
+        let selected_indices = vec![0, 1, 63, 64, N - 1, 64];
+        let expected_selected_codes = selected_indices
+            .iter()
+            .map(|&index| values[index * 2])
+            .collect::<Vec<_>>();
+        let expected_selected_masks = selected_indices
+            .iter()
+            .map(|&index| values[index * 2 + 1])
+            .collect::<Vec<_>>();
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+        for (party, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let local_dots = additive_shares
+                .of_party(party)
+                .iter()
+                .map(|share| share.a)
+                .collect::<Vec<_>>();
+            let selected_indices = selected_indices.clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+
+                let dense = galois_ring_to_rep3(&mut session, local_dots.clone())
+                    .await
+                    .unwrap();
+                let dense_codes = dense.iter().step_by(2).copied().collect::<Vec<_>>();
+                let dense_masks = dense.iter().skip(1).step_by(2).copied().collect::<Vec<_>>();
+                let dense_bits =
+                    fhd_greater_than_anon_stats_threshold(&mut session, &dense_codes, &dense_masks)
+                        .await
+                        .unwrap();
+                let dense_open = open_bin(&mut session, &dense_bits).await.unwrap();
+
+                let (fused_bits, retained) =
+                    fhd_greater_than_anon_stats_from_galois(&mut session, local_dots)
+                        .await
+                        .unwrap();
+                assert_eq!(retained.len(), N);
+                assert!(!retained.is_empty());
+                let fused_open = open_bin(&mut session, &fused_bits).await.unwrap();
+
+                let (selected_codes, selected_masks) = retained.select(&selected_indices).unwrap();
+                let selected_codes = open_ring(&mut session, &selected_codes).await.unwrap();
+                let selected_masks = open_ring(&mut session, &selected_masks).await.unwrap();
+                (dense_open, fused_open, selected_codes, selected_masks)
+            });
+        }
+
+        let results = jobs.join_all().await;
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+        assert_eq!(results[0].0, results[0].1);
+        assert_eq!(results[0].2, expected_selected_codes);
+        assert_eq!(results[0].3, expected_selected_masks);
     }
 }
