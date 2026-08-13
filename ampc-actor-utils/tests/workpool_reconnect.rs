@@ -267,8 +267,6 @@ impl TcpProxy {
 
 const NUM_WORKERS: usize = 3;
 const JOB_TIMEOUT: Duration = Duration::from_secs(30);
-/// Workers connect with randomized jitter plus a jittered retry backoff, so the
-/// initial connect can take well over the previous 5s budget.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Info needed to recreate a worker
