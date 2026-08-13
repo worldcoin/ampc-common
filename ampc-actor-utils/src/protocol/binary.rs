@@ -444,71 +444,6 @@ where
 /// for the result MSB. It avoids the communicated two-way split used by the
 /// generic [`extract_msb`] path.
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-async fn binary_add_3_get_top_two(
-    session: &mut Session,
-    x1: Vec<VecShare<u64>>,
-    x2: Vec<VecShare<u64>>,
-    x3: Vec<VecShare<u64>>,
-) -> Result<(VecShare<u64>, VecShare<u64>), Error> {
-    let len = x1.len();
-    if len != x2.len() || len != x3.len() {
-        bail!(
-            "Inputs have different length {} {} {}",
-            len,
-            x2.len(),
-            x3.len()
-        );
-    }
-    if len < 3 {
-        bail!("Input length must be at least three bits");
-    }
-
-    // x1 + x2 + x3 = 2*c + s.
-    let mut x2x3 = x2;
-    transposed_pack_xor_assign(&mut x2x3, &x3);
-    let mut s = transposed_pack_xor(&x1, &x2x3);
-    let mut x1x3 = x1;
-    transposed_pack_xor_assign(&mut x1x3, &x3);
-
-    // The top bit of c is shifted out of the ring and is irrelevant.
-    x1x3.pop();
-    x2x3.pop();
-    let mut x3_without_msb = x3;
-    x3_without_msb.pop();
-    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
-    transposed_pack_xor_assign(&mut c, &x3_without_msb);
-
-    // Add 2*c and s, retaining only the carry into the result MSB.
-    let mut carry = and_many(session, s[1].as_slice(), c[0].as_slice()).await?;
-    let mut next_to_msb = None;
-    for (round, (s_bit, c_bit)) in s
-        .iter_mut()
-        .skip(2)
-        .take(len - 3)
-        .zip(c.iter_mut().skip(1).take(len - 3))
-        .enumerate()
-    {
-        if round == len - 4 {
-            let mut bit = s_bit.clone();
-            bit ^= c_bit.as_slice();
-            bit ^= carry.as_slice();
-            next_to_msb = Some(bit);
-        }
-        *s_bit ^= carry.as_slice();
-        *c_bit ^= carry.as_slice();
-        let next = and_many(session, s_bit.as_slice(), c_bit.as_slice()).await?;
-        carry ^= next;
-    }
-
-    let mut result = s.pop().ok_or_else(|| eyre!("missing MSB"))?;
-    result ^= c[len - 2].as_slice();
-    result ^= carry;
-    Ok((
-        next_to_msb.ok_or_else(|| eyre!("missing next-to-MSB"))?,
-        result,
-    ))
-}
-
 async fn binary_add_3_get_msb(
     session: &mut Session,
     x1: Vec<VecShare<u64>>,
@@ -542,7 +477,43 @@ async fn binary_add_3_get_msb(
         result ^= c[0].as_slice();
         return Ok(result);
     }
-    Ok(binary_add_3_get_top_two(session, x1, x2, x3).await?.1)
+    if len < 3 {
+        bail!("Input length must be at least two bits");
+    }
+
+    // x1 + x2 + x3 = 2*c + s.
+    let mut x2x3 = x2;
+    transposed_pack_xor_assign(&mut x2x3, &x3);
+    let mut s = transposed_pack_xor(&x1, &x2x3);
+    let mut x1x3 = x1;
+    transposed_pack_xor_assign(&mut x1x3, &x3);
+
+    // The top bit of c is shifted out of the ring and is irrelevant.
+    x1x3.pop();
+    x2x3.pop();
+    let mut x3_without_msb = x3;
+    x3_without_msb.pop();
+    let mut c = transposed_pack_and(session, x1x3, x2x3).await?;
+    transposed_pack_xor_assign(&mut c, &x3_without_msb);
+
+    // Add 2*c and s, retaining only the carry into the result MSB.
+    let mut carry = and_many(session, s[1].as_slice(), c[0].as_slice()).await?;
+    for (s_bit, c_bit) in s
+        .iter_mut()
+        .skip(2)
+        .take(len - 3)
+        .zip(c.iter_mut().skip(1).take(len - 3))
+    {
+        *s_bit ^= carry.as_slice();
+        *c_bit ^= carry.as_slice();
+        let next = and_many(session, s_bit.as_slice(), c_bit.as_slice()).await?;
+        carry ^= next;
+    }
+
+    let mut result = s.pop().ok_or_else(|| eyre!("missing MSB"))?;
+    result ^= c[len - 2].as_slice();
+    result ^= carry;
+    Ok(result)
 }
 
 /// Evaluate the two independent adders used by the fixed anonymous threshold
