@@ -20,6 +20,10 @@ ignore = [
     # no untrusted XML is parsed via the vulnerable Attributes/NsReader read paths.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml XML-parse DoS; unreachable via pprof flamegraph SVG generation, and unbumpable (pprof pins inferno ^0.11 -> quick-xml ^0.26; patched >= 0.41.0)" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader namespace-alloc DoS; unreachable via pprof flamegraph SVG generation, and unbumpable (pprof pins inferno ^0.11 -> quick-xml ^0.26; patched >= 0.41.0)" },
+    # lru 0.16.4 LruCache::pop() use-after-free/double-free (patched in 0.18.2). Pulled in transitively
+    # via aws-sdk-s3 -> key-manager, which pins lru 0.16.x, so we can't reach >= 0.18.2 from here.
+    # Only reachable with catch_unwind around a panicking key Drop impl, which we don't do.
+    { id = "RUSTSEC-2026-0253", reason = "lru pop() panic-safety UAF; transitive via aws-sdk-s3 (pins 0.16.x, patched >= 0.18.2) and only triggerable via catch_unwind + panicking key Drop" },
 ]
 
 [sources]
