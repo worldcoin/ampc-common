@@ -571,6 +571,246 @@ async fn binary_add_anon_threshold_fused(
     binary_add_anon_threshold_from_parts(session, mask, expression).await
 }
 
+/// Adder topology for the anonymous-threshold carry chains, switchable for
+/// rounds-versus-bandwidth experiments. Ripple: 17 communication rounds,
+/// minimal AND gates. Prefix: 7 rounds, ~1.7x the AND gates. Both produce
+/// bit-identical results.
+fn anon_threshold_use_prefix_adder() -> bool {
+    static USE_PREFIX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *USE_PREFIX.get_or_init(|| {
+        std::env::var("AMPC_ANON_THRESHOLD_ADDER")
+            .map(|value| value.eq_ignore_ascii_case("prefix"))
+            .unwrap_or(false)
+    })
+}
+
+/// One segment of a parallel-prefix carry reduction: the generate bit-plane
+/// and, unless the segment contains the least-significant position, the
+/// propagate bit-plane.
+struct CarrySegment {
+    generate: VecShare<u64>,
+    propagate: Option<VecShare<u64>>,
+}
+
+/// Compute the final carry of several independent `s + 2c` chains with
+/// lockstep parallel-prefix trees: every tree level's AND gates across all
+/// chains go into a single communication round.
+///
+/// Each chain is given as (g, p) leaf planes for positions `1..=m` where
+/// `g_i = s_i AND c_(i-1)` has already been evaluated and
+/// `p_i = s_i XOR c_(i-1)`; the returned plane is the carry out of position
+/// `m` (i.e. into position `m + 1`), identical to rippling
+/// `carry <- maj(s_i, c_(i-1), carry)` across the chain.
+async fn final_carries_prefix(
+    session: &mut Session,
+    chains: Vec<Vec<CarrySegment>>,
+) -> Result<Vec<VecShare<u64>>, Error> {
+    let mut chains = chains;
+    while chains.iter().any(|segments| segments.len() > 1) {
+        // Gather this level's AND gates from every chain: for each adjacent
+        // (left, right) pair one gate for the combined generate
+        // (right.p AND left.g) and, when the left segment still carries a
+        // propagate, one for the combined propagate (left.p AND right.p).
+        let mut groups = Vec::new();
+        for segments in &chains {
+            for pair in segments.chunks_exact(2) {
+                let right_propagate = pair[1]
+                    .propagate
+                    .as_ref()
+                    .ok_or_else(|| eyre!("right prefix segment must carry a propagate"))?;
+                groups.push((right_propagate.as_slice(), pair[0].generate.as_slice()));
+                if let Some(left_propagate) = &pair[0].propagate {
+                    groups.push((left_propagate.as_slice(), right_propagate.as_slice()));
+                }
+            }
+        }
+        let mut products = and_many_grouped(session, groups).await?.into_iter();
+
+        let mut next_chains = Vec::with_capacity(chains.len());
+        for segments in chains {
+            let mut merged = Vec::with_capacity(segments.len().div_ceil(2));
+            let mut segments = segments.into_iter();
+            while let Some(left) = segments.next() {
+                let Some(right) = segments.next() else {
+                    // Odd tail: carried to the next level unchanged.
+                    merged.push(left);
+                    break;
+                };
+                let mut generate = products
+                    .next()
+                    .ok_or_else(|| eyre!("missing prefix generate product"))?;
+                generate ^= right.generate.as_slice();
+                let propagate = if left.propagate.is_some() {
+                    Some(
+                        products
+                            .next()
+                            .ok_or_else(|| eyre!("missing prefix propagate product"))?,
+                    )
+                } else {
+                    None
+                };
+                merged.push(CarrySegment {
+                    generate,
+                    propagate,
+                });
+            }
+            next_chains.push(merged);
+        }
+        chains = next_chains;
+    }
+
+    chains
+        .into_iter()
+        .map(|mut segments| {
+            segments
+                .pop()
+                .map(|segment| segment.generate)
+                .ok_or_else(|| eyre!("empty prefix carry chain"))
+        })
+        .collect()
+}
+
+/// Parallel-prefix variant of [`binary_add_anon_threshold_from_parts`]:
+/// 7 communication rounds instead of 17, at ~1.7x the AND gates. The output
+/// plane is bit-identical to the ripple version.
+async fn binary_add_anon_threshold_from_parts_prefix(
+    session: &mut Session,
+    mask: ThreeWayAdderParts,
+    mut expression: ThreeWayAdderParts,
+) -> Result<VecShare<u64>, Error> {
+    const MASK_BITS: usize = 16;
+    const EXPRESSION_BITS: usize = 18;
+    if mask.s.len() != MASK_BITS
+        || mask.x1x3.len() != MASK_BITS
+        || mask.x2x3.len() != MASK_BITS
+        || mask.x3.len() != MASK_BITS
+        || expression.s.len() != EXPRESSION_BITS
+        || expression.x1x3.len() != EXPRESSION_BITS
+        || expression.x2x3.len() != EXPRESSION_BITS
+        || expression.x3.len() != EXPRESSION_BITS
+    {
+        bail!("invalid bit width for fused anonymous-threshold adder");
+    }
+
+    let mask_s = mask.s;
+    let expression_s = expression.s;
+
+    // Round 1: the majority gates of both three-way additions, exactly as in
+    // the ripple version.
+    expression.x1x3.pop();
+    expression.x2x3.pop();
+    let mut expression_x3_without_msb = expression.x3;
+    expression_x3_without_msb.pop();
+
+    let initial_groups = mask
+        .x1x3
+        .iter()
+        .zip(&mask.x2x3)
+        .chain(expression.x1x3.iter().zip(&expression.x2x3))
+        .map(|(left, right)| (left.as_slice(), right.as_slice()))
+        .collect();
+    let mut carries = and_many_grouped(session, initial_groups).await?;
+    let mut expression_c = carries.split_off(MASK_BITS);
+    let mut mask_c = carries;
+    transposed_pack_xor_assign(&mut mask_c, &mask.x3);
+    transposed_pack_xor_assign(&mut expression_c, &expression_x3_without_msb);
+    let mask_c_msb = mask_c.pop().ok_or_else(|| eyre!("missing mask carry"))?;
+
+    // Round 2: every chain's leaf generates g_i = s_i AND c_(i-1) for
+    // positions 1..=15 of both adders; the propagates are local XORs.
+    let leaf_groups = (1..MASK_BITS)
+        .map(|position| {
+            (
+                mask_s[position].as_slice(),
+                mask_c[position - 1].as_slice(),
+            )
+        })
+        .chain((1..MASK_BITS).map(|position| {
+            (
+                expression_s[position].as_slice(),
+                expression_c[position - 1].as_slice(),
+            )
+        }))
+        .collect();
+    let mut leaf_generates = and_many_grouped(session, leaf_groups).await?;
+    let expression_generates = leaf_generates.split_off(MASK_BITS - 1);
+    let mask_generates = leaf_generates;
+
+    let build_chain = |generates: Vec<VecShare<u64>>,
+                       s: &[VecShare<u64>],
+                       c: &[VecShare<u64>]|
+     -> Vec<CarrySegment> {
+        generates
+            .into_iter()
+            .enumerate()
+            .map(|(index, generate)| {
+                let position = index + 1;
+                let propagate = if position == 1 {
+                    // The least-significant segment's propagate can never
+                    // matter: there is no carry into it.
+                    None
+                } else {
+                    let mut propagate = s[position].clone();
+                    propagate ^= c[position - 1].as_slice();
+                    Some(propagate)
+                };
+                CarrySegment {
+                    generate,
+                    propagate,
+                }
+            })
+            .collect()
+    };
+    let mask_chain = build_chain(mask_generates, &mask_s, &mask_c);
+    let expression_chain = build_chain(expression_generates, &expression_s, &expression_c);
+
+    // Rounds 3-6: the lockstep prefix trees (15 leaves -> depth 4).
+    let mut final_carries =
+        final_carries_prefix(session, vec![mask_chain, expression_chain]).await?;
+    let expression_carry = final_carries
+        .pop()
+        .ok_or_else(|| eyre!("missing expression carry"))?;
+    let mask_carry = final_carries
+        .pop()
+        .ok_or_else(|| eyre!("missing mask carry"))?;
+
+    // Round 7: the final layer, identical to the ripple version's last round.
+    let mut mask_carry_16 = mask_c_msb.clone();
+    mask_carry_16 ^= mask_carry.as_slice();
+
+    let mut expression_s_16 = expression_s[16].clone();
+    let mut expression_c_15 = expression_c[15].clone();
+    let mut expression_bit_16 = expression_s_16.clone();
+    expression_bit_16 ^= expression_c_15.as_slice();
+    expression_bit_16 ^= expression_carry.as_slice();
+    expression_s_16 ^= expression_carry.as_slice();
+    expression_c_15 ^= expression_carry.as_slice();
+
+    let mut final_round = and_many_grouped(
+        session,
+        vec![
+            (expression_s_16.as_slice(), expression_c_15.as_slice()),
+            (mask_c_msb.as_slice(), mask_carry.as_slice()),
+            (expression_bit_16.as_slice(), mask_carry_16.as_slice()),
+        ],
+    )
+    .await?;
+    let mut expression_carry = expression_carry;
+    expression_carry ^= final_round.remove(0);
+    let mask_carry_17 = final_round.remove(0);
+    let carry_into_sign = final_round.remove(0);
+
+    let mut expression_s = expression_s;
+    let mut result = expression_s
+        .pop()
+        .ok_or_else(|| eyre!("missing expression sign bit"))?;
+    result ^= expression_c[16].as_slice();
+    result ^= expression_carry;
+    result ^= mask_carry_17.as_slice();
+    result ^= carry_into_sign.as_slice();
+    Ok(result)
+}
+
 /// Finish the anonymous-threshold circuit from the XOR sum and majority-gate
 /// inputs of its two three-way additions.
 async fn binary_add_anon_threshold_from_parts(
@@ -578,6 +818,9 @@ async fn binary_add_anon_threshold_from_parts(
     mut mask: ThreeWayAdderParts,
     mut expression: ThreeWayAdderParts,
 ) -> Result<VecShare<u64>, Error> {
+    if anon_threshold_use_prefix_adder() {
+        return binary_add_anon_threshold_from_parts_prefix(session, mask, expression).await;
+    }
     const MASK_BITS: usize = 16;
     const EXPRESSION_BITS: usize = 18;
     if mask.s.len() != MASK_BITS
