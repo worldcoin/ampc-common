@@ -4,6 +4,7 @@ use crate::{
     protocol::prf::Prf,
 };
 use ampc_secret_sharing::shares::ring_impl::VecRingElement;
+use ampc_secret_sharing::shares::IntRing2k;
 use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
@@ -80,7 +81,14 @@ impl NetworkSession {
         let message = if data.len() == 1 {
             T::new_network_element(data.0[0])
         } else {
-            T::new_network_vec(data.0.clone())
+            // Serialize the borrowed payload straight into wire format
+            // instead of cloning it into an owned vector variant that would
+            // immediately be serialized again. Byte-identical on the wire.
+            let mut framed =
+                bytes::BytesMut::with_capacity(1 + 4 + data.len() * <T as IntRing2k>::BYTES);
+            framed.extend_from_slice(&[T::vec_descriptor_byte()]);
+            crate::network::mpc::value::serialize_vec_ring(&data.0, &mut framed);
+            NetworkValue::PreFramed(framed.freeze().into())
         };
         self.send(message, receiver).await
     }

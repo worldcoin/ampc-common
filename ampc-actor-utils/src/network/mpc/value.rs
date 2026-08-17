@@ -14,7 +14,7 @@ use std::mem::size_of;
 /// - On little-endian, the native byte order matches the wire format
 /// - We're only reading from the slice, not modifying it
 #[inline]
-fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
+pub(crate) fn serialize_vec_ring<T: IntRing2k>(v: &[RingElement<T>], res: &mut BytesMut) {
     let wire_bytes = T::BYTES;
     let byte_len = v.len() * wire_bytes;
     res.extend_from_slice(&(byte_len as u32).to_le_bytes());
@@ -78,6 +78,10 @@ pub enum NetworkValue {
     /// Packed bit vector: (packed_bytes, bit_count)
     /// Each byte contains 8 bits in LSB-first order
     VecRingBit(Vec<u8>, usize),
+    /// A message that is already in wire format (descriptor byte included).
+    /// Produced by senders that serialize borrowed data directly instead of
+    /// cloning it into an owned variant; never read off the wire as itself.
+    PreFramed(Vec<u8>),
 }
 
 #[repr(u8)]
@@ -165,11 +169,17 @@ impl NetworkValue {
             NetworkValue::PrfCheck(_) => DescriptorByte::PrfCheck,
             NetworkValue::Bytes(_) => DescriptorByte::Bytes,
             NetworkValue::VecRingBit(_, _) => DescriptorByte::VecRingBit,
+            NetworkValue::PreFramed(bytes) => {
+                return *bytes.first().expect("PreFramed message cannot be empty");
+            }
         };
         descriptor_byte.into()
     }
 
     pub fn byte_len(&self) -> usize {
+        if let NetworkValue::PreFramed(bytes) = self {
+            return bytes.len();
+        }
         let db =
             DescriptorByte::try_from(self.get_descriptor_byte()).expect("invalid descriptor byte");
         let base_len = db.base_len();
@@ -191,6 +201,7 @@ impl NetworkValue {
     pub fn serialize(&self, res: &mut BytesMut) {
         match &self {
             NetworkValue::NetworkVec(v) => Self::serialize_vec(v, res),
+            NetworkValue::PreFramed(bytes) => res.extend_from_slice(bytes),
             _ => {
                 self.serialize_internal(res);
             }
@@ -240,6 +251,12 @@ impl NetworkValue {
             }
             NetworkValue::VecRingBit(bytes, bit_count) => {
                 res.extend_from_slice(&(*bit_count as u32).to_le_bytes());
+                res.extend_from_slice(bytes);
+            }
+            NetworkValue::PreFramed(bytes) => {
+                // Already framed including the descriptor byte, which
+                // serialize_internal's caller has re-emitted; strip it here.
+                res.truncate(res.len() - 1);
                 res.extend_from_slice(bytes);
             }
             NetworkValue::NetworkVec(_v) => unreachable!(),
@@ -467,6 +484,15 @@ impl NetworkValue {
         res.freeze().into()
     }
 
+    /// Like [`Self::to_network`], but consumes the value so a pre-framed
+    /// message hands over its buffer without another copy.
+    pub fn into_network(self) -> Vec<u8> {
+        match self {
+            NetworkValue::PreFramed(bytes) => bytes,
+            other => other.to_network(),
+        }
+    }
+
     pub fn vec_to_network(v: Vec<Self>) -> Self {
         Self::NetworkVec(v)
     }
@@ -488,9 +514,21 @@ impl NetworkValue {
         let byte_len = bit_count.div_ceil(8);
         let mut packed = vec![0u8; byte_len];
 
-        for (i, bit) in bits.iter().enumerate() {
-            if bit.convert().convert() {
-                packed[i / 8] |= 1 << (i % 8);
+        // Byte-at-a-time packing (LSB-first, same layout as the scalar
+        // per-bit loop) without per-bit index arithmetic or bounds checks.
+        let mut chunks = bits.chunks_exact(8);
+        for (byte, chunk) in packed.iter_mut().zip(chunks.by_ref()) {
+            let mut value = 0u8;
+            for (index, bit) in chunk.iter().enumerate() {
+                value |= (bit.convert().convert() as u8) << index;
+            }
+            *byte = value;
+        }
+        let remainder = chunks.remainder();
+        if !remainder.is_empty() {
+            let last = packed.last_mut().expect("remainder implies a final byte");
+            for (index, bit) in remainder.iter().enumerate() {
+                *last |= (bit.convert().convert() as u8) << index;
             }
         }
 
@@ -501,16 +539,25 @@ impl NetworkValue {
     pub fn unpack_bits(self) -> Result<Vec<RingElement<Bit>>> {
         match self {
             NetworkValue::VecRingBit(packed, bit_count) => {
+                // Byte-driven unpacking (LSB-first) without per-bit index
+                // arithmetic; identical output to the scalar per-bit loop.
                 let mut bits = Vec::with_capacity(bit_count);
-                for i in 0..bit_count {
-                    let byte_idx = i / 8;
-                    let bit_idx = i % 8;
-                    let bit_val = (packed[byte_idx] >> bit_idx) & 1;
-                    bits.push(RingElement(Bit::new(bit_val == 1)));
+                for byte in packed {
+                    let take = (bit_count - bits.len()).min(8);
+                    for bit_index in 0..take {
+                        bits.push(RingElement(Bit::new((byte >> bit_index) & 1 == 1)));
+                    }
+                    if take < 8 {
+                        break;
+                    }
+                }
+                if bits.len() != bit_count {
+                    return Err(eyre!("VecRingBit is shorter than its bit count"));
                 }
                 Ok(bits)
             }
             NetworkValue::RingElementBit(bit) => Ok(vec![bit]),
+            NetworkValue::PreFramed(bytes) => Self::deserialize(&bytes)?.unpack_bits(),
             _ => Err(eyre!(
                 "expected VecRingBit or RingElementBit, got {}",
                 self.get_descriptor_byte()
@@ -605,6 +652,8 @@ where
     fn new_network_element(element: RingElement<Self>) -> NetworkValue;
     fn new_network_vec(elements: Vec<RingElement<Self>>) -> NetworkValue;
     fn into_vec(value: NetworkValue) -> Result<Vec<RingElement<Self>>>;
+    /// Wire descriptor byte of this type's vector variant.
+    fn vec_descriptor_byte() -> u8;
 }
 
 macro_rules! impl_network_int {
@@ -616,10 +665,16 @@ macro_rules! impl_network_int {
             fn new_network_vec(v: Vec<RingElement<$t>>) -> NetworkValue {
                 NetworkValue::$vec(v)
             }
+            fn vec_descriptor_byte() -> u8 {
+                DescriptorByte::$vec.into()
+            }
             fn into_vec(val: NetworkValue) -> Result<Vec<RingElement<$t>>> {
                 match val {
                     NetworkValue::$elem(e) => Ok(vec![e]),
                     NetworkValue::$vec(v) => Ok(v),
+                    NetworkValue::PreFramed(bytes) => {
+                        Self::into_vec(NetworkValue::deserialize(&bytes)?)
+                    }
                     _ => Err(eyre!(
                         "Invalid conversion to Vec<RingElement<{}>>",
                         stringify!($t)
