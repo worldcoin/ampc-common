@@ -4,7 +4,7 @@ use eyre::Result;
 
 pub mod handle;
 pub mod local;
-mod value;
+pub(crate) mod value;
 
 // Re-export commonly used types for convenience
 pub use handle::{build_network_handle, NetworkHandle, NetworkHandleArgs};
