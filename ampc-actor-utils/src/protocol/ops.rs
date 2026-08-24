@@ -18,6 +18,7 @@ use tracing::instrument;
 
 pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
 pub type IdDistance<T> = (Share<T>, DistanceShare<T>);
+pub(crate) type Rep3Components16 = (Vec<RingElement<u16>>, Vec<RingElement<u16>>);
 
 pub const B_BITS: u64 = 16;
 pub const B: u32 = 1 << B_BITS;
@@ -117,10 +118,10 @@ pub async fn setup_shared_seed(session: &mut NetworkSession, my_seed: PrfSeed) -
 /// Convert Galois Ring elements to replicated secret shares (Rep3)
 /// This takes a vector of ring elements and converts them to replicated shares
 #[instrument(level = "trace", target = "searcher::network", skip_all)]
-pub async fn galois_ring_to_rep3(
+pub(crate) async fn galois_ring_to_rep3_components(
     session: &mut Session,
     items: Vec<RingElement<u16>>,
-) -> Result<Vec<Share<u16>>> {
+) -> Result<Rep3Components16> {
     let network = &mut session.network_session;
     let (prf_my_values, prf_prev_values) = session.prf.gen_rands_batch(items.len());
 
@@ -148,12 +149,22 @@ pub async fn galois_ring_to_rep3(
             _ => Err(eyre!("Error in receiving in galois_ring_to_rep3 operation")),
         }
     }?;
-    let res: Vec<Share<u16>> = masked_items
+    Ok((masked_items, shares_b))
+}
+
+/// Convert Galois Ring elements to replicated secret shares (Rep3)
+/// This takes a vector of ring elements and converts them to replicated shares
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn galois_ring_to_rep3(
+    session: &mut Session,
+    items: Vec<RingElement<u16>>,
+) -> Result<Vec<Share<u16>>> {
+    let (shares_a, shares_b) = galois_ring_to_rep3_components(session, items).await?;
+    Ok(shares_a
         .into_iter()
         .zip(shares_b)
         .map(|(a, b)| Share::new(a, b))
-        .collect();
-    Ok(res)
+        .collect())
 }
 
 /// Compares the given distances to zero and reveal the bit "less than zero".

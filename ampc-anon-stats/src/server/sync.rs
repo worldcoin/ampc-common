@@ -52,7 +52,7 @@ async fn broadcast_usize(session: &mut Session, value: usize) -> eyre::Result<[u
 }
 
 async fn broadcast_u64(session: &mut Session, value: u64) -> eyre::Result<[u64; 3]> {
-    let network_value = NetworkValue::Bytes(value.to_le_bytes().to_vec());
+    let network_value = NetworkValue::Bytes(value.to_le_bytes().to_vec().into());
     let broadcasted_values = broadcast(session, network_value).await?;
 
     let mut result = [0u64; 3];

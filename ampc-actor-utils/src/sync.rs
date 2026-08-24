@@ -14,7 +14,7 @@ pub async fn sync_on_job_hash(
     hash: &[u8; JOB_HASH_LEN],
 ) -> eyre::Result<bool> {
     tracing::info!("Synchronizing on job hash: {}", hex::encode(hash));
-    let local = NetworkValue::Bytes(hash.to_vec());
+    let local = NetworkValue::Bytes(hash.to_vec().into());
 
     session.network_session.send_next(local.clone()).await?;
     session.network_session.send_prev(local.clone()).await?;
@@ -32,7 +32,7 @@ pub async fn sync_on_job_hash(
     let all_bytes: Vec<&[u8]> = all
         .iter()
         .map(|nv| match nv {
-            NetworkValue::Bytes(b) if b.len() == JOB_HASH_LEN => Ok(b.as_slice()),
+            NetworkValue::Bytes(b) if b.len() == JOB_HASH_LEN => Ok(&b[..]),
             _ => Err(eyre::eyre!(
                 "Unexpected network value in job hash sync (expected {JOB_HASH_LEN} bytes)"
             )),

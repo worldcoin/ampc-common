@@ -98,7 +98,7 @@ async fn test_control_channel_send_next_recv_prev() {
                 .await
                 .expect("control_channel() failed");
 
-            cc.send_next(NetworkValue::Bytes(vec![party_index as u8]))
+            cc.send_next(NetworkValue::Bytes(vec![party_index as u8].into()))
                 .await
                 .expect("send_next() failed");
 
@@ -106,8 +106,8 @@ async fn test_control_channel_send_next_recv_prev() {
             let expected = ((party_index + NUM_PARTIES - 1) % NUM_PARTIES) as u8;
             match received {
                 NetworkValue::Bytes(b) => assert_eq!(
-                    b,
-                    vec![expected],
+                    &b[..],
+                    &[expected],
                     "party {party_index}: recv_prev got wrong payload"
                 ),
                 other => panic!("party {party_index}: unexpected variant {other:?}"),
@@ -143,7 +143,7 @@ async fn test_control_channel_send_prev_recv_next() {
                 .await
                 .expect("control_channel() failed");
 
-            cc.send_prev(NetworkValue::Bytes(vec![party_index as u8]))
+            cc.send_prev(NetworkValue::Bytes(vec![party_index as u8].into()))
                 .await
                 .expect("send_prev() failed");
 
@@ -151,8 +151,8 @@ async fn test_control_channel_send_prev_recv_next() {
             let expected = ((party_index + 1) % NUM_PARTIES) as u8;
             match received {
                 NetworkValue::Bytes(b) => assert_eq!(
-                    b,
-                    vec![expected],
+                    &b[..],
+                    &[expected],
                     "party {party_index}: recv_next got wrong payload"
                 ),
                 other => panic!("party {party_index}: unexpected variant {other:?}"),
