@@ -247,7 +247,7 @@ impl Networking for TcpSession {
             return Ok(());
         }
 
-        let serialized = value.to_network();
+        let serialized = value.into_network();
         let stripe_count = peer
             .tx
             .len()
