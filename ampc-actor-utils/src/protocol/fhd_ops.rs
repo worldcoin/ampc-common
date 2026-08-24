@@ -1,6 +1,6 @@
 use ampc_secret_sharing::{
     shares::{bit::Bit, DistanceShare, VecShare},
-    Share,
+    RingElement, Share,
 };
 use eyre::Result;
 use tracing::instrument;
@@ -8,10 +8,60 @@ use tracing::instrument;
 use crate::{
     execution::session::Session,
     protocol::{
-        binary::{bit_inject, extract_msb_batch, open_bin},
-        ops::{conditionally_select_distance, reshare_products, DistancePair, B},
+        binary::{
+            bit_inject, extract_anon_stats_msb_batch, extract_anon_stats_msb_batch_from_components,
+            extract_msb_batch, lift, mul_lift_2k_to_32, open_bin,
+        },
+        ops::{
+            conditionally_select_distance, galois_ring_to_rep3_components, reshare_products,
+            DistancePair, B,
+        },
     },
 };
+
+pub type FhdDotSharePair = (Vec<Share<u16>>, Vec<Share<u16>>);
+
+/// Refreshed Rep3 dot products retained by the fused exact-scan threshold
+/// path. Scalar [`Share`] values are materialized only for public candidate
+/// indices after the dense anonymous-statistics comparison has completed.
+#[derive(Debug)]
+pub struct FusedFhdDotShares {
+    local: Vec<RingElement<u16>>,
+    previous: Vec<RingElement<u16>>,
+}
+
+impl FusedFhdDotShares {
+    /// Number of interleaved `(code, mask)` comparisons retained.
+    pub fn len(&self) -> usize {
+        self.local.len() / 2
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.local.is_empty()
+    }
+
+    /// Reconstruct selected scalar Rep3 code and mask shares. Indices address
+    /// comparisons, and output order (including duplicate indices) is
+    /// preserved.
+    pub fn select(&self, indices: &[usize]) -> Result<FhdDotSharePair> {
+        let mut codes = Vec::with_capacity(indices.len());
+        let mut masks = Vec::with_capacity(indices.len());
+        for &index in indices {
+            eyre::ensure!(
+                index < self.len(),
+                "dot-product index {index} is out of bounds for {} comparisons",
+                self.len()
+            );
+            let offset = index * 2;
+            codes.push(Share::new(self.local[offset], self.previous[offset]));
+            masks.push(Share::new(
+                self.local[offset + 1],
+                self.previous[offset + 1],
+            ));
+        }
+        Ok((codes, masks))
+    }
+}
 
 /// Computes the `A` term of the threshold comparison based on the formula `A = ((1. - 2. * t) * B)`.
 #[inline]
@@ -48,6 +98,83 @@ pub async fn fhd_greater_than_threshold(
         .collect();
 
     extract_msb_batch(session, &diffs).await
+}
+
+/// Lift only the mask-dot shares needed by the direct FHD threshold protocol.
+///
+/// Unlike the generic distance path, exact linear scan never needs a lifted
+/// distance or an oblivious minimum. The code dot is multiplied by `2^16`, so
+/// it can be lifted locally by shifting; only the mask dot requires the MPC
+/// carry-correcting lift.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn lift_fhd_mask_dots(
+    session: &mut Session,
+    mask_dots: &[Share<u16>],
+) -> Result<Vec<Share<u32>>> {
+    Ok(lift(session, VecShare::new_vec(mask_dots.to_vec()))
+        .await?
+        .inner())
+}
+
+/// Compare raw replicated `u16` dot products to an FHD threshold.
+///
+/// This is the CPU counterpart of the GPU threshold-ring `lift_mul_sub`
+/// protocol. All inputs are processed in one batch. `mask_dots` must have
+/// already been lifted with [`lift_fhd_mask_dots`].
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn fhd_greater_than_threshold_pre_lifted_masks(
+    session: &mut Session,
+    code_dots: &[Share<u16>],
+    mask_dots: &[Share<u32>],
+    threshold_ratio: f64,
+) -> Result<Vec<Share<Bit>>> {
+    eyre::ensure!(
+        code_dots.len() == mask_dots.len(),
+        "code and mask dot batches must have equal lengths"
+    );
+    let a = translate_threshold_a(threshold_ratio);
+    let diffs = code_dots
+        .iter()
+        .zip(mask_dots)
+        .map(|(code_dot, mask_dot)| mul_lift_2k_to_32::<16>(code_dot) - *mask_dot * a)
+        .collect::<Vec<_>>();
+    extract_msb_batch(session, &diffs).await
+}
+
+/// Refresh local interleaved Galois-ring dot contributions into Rep3 and run
+/// the fixed anonymous-statistics threshold without materializing the dense
+/// scalar Rep3 batch.
+///
+/// The refresh is exactly the one used by `galois_ring_to_rep3`: it consumes
+/// the same PRF values, sends one `VecRing16` to the next party, and receives
+/// the previous party's refreshed components. The returned holder can later
+/// materialize only the publicly selected candidate code and mask shares.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn fhd_greater_than_anon_stats_from_galois(
+    session: &mut Session,
+    interleaved_dots: Vec<RingElement<u16>>,
+) -> Result<(Vec<Share<Bit>>, FusedFhdDotShares)> {
+    eyre::ensure!(
+        interleaved_dots.len().is_multiple_of(2),
+        "anonymous-threshold input must contain interleaved code/mask pairs"
+    );
+    let (local, previous) = galois_ring_to_rep3_components(session, interleaved_dots).await?;
+    let bits = extract_anon_stats_msb_batch_from_components(session, &local, &previous).await?;
+    Ok((bits, FusedFhdDotShares { local, previous }))
+}
+
+/// Dense exact-scan comparison for the fixed anonymous-statistics threshold.
+///
+/// This uses the 18-bit direct circuit rather than lifting every mask into the
+/// 32-bit arithmetic ring. Strict thresholds remain on the generic path since
+/// their public multiplier is not a power of two.
+#[instrument(level = "trace", target = "searcher::network", skip_all)]
+pub async fn fhd_greater_than_anon_stats_threshold(
+    session: &mut Session,
+    code_dots: &[Share<u16>],
+    mask_dots: &[Share<u16>],
+) -> Result<Vec<Share<Bit>>> {
+    extract_anon_stats_msb_batch(session, code_dots, mask_dots).await
 }
 
 /// Computes the cross product of distances shares represented as a fraction (code_dist, mask_dist).
@@ -141,7 +268,10 @@ mod tests {
             local::{generate_local_identities, LocalRuntime},
             session::SessionHandles,
         },
-        protocol::{ops::batch_signed_lift_vec, test_utils::create_array_sharing},
+        protocol::{
+            ops::{batch_signed_lift_vec, galois_ring_to_rep3, open_ring},
+            test_utils::create_array_sharing,
+        },
     };
 
     use super::*;
@@ -149,7 +279,7 @@ mod tests {
     use aes_prng::AesRng;
     use ampc_secret_sharing::RingElement;
     use eyre::{bail, Result};
-    use rand::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use std::{collections::HashMap, sync::Arc};
     use tokio::{sync::Mutex, task::JoinSet};
     use tracing::instrument;
@@ -292,7 +422,9 @@ mod tests {
             let n = test_cases.len();
             jobs.spawn(async move {
                 let mut session = session.lock().await;
-                let lifted = batch_signed_lift_vec(&mut session, shares_i).await.unwrap();
+                let lifted = batch_signed_lift_vec(&mut session, shares_i.clone())
+                    .await
+                    .unwrap();
                 let distances: Vec<DistanceShare<u32>> = (0..n)
                     .map(|j| DistanceShare::new(lifted[2 * j], lifted[2 * j + 1]))
                     .collect();
@@ -300,19 +432,56 @@ mod tests {
                     fhd_greater_than_threshold(&mut session, &distances, MATCH_THRESHOLD_RATIO)
                         .await
                         .unwrap();
-                let opened = open_bin(&mut session, &bits).await.unwrap();
-                opened
+                let generic = open_bin(&mut session, &bits)
+                    .await
+                    .unwrap()
                     .into_iter()
                     .map(|x| x.convert())
-                    .collect::<Vec<bool>>()
+                    .collect::<Vec<bool>>();
+
+                let code_dots = shares_i.iter().step_by(2).copied().collect::<Vec<_>>();
+                let mask_dots = shares_i
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .copied()
+                    .collect::<Vec<_>>();
+                let lifted_masks = lift_fhd_mask_dots(&mut session, &mask_dots).await.unwrap();
+                let direct_bits = fhd_greater_than_threshold_pre_lifted_masks(
+                    &mut session,
+                    &code_dots,
+                    &lifted_masks,
+                    MATCH_THRESHOLD_RATIO,
+                )
+                .await
+                .unwrap();
+                let direct = open_bin(&mut session, &direct_bits)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| x.convert())
+                    .collect::<Vec<bool>>();
+                let anon_bits =
+                    fhd_greater_than_anon_stats_threshold(&mut session, &code_dots, &mask_dots)
+                        .await
+                        .unwrap();
+                let anon_direct = open_bin(&mut session, &anon_bits)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|x| x.convert())
+                    .collect::<Vec<bool>>();
+                (generic, direct, anon_direct)
             });
         }
 
-        let results: Vec<Vec<bool>> = jobs.join_all().await;
+        let results: Vec<(Vec<bool>, Vec<bool>, Vec<bool>)> = jobs.join_all().await;
 
         // All parties should agree
         assert_eq!(results[0], results[1]);
         assert_eq!(results[1], results[2]);
+        assert_eq!(results[0].0, results[0].1);
+        assert_eq!(results[0].0, results[0].2);
 
         // Check against plaintext reference
         for (i, (cd, md, expected)) in test_cases.into_iter().enumerate() {
@@ -323,15 +492,135 @@ mod tests {
             };
             let reference = reference_fhd_greater_than_threshold(ref_cd, md as i64);
             assert_eq!(
-                results[0][i], reference,
+                results[0].0[i], reference,
                 "Reference FHD threshold mismatch for (cd={}, md={}): got {}, expected {}",
-                cd, md, results[0][i], reference
+                cd, md, results[0].0[i], reference
             );
             assert_eq!(
-                results[0][i], expected,
+                results[0].0[i], expected,
                 "FHD threshold mismatch for (cd={}, md={}): got {}, expected {}",
-                cd, md, results[0][i], expected
+                cd, md, results[0].0[i], expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn direct_anon_threshold_matches_lifted_reference_randomized() {
+        const N: usize = 4_097;
+        let mut rng = AesRng::seed_from_u64(0x18_375_u64);
+        let flat_values = (0..2 * N).map(|_| rng.gen::<u16>()).collect::<Vec<_>>();
+        let flat_shares = create_array_sharing(&mut rng, &flat_values);
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+
+        for (party, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let shares = flat_shares.of_party(party).clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+                let codes = shares.iter().step_by(2).copied().collect::<Vec<_>>();
+                let masks = shares
+                    .iter()
+                    .skip(1)
+                    .step_by(2)
+                    .copied()
+                    .collect::<Vec<_>>();
+
+                let lifted_masks = lift_fhd_mask_dots(&mut session, &masks).await.unwrap();
+                let reference = fhd_greater_than_threshold_pre_lifted_masks(
+                    &mut session,
+                    &codes,
+                    &lifted_masks,
+                    0.375,
+                )
+                .await
+                .unwrap();
+                let reference = open_bin(&mut session, &reference).await.unwrap();
+
+                let direct = fhd_greater_than_anon_stats_threshold(&mut session, &codes, &masks)
+                    .await
+                    .unwrap();
+                let direct = open_bin(&mut session, &direct).await.unwrap();
+                (reference, direct)
+            });
+        }
+
+        let results = jobs.join_all().await;
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+        assert_eq!(results[0].0, results[0].1);
+    }
+
+    #[tokio::test]
+    async fn fused_galois_anon_threshold_matches_dense_rep3_and_selects_candidates() {
+        const N: usize = 257;
+        let mut rng = AesRng::seed_from_u64(0xf053_d375_u64);
+        let mut values = vec![
+            125_u16,
+            500_u16, // exact 0.375 threshold
+            124,
+            500, // immediately above threshold
+            u16::MAX,
+            200, // negative signed code dot
+            10,
+            0, // zero mask
+        ];
+        values.extend((values.len()..2 * N).map(|_| rng.gen::<u16>()));
+        let additive_shares = create_array_sharing(&mut rng, &values);
+        let selected_indices = vec![0, 1, 63, 64, N - 1, 64];
+        let expected_selected_codes = selected_indices
+            .iter()
+            .map(|&index| values[index * 2])
+            .collect::<Vec<_>>();
+        let expected_selected_masks = selected_indices
+            .iter()
+            .map(|&index| values[index * 2 + 1])
+            .collect::<Vec<_>>();
+
+        let sessions = LocalRuntime::mock_sessions_with_channel().await.unwrap();
+        let mut jobs = JoinSet::new();
+        for (party, session) in sessions.into_iter().enumerate() {
+            let session = session.clone();
+            let local_dots = additive_shares
+                .of_party(party)
+                .iter()
+                .map(|share| share.a)
+                .collect::<Vec<_>>();
+            let selected_indices = selected_indices.clone();
+            jobs.spawn(async move {
+                let mut session = session.lock().await;
+
+                let dense = galois_ring_to_rep3(&mut session, local_dots.clone())
+                    .await
+                    .unwrap();
+                let dense_codes = dense.iter().step_by(2).copied().collect::<Vec<_>>();
+                let dense_masks = dense.iter().skip(1).step_by(2).copied().collect::<Vec<_>>();
+                let dense_bits =
+                    fhd_greater_than_anon_stats_threshold(&mut session, &dense_codes, &dense_masks)
+                        .await
+                        .unwrap();
+                let dense_open = open_bin(&mut session, &dense_bits).await.unwrap();
+
+                let (fused_bits, retained) =
+                    fhd_greater_than_anon_stats_from_galois(&mut session, local_dots)
+                        .await
+                        .unwrap();
+                assert_eq!(retained.len(), N);
+                assert!(!retained.is_empty());
+                let fused_open = open_bin(&mut session, &fused_bits).await.unwrap();
+
+                let (selected_codes, selected_masks) = retained.select(&selected_indices).unwrap();
+                let selected_codes = open_ring(&mut session, &selected_codes).await.unwrap();
+                let selected_masks = open_ring(&mut session, &selected_masks).await.unwrap();
+                (dense_open, fused_open, selected_codes, selected_masks)
+            });
+        }
+
+        let results = jobs.join_all().await;
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], results[2]);
+        assert_eq!(results[0].0, results[0].1);
+        assert_eq!(results[0].2, expected_selected_codes);
+        assert_eq!(results[0].3, expected_selected_masks);
     }
 }

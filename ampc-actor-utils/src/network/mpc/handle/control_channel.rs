@@ -150,19 +150,19 @@ impl<T: NetworkConnection> ControlChannel for TcpControlChannel<T> {
     }
 
     async fn sync(&mut self) -> Result<()> {
-        let token = NetworkValue::Bytes(SYNC_TOKEN_BYTES.to_vec());
+        let token = NetworkValue::Bytes(SYNC_TOKEN_BYTES.to_vec().into());
         self.send_next(token.clone()).await?;
         self.send_prev(token).await?;
 
         let next_token = self.recv_next().await?;
         match next_token {
-            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
+            NetworkValue::Bytes(ref bytes) if &bytes[..] == SYNC_TOKEN_BYTES => {}
             _ => bail!("invalid sync token received from next party"),
         }
 
         let prev_token = self.recv_prev().await?;
         match prev_token {
-            NetworkValue::Bytes(ref bytes) if bytes == SYNC_TOKEN_BYTES => {}
+            NetworkValue::Bytes(ref bytes) if &bytes[..] == SYNC_TOKEN_BYTES => {}
             _ => bail!("invalid sync token received from prev party"),
         }
 

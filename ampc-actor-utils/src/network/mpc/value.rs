@@ -1,7 +1,7 @@
 use ampc_secret_sharing::shares::{
     self, bit::Bit, ring48::Ring48, ring_impl::RingElement, IntRing2k,
 };
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use eyre::{bail, eyre, Result};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use std::mem::size_of;
@@ -74,7 +74,7 @@ pub enum NetworkValue {
     NetworkVec(Vec<Self>),
     // used to verify that the PRFs aren't out of sync
     PrfCheck(RingElement<u128>),
-    Bytes(Vec<u8>),
+    Bytes(Bytes),
     /// Packed bit vector: (packed_bytes, bit_count)
     /// Each byte contains 8 bits in LSB-first order
     VecRingBit(Vec<u8>, usize),
@@ -429,7 +429,9 @@ impl NetworkValue {
                         5 + len
                     );
                 }
-                Ok(NetworkValue::Bytes(serialized[5..5 + len].to_vec()))
+                Ok(NetworkValue::Bytes(Bytes::copy_from_slice(
+                    &serialized[5..5 + len],
+                )))
             }
             DescriptorByte::VecRingBit => {
                 if serialized.len() < 5 {
