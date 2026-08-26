@@ -59,6 +59,7 @@ impl<'a, T: IntRing2k> SliceShareMut<'a, T> {
 #[derive(Clone, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(bound = "")]
 #[repr(transparent)]
+////TODO evagelia: check if this needs changing for 5pc
 pub struct VecShare<T: IntRing2k> {
     pub shares: Vec<Share<T>>,
 }
