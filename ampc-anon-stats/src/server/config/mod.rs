@@ -143,6 +143,10 @@ pub struct AnonStatsServerConfig {
     /// Interval, in seconds, between polling attempts.
     pub poll_interval_secs: u64,
 
+    #[serde(default = "default_mpc_timeout_secs")]
+    /// Timeout, in seconds, for one MPC network operation.
+    pub mpc_timeout_secs: u64,
+
     #[serde(
         default = "default_face_bucket_thresholds",
         deserialize_with = "deserialize_yaml_json_i16"
@@ -290,6 +294,10 @@ fn default_poll_interval_secs() -> u64 {
     30
 }
 
+fn default_mpc_timeout_secs() -> u64 {
+    ampc_actor_utils::network::mpc::DEFAULT_MPC_TIMEOUT.as_secs()
+}
+
 fn default_max_sync_failures_before_reset() -> usize {
     3
 }
@@ -334,6 +342,7 @@ impl AnonStatsServerConfig {
             max_rows_per_job_1d: 0,
             max_rows_per_job_2d: 0,
             poll_interval_secs: default_poll_interval_secs(),
+            mpc_timeout_secs: default_mpc_timeout_secs(),
             face_bucket_thresholds: vec![],
             di_2d_bucket_thresholds: vec![],
             max_sync_failures_before_reset: default_max_sync_failures_before_reset(),
@@ -382,6 +391,9 @@ impl AnonStatsServerConfig {
     // Validate the overall configuration.
     pub fn validate_config(&self) -> eyre::Result<()> {
         self.validate_job_limits()?;
+        if self.mpc_timeout_secs == 0 {
+            bail!("mpc_timeout_secs must be greater than zero");
+        }
         Ok(())
     }
 
@@ -443,7 +455,7 @@ where
 mod tests {
     use serde::Deserialize;
 
-    use crate::server::config::deserialize_yaml_json_i16;
+    use crate::server::config::{deserialize_yaml_json_i16, AnonStatsServerConfig};
 
     #[derive(Deserialize)]
     struct TestString(#[serde(deserialize_with = "deserialize_yaml_json_i16")] Vec<i16>);
@@ -453,5 +465,15 @@ mod tests {
         let s = r#""[-1000,0,1000,2000]""#;
         let v = serde_json::from_str::<TestString>(s).unwrap().0;
         assert_eq!(v, vec![-1000, 0, 1000, 2000]);
+    }
+
+    #[test]
+    fn test_mpc_timeout_validation() {
+        let config = AnonStatsServerConfig {
+            mpc_timeout_secs: 0,
+            ..AnonStatsServerConfig::test_default()
+        };
+
+        assert!(config.validate_config().is_err());
     }
 }
