@@ -20,12 +20,24 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinHandle};
 
+const LOCAL_IDENTITY_NAMES: [&str; 5] = ["alice", "bob", "charlie", "dave", "erin"];
+
 pub fn generate_local_identities() -> Vec<Identity> {
-    vec![
-        Identity::from("alice"),
-        Identity::from("bob"),
-        Identity::from("charlie"),
-    ]
+    generate_local_identities_n(3)
+}
+
+/// Generate `n` deterministic, fixed local identities, for use both in tests
+/// and to derive a consistent per-index self-identity across parties in
+/// production (see `build_network_handle`). Supports up to 5 parties.
+pub fn generate_local_identities_n(n: usize) -> Vec<Identity> {
+    assert!(
+        n <= LOCAL_IDENTITY_NAMES.len(),
+        "not enough predefined local identities for {n} parties"
+    );
+    LOCAL_IDENTITY_NAMES[..n]
+        .iter()
+        .map(|name| Identity::from(*name))
+        .collect()
 }
 
 static USED_PORTS: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));

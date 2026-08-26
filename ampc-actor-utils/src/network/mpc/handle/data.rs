@@ -14,14 +14,19 @@ pub type OutStream = mpsc::UnboundedSender<OutboundMsg>;
 pub type InStream = mpsc::UnboundedReceiver<NetworkValue>;
 
 pub struct PeerConnections<T: NetworkConnection + 'static> {
-    peers: [Arc<Peer>; 2],
-    c0: Vec<T>,
-    c1: Vec<T>,
+    peers: Vec<Arc<Peer>>,
+    // conns[i] holds the connections established with peers[i]
+    conns: Vec<Vec<T>>,
 }
 
 impl<T: NetworkConnection + 'static> PeerConnections<T> {
-    pub fn new(peers: [Arc<Peer>; 2], c0: Vec<T>, c1: Vec<T>) -> Self {
-        Self { peers, c0, c1 }
+    pub fn new(peers: Vec<Arc<Peer>>, conns: Vec<Vec<T>>) -> Self {
+        assert_eq!(
+            peers.len(),
+            conns.len(),
+            "expected one connection group per peer"
+        );
+        Self { peers, conns }
     }
 
     pub fn peer_ids(&self) -> Vec<Identity> {
@@ -34,10 +39,11 @@ impl<T: NetworkConnection + 'static> IntoIterator for PeerConnections<T> {
     type IntoIter = std::vec::IntoIter<(Identity, Vec<T>)>;
 
     fn into_iter(self) -> Self::IntoIter {
-        vec![
-            (self.peers[0].id().clone(), self.c0),
-            (self.peers[1].id().clone(), self.c1),
-        ]
-        .into_iter()
+        self.peers
+            .into_iter()
+            .map(|peer| peer.id().clone())
+            .zip(self.conns)
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 }
