@@ -104,6 +104,10 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
 
+    #[serde(default = "default_min_2d_job_size_full_retention")]
+    /// Minimum job size for fully retained (`sampling_rate = 100`) DI 2D rows.
+    pub min_2d_job_size_full_retention: usize,
+
     #[serde(default = "default_min_2d_job_size_opposite_mirror_match")]
     /// Minimum job size for 2D anon stats computation with opposite mirror match.
     pub min_2d_job_size_opposite_mirror_match: usize,
@@ -254,6 +258,10 @@ fn default_min_2d_job_size() -> usize {
     1000
 }
 
+fn default_min_2d_job_size_full_retention() -> usize {
+    20
+}
+
 fn default_min_2d_job_size_opposite_mirror_match() -> usize {
     20
 }
@@ -346,6 +354,7 @@ impl AnonStatsServerConfig {
             min_1d_job_size_recovery: 0,
             min_1d_job_size_mirror: 0,
             min_2d_job_size: 0,
+            min_2d_job_size_full_retention: 0,
             min_2d_job_size_reauth: 0,
             min_2d_job_size_recovery: 0,
             min_2d_job_size_mirror: 0,
@@ -454,14 +463,16 @@ impl AnonStatsServerConfig {
             );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
+            || self.max_rows_per_job_2d < self.min_2d_job_size_full_retention
             || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
             || self.max_rows_per_job_2d < self.min_2d_job_size_recovery
             || self.max_rows_per_job_2d < self.min_2d_job_size_mirror
         {
             bail!(
-                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {})",
+                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {}, {})",
                 self.max_rows_per_job_2d,
                 self.min_2d_job_size,
+                self.min_2d_job_size_full_retention,
                 self.min_2d_job_size_reauth,
                 self.min_2d_job_size_recovery,
                 self.min_2d_job_size_mirror
@@ -544,6 +555,17 @@ mod tests {
     fn test_mpc_timeout_validation() {
         let config = AnonStatsServerConfig {
             mpc_timeout_secs: 0,
+            ..AnonStatsServerConfig::test_default()
+        };
+
+        assert!(config.validate_config().is_err());
+    }
+
+    #[test]
+    fn test_full_retention_job_size_validation() {
+        let config = AnonStatsServerConfig {
+            min_2d_job_size_full_retention: 11,
+            max_rows_per_job_2d: 10,
             ..AnonStatsServerConfig::test_default()
         };
 
