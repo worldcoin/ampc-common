@@ -382,6 +382,7 @@ pub async fn process_di_2d_anon_stats_job(
     config: &AnonStatsServerConfig,
     operation: Option<AnonStatsOperation>,
     start_timestamp: Option<DateTime<Utc>>,
+    sampling_rate: u8,
     left_opposite_mirror_match: bool,
     right_opposite_mirror_match: bool,
 ) -> Result<BucketStatistics2D> {
@@ -439,6 +440,7 @@ pub async fn process_di_2d_anon_stats_job(
         Some(right_opposite_mirror_match),
     );
     anon_stats.is_mirror_orientation = matches!(origin.orientation, AnonStatsOrientation::Mirror);
+    anon_stats.sampling_rate = Some(sampling_rate);
 
     anon_stats.fill_buckets_di(&buckets, thresholds, start_timestamp);
     Ok(anon_stats)
@@ -1082,6 +1084,7 @@ mod tests {
                     &config,
                     operation,
                     None,
+                    20,
                     false,
                     false,
                 )
@@ -1111,6 +1114,7 @@ mod tests {
             assert_eq!(stats.n_buckets_per_side, thresholds.len());
             assert_eq!(stats.is_mirror_orientation, expected_mirror);
             assert_eq!(stats.distance_function, DistanceFunction::QuantizedCosine);
+            assert_eq!(stats.sampling_rate, Some(20));
         }
     }
 

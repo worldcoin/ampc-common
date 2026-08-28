@@ -103,16 +103,18 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
+        sampling_rate: u8,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
     ) -> Result<i64> {
         let sql = format!(
-            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
+            "SELECT COUNT(*) FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND sampling_rate = $3 AND left_opposite_mirror_match = $4 AND right_opposite_mirror_match = $5",
             ANON_STATS_2D_TABLE_DI
         );
         let query = sqlx::query_as::<_, (i64,)>(&sql)
             .bind(i16::from(origin))
             .bind(i16::from(operation))
+            .bind(i16::from(sampling_rate))
             .bind(left_opposite_mirror_match)
             .bind(right_opposite_mirror_match);
         let row = query.fetch_one(&self.pool).await?;
@@ -211,20 +213,22 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
+        sampling_rate: u8,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
         limit: usize,
     ) -> Result<(Vec<i64>, Vec<(i64, T)>)> {
         let sql = format!(
             "SELECT id, match_id, bundle FROM {} WHERE processed = FALSE and origin = $1 
-            AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4
-            ORDER BY id ASC LIMIT $5",
+            AND operation = $2 AND sampling_rate = $3 AND left_opposite_mirror_match = $4 AND right_opposite_mirror_match = $5
+            ORDER BY id ASC LIMIT $6",
             ANON_STATS_2D_TABLE_DI
         );
 
         let query = sqlx::query_as::<_, (i64, i64, Vec<u8>)>(&sql)
             .bind(i16::from(origin))
             .bind(i16::from(operation))
+            .bind(i16::from(sampling_rate))
             .bind(left_opposite_mirror_match)
             .bind(right_opposite_mirror_match)
             .bind(limit as i64);
@@ -353,16 +357,18 @@ impl AnonStatsStore {
         &self,
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
+        sampling_rate: u8,
         left_opposite_mirror_match: bool,
         right_opposite_mirror_match: bool,
     ) -> Result<u64> {
         let sql = format!(
-            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND left_opposite_mirror_match = $3 AND right_opposite_mirror_match = $4",
+            "DELETE FROM {} WHERE processed = FALSE AND origin = $1 AND operation = $2 AND sampling_rate = $3 AND left_opposite_mirror_match = $4 AND right_opposite_mirror_match = $5",
             ANON_STATS_2D_TABLE_DI
         );
         let query = sqlx::query(&sql)
             .bind(i16::from(origin))
             .bind(i16::from(operation))
+            .bind(i16::from(sampling_rate))
             .bind(left_opposite_mirror_match)
             .bind(right_opposite_mirror_match);
         let result = query.execute(&self.pool).await?;
@@ -434,10 +440,10 @@ impl AnonStatsStore {
         Ok(())
     }
 
-    async fn insert_anon_stats_batch_with_counterparty_matches<T: Serialize>(
+    async fn insert_anon_stats_batch_with_sampling_metadata<T: Serialize>(
         &self,
         table_name: &'static str,
-        anon_stats: &[(i64, bool, bool, T)],
+        anon_stats: &[(i64, u8, bool, bool, T)],
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
     ) -> Result<()> {
@@ -455,12 +461,19 @@ impl AnonStatsStore {
         let mut tx = self.pool.begin().await?;
         for chunk in anon_stats.chunks(Self::ANON_STATS_INSERT_BATCH_SIZE) {
             let mapped_chunk = chunk.iter().map(
-                |(id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)| {
+                |(
+                    id,
+                    sampling_rate,
+                    left_opposite_mirror_match,
+                    right_opposite_mirror_match,
+                    bundle,
+                )| {
                     let bundle_bytes =
                         bincode::serialize(bundle).expect("Failed to serialize DistanceBundle");
                     (
                         id,
                         bundle_bytes,
+                        sampling_rate,
                         left_opposite_mirror_match,
                         right_opposite_mirror_match,
                     )
@@ -470,18 +483,29 @@ impl AnonStatsStore {
                 [
                     "INSERT INTO ",
                     table_name,
-                    r#" (match_id, bundle, origin, operation, left_opposite_mirror_match, right_opposite_mirror_match)"#,
+                    r#" (match_id, bundle, origin, operation, sampling_rate, left_opposite_mirror_match, right_opposite_mirror_match)"#,
                 ]
                 .concat(),
             );
-            query.push_values(mapped_chunk, |mut query, (id, bytes, left_opposite_mirror_match, right_opposite_mirror_match)| {
-                query.push_bind(id);
-                query.push_bind(bytes);
-                query.push_bind(origin);
-                query.push_bind(operation);
-                query.push_bind(left_opposite_mirror_match);
-                query.push_bind(right_opposite_mirror_match);
-            });
+            query.push_values(
+                mapped_chunk,
+                |mut query,
+                 (
+                    id,
+                    bytes,
+                    sampling_rate,
+                    left_opposite_mirror_match,
+                    right_opposite_mirror_match,
+                )| {
+                    query.push_bind(id);
+                    query.push_bind(bytes);
+                    query.push_bind(origin);
+                    query.push_bind(operation);
+                    query.push_bind(i16::from(*sampling_rate));
+                    query.push_bind(left_opposite_mirror_match);
+                    query.push_bind(right_opposite_mirror_match);
+                },
+            );
 
             let res = query.build().execute(&mut *tx).await?;
             if res.rows_affected() != chunk.len() as u64 {
@@ -526,14 +550,15 @@ impl AnonStatsStore {
     }
 
     /// Deep Identifier 2D table variant (dedicated table, not context-routed).
-    /// Takes a slice of tuples of (id, left_opposite_mirror_match, right_opposite_mirror_match, bundle)
+    /// Takes a slice of tuples of
+    /// (id, sampling_rate, left_opposite_mirror_match, right_opposite_mirror_match, bundle).
     pub async fn insert_anon_stats_batch_2d_di<T: Serialize>(
         &self,
-        anon_stats: &[(i64, bool, bool, T)],
+        anon_stats: &[(i64, u8, bool, bool, T)],
         origin: AnonStatsOrigin,
         operation: AnonStatsOperation,
     ) -> Result<()> {
-        self.insert_anon_stats_batch_with_counterparty_matches(
+        self.insert_anon_stats_batch_with_sampling_metadata(
             ANON_STATS_2D_TABLE_DI,
             anon_stats,
             origin,
