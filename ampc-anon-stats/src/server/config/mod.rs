@@ -198,6 +198,9 @@ pub struct AnonStatsServerConfig {
 
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+
+    #[serde(default)]
+    pub ignore_missing_migrations: bool,
 }
 
 fn default_face_bucket_thresholds() -> Vec<i16> {
@@ -376,6 +379,7 @@ impl AnonStatsServerConfig {
                 default_shutdown_last_results_sync_timeout_secs(),
             tls: None,
             min_2d_job_size_opposite_mirror_match: default_min_2d_job_size_opposite_mirror_match(),
+            ignore_missing_migrations: false,
         }
     }
 
