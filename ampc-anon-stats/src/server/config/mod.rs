@@ -104,6 +104,10 @@ pub struct AnonStatsServerConfig {
     /// If the available job size is smaller than this, the party will wait until enough data is available.
     pub min_2d_job_size: usize,
 
+    #[serde(default = "default_min_2d_job_size_full_retention")]
+    /// Minimum job size for fully retained (`sampling_rate = 100`) DI 2D rows.
+    pub min_2d_job_size_full_retention: usize,
+
     #[serde(default = "default_min_2d_job_size_opposite_mirror_match")]
     /// Minimum job size for 2D anon stats computation with opposite mirror match.
     pub min_2d_job_size_opposite_mirror_match: usize,
@@ -163,6 +167,14 @@ pub struct AnonStatsServerConfig {
     /// Borders of the 2D buckets for Deep Identifier anon stats (similarity-score scale)
     pub di_2d_bucket_thresholds: Vec<i16>,
 
+    #[serde(
+        default = "default_di_2d_sampling_rates",
+        deserialize_with = "deserialize_yaml_json_u8"
+    )]
+    /// Sampling-rate groups processed by the Deep Identifier anon-stats server.
+    /// Must contain 100 for non-sampled tail/opposite-mirror-match rows and legacy rows.
+    pub di_2d_sampling_rates: Vec<u8>,
+
     #[serde(default = "default_max_sync_failures_before_reset")]
     /// Number of consecutive sync mismatches before clearing the local queue for an origin.
     pub max_sync_failures_before_reset: usize,
@@ -200,6 +212,10 @@ fn default_di_2d_bucket_thresholds() -> Vec<i16> {
     let mut thresholds: Vec<i16> = (-1000..=3000).step_by(5).collect();
     thresholds.push(4000);
     thresholds
+}
+
+fn default_di_2d_sampling_rates() -> Vec<u8> {
+    vec![100]
 }
 
 fn default_n_buckets_1d() -> usize {
@@ -240,6 +256,10 @@ fn default_min_1d_job_size() -> usize {
 
 fn default_min_2d_job_size() -> usize {
     1000
+}
+
+fn default_min_2d_job_size_full_retention() -> usize {
+    20
 }
 
 fn default_min_2d_job_size_opposite_mirror_match() -> usize {
@@ -334,6 +354,7 @@ impl AnonStatsServerConfig {
             min_1d_job_size_recovery: 0,
             min_1d_job_size_mirror: 0,
             min_2d_job_size: 0,
+            min_2d_job_size_full_retention: 0,
             min_2d_job_size_reauth: 0,
             min_2d_job_size_recovery: 0,
             min_2d_job_size_mirror: 0,
@@ -345,6 +366,7 @@ impl AnonStatsServerConfig {
             mpc_timeout_secs: default_mpc_timeout_secs(),
             face_bucket_thresholds: vec![],
             di_2d_bucket_thresholds: vec![],
+            di_2d_sampling_rates: default_di_2d_sampling_rates(),
             max_sync_failures_before_reset: default_max_sync_failures_before_reset(),
             db_url: String::new(),
             db_schema_name: default_schema_name(),
@@ -391,8 +413,31 @@ impl AnonStatsServerConfig {
     // Validate the overall configuration.
     pub fn validate_config(&self) -> eyre::Result<()> {
         self.validate_job_limits()?;
+        self.validate_di_2d_sampling_rates()?;
         if self.mpc_timeout_secs == 0 {
             bail!("mpc_timeout_secs must be greater than zero");
+        }
+        Ok(())
+    }
+
+    pub fn validate_di_2d_sampling_rates(&self) -> eyre::Result<()> {
+        if self.di_2d_sampling_rates.is_empty() {
+            bail!("di_2d_sampling_rates cannot be empty");
+        }
+        if let Some(rate) = self
+            .di_2d_sampling_rates
+            .iter()
+            .find(|&&rate| !(1..=100).contains(&rate))
+        {
+            bail!("di_2d_sampling_rates contains invalid rate {rate}; expected 1..=100");
+        }
+        if !self.di_2d_sampling_rates.contains(&100) {
+            bail!("di_2d_sampling_rates must contain 100");
+        }
+        for (index, rate) in self.di_2d_sampling_rates.iter().enumerate() {
+            if self.di_2d_sampling_rates[index + 1..].contains(rate) {
+                bail!("di_2d_sampling_rates contains duplicate rate {rate}");
+            }
         }
         Ok(())
     }
@@ -418,14 +463,16 @@ impl AnonStatsServerConfig {
             );
         }
         if self.max_rows_per_job_2d < self.min_2d_job_size
+            || self.max_rows_per_job_2d < self.min_2d_job_size_full_retention
             || self.max_rows_per_job_2d < self.min_2d_job_size_reauth
             || self.max_rows_per_job_2d < self.min_2d_job_size_recovery
             || self.max_rows_per_job_2d < self.min_2d_job_size_mirror
         {
             bail!(
-                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {})",
+                "max_rows_per_job_2d ({}) cannot be less than min_2d_job_sizes ({}, {}, {}, {}, {})",
                 self.max_rows_per_job_2d,
                 self.min_2d_job_size,
+                self.min_2d_job_size_full_retention,
                 self.min_2d_job_size_reauth,
                 self.min_2d_job_size_recovery,
                 self.min_2d_job_size_mirror
@@ -451,14 +498,27 @@ where
     serde_json::from_str(&value).map_err(serde::de::Error::custom)
 }
 
+fn deserialize_yaml_json_u8<'de, D>(deserializer: D) -> eyre::Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: String = Deserialize::deserialize(deserializer)?;
+    serde_json::from_str(&value).map_err(serde::de::Error::custom)
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
 
-    use crate::server::config::{deserialize_yaml_json_i16, AnonStatsServerConfig};
+    use crate::server::config::{
+        deserialize_yaml_json_i16, deserialize_yaml_json_u8, AnonStatsServerConfig,
+    };
 
     #[derive(Deserialize)]
     struct TestString(#[serde(deserialize_with = "deserialize_yaml_json_i16")] Vec<i16>);
+
+    #[derive(Deserialize)]
+    struct TestSamplingRates(#[serde(deserialize_with = "deserialize_yaml_json_u8")] Vec<u8>);
 
     #[test]
     fn test_deser_i16_vec() {
@@ -468,9 +528,44 @@ mod tests {
     }
 
     #[test]
+    fn test_deser_sampling_rates() {
+        let s = r#""[20,100]""#;
+        let rates = serde_json::from_str::<TestSamplingRates>(s).unwrap().0;
+        assert_eq!(rates, vec![20, 100]);
+    }
+
+    #[test]
+    fn test_sampling_rate_validation() {
+        let valid = AnonStatsServerConfig {
+            di_2d_sampling_rates: vec![20, 100],
+            ..AnonStatsServerConfig::test_default()
+        };
+        valid.validate_di_2d_sampling_rates().unwrap();
+
+        for invalid_rates in [vec![], vec![0, 100], vec![20], vec![20, 20, 100]] {
+            let invalid = AnonStatsServerConfig {
+                di_2d_sampling_rates: invalid_rates,
+                ..AnonStatsServerConfig::test_default()
+            };
+            assert!(invalid.validate_di_2d_sampling_rates().is_err());
+        }
+    }
+
+    #[test]
     fn test_mpc_timeout_validation() {
         let config = AnonStatsServerConfig {
             mpc_timeout_secs: 0,
+            ..AnonStatsServerConfig::test_default()
+        };
+
+        assert!(config.validate_config().is_err());
+    }
+
+    #[test]
+    fn test_full_retention_job_size_validation() {
+        let config = AnonStatsServerConfig {
+            min_2d_job_size_full_retention: 11,
+            max_rows_per_job_2d: 10,
             ..AnonStatsServerConfig::test_default()
         };
 
