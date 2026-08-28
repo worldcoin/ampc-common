@@ -198,6 +198,9 @@ pub struct AnonStatsServerConfig {
 
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+
+    #[serde(default)]
+    pub ignore_missing_migrations: bool,
 }
 
 fn default_face_bucket_thresholds() -> Vec<i16> {
