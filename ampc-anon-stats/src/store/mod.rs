@@ -25,7 +25,10 @@ const ANON_STATS_FACE_TABLE: &str = "anon_stats_face";
 const ANON_STATS_2D_TABLE_DI: &str = "anon_stats_2d_di";
 
 impl AnonStatsStore {
-    pub async fn new(postgres_client: &PostgresClient) -> Result<Self> {
+    pub async fn new(
+        postgres_client: &PostgresClient,
+        ignore_missing_migrations: bool,
+    ) -> Result<Self> {
         tracing::info!(
             "Created anon-stats-mpc-store with schema: {}",
             postgres_client.schema_name
@@ -35,6 +38,7 @@ impl AnonStatsStore {
             tracing::info!("Not migrating anon-stats-mpc-store DB in read-only mode");
         } else {
             sqlx::migrate!("./anon_stats_migrations/")
+                .set_ignore_missing(ignore_missing_migrations)
                 .run(&postgres_client.pool)
                 .await?;
         }
