@@ -2,6 +2,7 @@ pub mod bit;
 pub mod int_ring;
 pub mod ring48;
 pub mod ring_impl;
+pub mod rss5;
 pub mod share;
 pub mod vecshare;
 pub mod vecshare_bittranspose;
