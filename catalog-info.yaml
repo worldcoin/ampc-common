@@ -6,10 +6,6 @@ metadata:
   tags: ['code-lang:rust']
   description: Contains the common utilities that can be used by any AMPC setup
   links:
-    - title: Linear
-      url: PLACEHOLDER-ADD-LINEAR-URL
-    - title: Documentation
-      url: PLACEHOLDER-ADD-DOCUMENTATION-URL
     - title: Slack
       url: https://tfh.slack.com/app_redirect?channel=public-proof-of-personhood-team
   name: ampc-common
