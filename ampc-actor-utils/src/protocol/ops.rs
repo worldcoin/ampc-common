@@ -778,7 +778,7 @@ pub async fn batch_signed_lift_vec_ring48(
 mod tests {
     use super::*;
     use crate::execution::local::{
-        generate_local_identities, generate_local_identities_n, LocalRuntime,
+        generate_local_identities, generate_local_identities_orbit5, LocalRuntime,
     };
     use crate::protocol::test_utils::create_array_sharing;
     use aes_prng::AesRng;
@@ -841,7 +841,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_threshold_and_pairwise_prf_keys_five_parties() {
-        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT as usize);
+        let identities = generate_local_identities_orbit5();
         let mut seeds = Vec::new();
         for i in 0..ORBIT5_PARTY_COUNT {
             let mut seed = [0_u8; 16];

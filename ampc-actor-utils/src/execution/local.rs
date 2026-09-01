@@ -20,24 +20,25 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinHandle};
 
-const LOCAL_IDENTITY_NAMES: [&str; 5] = ["alice", "bob", "charlie", "dave", "erin"];
-
 pub fn generate_local_identities() -> Vec<Identity> {
-    generate_local_identities_n(3)
+    vec![
+        Identity::from("alice"),
+        Identity::from("bob"),
+        Identity::from("charlie"),
+    ]
 }
 
-/// Generate `n` deterministic, fixed local identities, for use both in tests
-/// and to derive a consistent per-index self-identity across parties in
-/// production (see `build_network_handle`). Supports up to 5 parties.
-pub fn generate_local_identities_n(n: usize) -> Vec<Identity> {
-    assert!(
-        n <= LOCAL_IDENTITY_NAMES.len(),
-        "not enough predefined local identities for {n} parties"
-    );
-    LOCAL_IDENTITY_NAMES[..n]
-        .iter()
-        .map(|name| Identity::from(*name))
-        .collect()
+/// The fixed identities of the five ORBIT5 parties, in role order. Used both
+/// in tests and to derive a consistent per-index self-identity across
+/// parties in production (see `build_network_handle`).
+pub fn generate_local_identities_orbit5() -> Vec<Identity> {
+    vec![
+        Identity::from("alice"),
+        Identity::from("bob"),
+        Identity::from("charlie"),
+        Identity::from("dave"),
+        Identity::from("erin"),
+    ]
 }
 
 static USED_PORTS: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
