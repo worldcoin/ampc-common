@@ -6,7 +6,7 @@ use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::mpc::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{
-    PairwisePrfKeys, PartyPair, Prf, PrfSeed, ThresholdPrfKeys, FIVE_PARTY_COUNT,
+    orbit5_roles, PairwisePrfKeys, PartyPair, Prf, PrfSeed, ThresholdPrfKeys, ORBIT5_PARTY_COUNT,
 };
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
@@ -132,7 +132,7 @@ fn decode_prf_seed(msg: Result<NetworkValue>, from: Role) -> Result<PrfSeed> {
 }
 
 /// Establishes the `(3, 5)` threshold PRF key configuration described by
-/// [`ThresholdPrfKeys`]. Requires exactly [`FIVE_PARTY_COUNT`] parties.
+/// [`ThresholdPrfKeys`]. Requires exactly [`ORBIT5_PARTY_COUNT`] parties.
 ///
 /// For each of the six excluded pairs `{i, j}` not containing this party's
 /// role, this party and the other two owners each contribute a random seed;
@@ -151,17 +151,17 @@ fn decode_prf_seed(msg: Result<NetworkValue>, from: Role) -> Result<PrfSeed> {
 pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<ThresholdPrfKeys> {
     let own_role = session.own_role();
     let num_parties = session.role_assignments.len();
-    if num_parties != FIVE_PARTY_COUNT as usize {
+    if num_parties != ORBIT5_PARTY_COUNT as usize {
         bail!(
-            "threshold PRF key setup requires exactly {FIVE_PARTY_COUNT} parties, found {num_parties}"
+            "threshold PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
         );
     }
 
     let mut seeds = BTreeMap::new();
     for pair in PartyPair::excluding(own_role) {
         let (a, b) = pair.parties();
-        let co_owners: Vec<Role> = (0..FIVE_PARTY_COUNT)
-            .map(|i| Role::new(i as usize))
+        let co_owners: Vec<Role> = orbit5_roles()
+            .into_iter()
             .filter(|role| *role != a && *role != b && *role != own_role)
             .collect();
         debug_assert_eq!(co_owners.len(), 2);
@@ -185,7 +185,7 @@ pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<Th
 }
 
 /// Establishes one pairwise PRF key per other party, as described by
-/// [`PairwisePrfKeys`]. Requires exactly [`FIVE_PARTY_COUNT`] parties.
+/// [`PairwisePrfKeys`]. Requires exactly [`ORBIT5_PARTY_COUNT`] parties.
 ///
 /// This party and each other party contribute a random seed for their
 /// shared key; the two contributions are XORed together so neither party
@@ -203,17 +203,14 @@ pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<Th
 pub async fn setup_pairwise_prf_keys(session: &mut NetworkSession) -> Result<PairwisePrfKeys> {
     let own_role = session.own_role();
     let num_parties = session.role_assignments.len();
-    if num_parties != FIVE_PARTY_COUNT as usize {
+    if num_parties != ORBIT5_PARTY_COUNT as usize {
         bail!(
-            "pairwise PRF key setup requires exactly {FIVE_PARTY_COUNT} parties, found {num_parties}"
+            "pairwise PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
         );
     }
 
     let mut seeds = BTreeMap::new();
-    for other in (0..FIVE_PARTY_COUNT)
-        .map(|i| Role::new(i as usize))
-        .filter(|role| *role != own_role)
-    {
+    for other in orbit5_roles().into_iter().filter(|role| *role != own_role) {
         let my_seed = Prf::gen_seed();
         session
             .send_to(NetworkValue::PrfKey(my_seed), &other)
@@ -844,9 +841,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_setup_threshold_and_pairwise_prf_keys_five_parties() {
-        let identities = generate_local_identities_n(FIVE_PARTY_COUNT as usize);
+        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT as usize);
         let mut seeds = Vec::new();
-        for i in 0..FIVE_PARTY_COUNT {
+        for i in 0..ORBIT5_PARTY_COUNT {
             let mut seed = [0_u8; 16];
             seed[0] = i;
             seeds.push(seed);
@@ -878,8 +875,8 @@ mod tests {
         }
 
         // Every threshold key must be agreed identically by all three owners.
-        for a in 0..FIVE_PARTY_COUNT {
-            for b in (a + 1)..FIVE_PARTY_COUNT {
+        for a in 0..ORBIT5_PARTY_COUNT {
+            for b in (a + 1)..ORBIT5_PARTY_COUNT {
                 let (role_a, role_b) = (Role::new(a as usize), Role::new(b as usize));
                 let mut agreed_value: Option<u64> = None;
                 let mut num_owners = 0;
@@ -899,8 +896,8 @@ mod tests {
         }
 
         // Every pairwise key must be agreed identically by both parties.
-        for a in 0..FIVE_PARTY_COUNT {
-            for b in (a + 1)..FIVE_PARTY_COUNT {
+        for a in 0..ORBIT5_PARTY_COUNT {
+            for b in (a + 1)..ORBIT5_PARTY_COUNT {
                 let role_a = Role::new(a as usize);
                 let role_b = Role::new(b as usize);
                 let a_value = by_role[a as usize].1.get_mut(role_b).unwrap().next_u64();
