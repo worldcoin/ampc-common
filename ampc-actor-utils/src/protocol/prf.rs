@@ -172,7 +172,7 @@ fn seed_to_rng(seed: PrfSeed) -> PrfRng {
 }
 
 /// The roles of all ORBIT5 parties, in index order.
-pub fn orbit5_roles() -> [Role; ORBIT5_PARTY_COUNT as usize] {
+pub fn orbit5_roles() -> [Role; ORBIT5_PARTY_COUNT] {
     std::array::from_fn(Role::new)
 }
 

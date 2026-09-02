@@ -152,7 +152,7 @@ fn decode_prf_seed(msg: Result<NetworkValue>, from: Role) -> Result<PrfSeed> {
 pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<ThresholdPrfKeys> {
     let own_role = session.own_role();
     let num_parties = session.role_assignments.len();
-    if num_parties != ORBIT5_PARTY_COUNT as usize {
+    if num_parties != ORBIT5_PARTY_COUNT {
         bail!(
             "threshold PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
         );
@@ -204,7 +204,7 @@ pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<Th
 pub async fn setup_pairwise_prf_keys(session: &mut NetworkSession) -> Result<PairwisePrfKeys> {
     let own_role = session.own_role();
     let num_parties = session.role_assignments.len();
-    if num_parties != ORBIT5_PARTY_COUNT as usize {
+    if num_parties != ORBIT5_PARTY_COUNT {
         bail!(
             "pairwise PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
         );
@@ -878,7 +878,7 @@ mod tests {
         // Every threshold key must be agreed identically by all three owners.
         for a in 0..ORBIT5_PARTY_COUNT {
             for b in (a + 1)..ORBIT5_PARTY_COUNT {
-                let (role_a, role_b) = (Role::new(a as usize), Role::new(b as usize));
+                let (role_a, role_b) = (Role::new(a), Role::new(b));
                 let mut agreed_value: Option<u64> = None;
                 let mut num_owners = 0;
                 for (threshold, _) in by_role.iter_mut() {
@@ -899,10 +899,10 @@ mod tests {
         // Every pairwise key must be agreed identically by both parties.
         for a in 0..ORBIT5_PARTY_COUNT {
             for b in (a + 1)..ORBIT5_PARTY_COUNT {
-                let role_a = Role::new(a as usize);
-                let role_b = Role::new(b as usize);
-                let a_value = by_role[a as usize].1.get_mut(role_b).unwrap().next_u64();
-                let b_value = by_role[b as usize].1.get_mut(role_a).unwrap().next_u64();
+                let role_a = Role::new(a);
+                let role_b = Role::new(b);
+                let a_value = by_role[a].1.get_mut(role_b).unwrap().next_u64();
+                let b_value = by_role[b].1.get_mut(role_a).unwrap().next_u64();
                 assert_eq!(a_value, b_value);
             }
         }

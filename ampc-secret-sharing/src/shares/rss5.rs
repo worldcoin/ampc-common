@@ -234,7 +234,8 @@ mod tests {
     /// assigned a term over a share it does not hold.
     #[test]
     fn mul_assignment_partitions_all_cross_terms() {
-        let mut assigned_to: HashMap<((usize, usize), (usize, usize)), usize> = HashMap::new();
+        type SlotPair = ((usize, usize), (usize, usize));
+        let mut assigned_to: HashMap<SlotPair, usize> = HashMap::new();
 
         for role in 0..ORBIT5_PARTY_COUNT {
             for (i, rhs_slots) in MUL_OPERAND_ASSIGN.iter().enumerate() {

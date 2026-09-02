@@ -81,7 +81,7 @@ pub async fn build_network_handle(
 
     let identities = match args.addresses.len() {
         3 => generate_local_identities(),
-        n if n == ORBIT5_PARTY_COUNT as usize => generate_local_identities_orbit5(),
+        n if n == ORBIT5_PARTY_COUNT => generate_local_identities_orbit5(),
         n => eyre::bail!("unsupported party count {n}: expected 3 or {ORBIT5_PARTY_COUNT}"),
     };
     let role_assignments: RoleAssignment = identities
