@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use self::config::MpcConfig;
 use self::network_handle::MpcNetworkHandle;
-use crate::execution::local::generate_local_identities;
+use crate::execution::local::{generate_local_identities, generate_local_identities_orbit5};
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
-use crate::network::mpc::handle::control_channel::ControlChannel;
+use crate::network::mpc::handle::control_channel::{ControlChannel, MeshControlChannel};
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
+use crate::protocol::prf::ORBIT5_PARTY_COUNT;
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -40,6 +41,22 @@ pub trait NetworkHandle: Send + Sync {
     /// channel return an error immediately — there is no retry; call this method
     /// again to reconnect.
     async fn control_channel(&mut self) -> Result<Box<dyn ControlChannel>>;
+
+    /// Establish a dedicated control-plane channel to every other party,
+    /// addressed by [`Role`] rather than ring position.
+    ///
+    /// Generalizes `control_channel` beyond the 3-party ring case: use this
+    /// for any protocol with more than 3 parties. Same blocking-send,
+    /// no-retry semantics as `control_channel`.
+    ///
+    /// Defaults to an error so existing `NetworkHandle` implementations
+    /// outside this crate keep compiling without change; only the
+    /// TCP-backed `MpcNetworkHandle` in this crate currently overrides it.
+    async fn mesh_control_channel(&mut self) -> Result<Box<dyn MeshControlChannel>> {
+        Err(eyre::eyre!(
+            "mesh_control_channel is not implemented for this NetworkHandle"
+        ))
+    }
 }
 
 pub struct NetworkHandleArgs {
@@ -62,7 +79,11 @@ pub async fn build_network_handle(
 ) -> Result<Box<dyn NetworkHandle>> {
     tcp::init_rustls_crypto_provider();
 
-    let identities = generate_local_identities();
+    let identities = match args.addresses.len() {
+        3 => generate_local_identities(),
+        n if n == ORBIT5_PARTY_COUNT as usize => generate_local_identities_orbit5(),
+        n => eyre::bail!("unsupported party count {n}: expected 3 or {ORBIT5_PARTY_COUNT}"),
+    };
     let role_assignments: RoleAssignment = identities
         .iter()
         .enumerate()
@@ -210,7 +231,10 @@ pub mod testing {
         connection_parallelism: usize,
         request_parallelism: usize,
     ) -> Result<Vec<MpcNetworkHandle<TcpStreamConn, TcpClient>>> {
-        assert_eq!(parties.len(), 3);
+        assert!(
+            parties.len() >= 2,
+            "MPC networking requires at least 2 parties"
+        );
 
         let config = MpcConfig::new(
             Duration::from_secs(30),
@@ -220,8 +244,7 @@ pub mod testing {
         let addresses = get_free_local_addresses(parties.len()).await?;
         let shutdown_ct = CancellationToken::new();
 
-        let identities = generate_local_identities();
-        let role_assignments: RoleAssignment = identities
+        let role_assignments: RoleAssignment = parties
             .iter()
             .enumerate()
             .map(|(index, id)| (Role::new(index), id.clone()))
@@ -303,7 +326,7 @@ mod tests {
     use tokio::time::sleep;
     use tracing_test::traced_test;
 
-    use crate::execution::local::generate_local_identities;
+    use crate::execution::local::{generate_local_identities, generate_local_identities_orbit5};
     use crate::execution::player::{Identity, Role};
     use crate::execution::session::NetworkSession;
     use crate::network::mpc::NetworkValue;
@@ -320,11 +343,12 @@ mod tests {
         let mut tasks = JoinSet::new();
         let message_to_next = get_prf();
         let message_to_prev = get_prf();
+        let num_parties = identities.len() as u8;
 
         for (player_id, session) in sessions.into_iter().enumerate() {
             let role = Role::new(player_id);
-            let next = role.next(3).index();
-            let prev = role.prev(3).index();
+            let next = role.next(num_parties).index();
+            let prev = role.prev(num_parties).index();
 
             let next_id = identities[next].clone();
             let prev_id = identities[prev].clone();
@@ -433,6 +457,23 @@ mod tests {
         }
 
         jobs.join_all().await;
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[traced_test]
+    async fn test_mpc_comms_correct_five_parties() -> Result<()> {
+        let identities = generate_local_identities_orbit5();
+        let (_managers, mut sessions) =
+            setup_local_mpc_networking(identities.clone(), 1, 1).await?;
+        sleep(Duration::from_millis(500)).await;
+
+        assert_eq!(sessions.len(), 5);
+        assert_eq!(sessions[0].len(), 1);
+
+        let players: Vec<NetworkSession> = sessions.iter_mut().map(|s| s.remove(0)).collect();
+        all_parties_talk(identities, players).await;
 
         Ok(())
     }

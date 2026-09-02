@@ -1,3 +1,4 @@
+use crate::execution::player::Role;
 use crate::protocol::shuffle::Permutation;
 use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
@@ -5,6 +6,7 @@ use ampc_secret_sharing::shares::{
 };
 use eyre::{bail, Result};
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Generate a uniformly random u32 in [0, modulus)
 fn gen_u32_mod(rng: &mut PrfRng, modulus: u32) -> Result<u32> {
@@ -48,11 +50,10 @@ impl Default for Prf {
 }
 
 impl Prf {
-    #[cfg(not(feature = "aes_rng_prf"))]
     pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
         Self {
-            my_prf: PrfRng::from_seed(Self::expand_seed(my_key)),
-            prev_prf: PrfRng::from_seed(Self::expand_seed(prev_key)),
+            my_prf: seed_to_rng(my_key),
+            prev_prf: seed_to_rng(prev_key),
         }
     }
 
@@ -65,14 +66,6 @@ impl Prf {
         let mut out = [0u8; 32];
         out.copy_from_slice(digest.as_bytes());
         out
-    }
-
-    #[cfg(feature = "aes_rng_prf")]
-    pub fn new(my_key: PrfSeed, prev_key: PrfSeed) -> Self {
-        Self {
-            my_prf: PrfRng::from_seed(my_key),
-            prev_prf: PrfRng::from_seed(prev_key),
-        }
     }
 
     #[inline(always)]
@@ -162,6 +155,187 @@ impl Prf {
             perm_b.swap(i as usize, j_b as usize);
         }
         Ok((perm_a, perm_b))
+    }
+}
+
+#[inline]
+fn seed_to_rng(seed: PrfSeed) -> PrfRng {
+    #[cfg(not(feature = "aes_rng_prf"))]
+    {
+        PrfRng::from_seed(Prf::expand_seed(seed))
+    }
+    #[cfg(feature = "aes_rng_prf")]
+    {
+        PrfRng::from_seed(seed)
+    }
+}
+
+/// Number of parties in the ORBIT5 (5-party) protocol configuration used by
+/// [`ThresholdPrfKeys`] and [`PairwisePrfKeys`].
+pub const ORBIT5_PARTY_COUNT: u8 = 5;
+
+/// The roles of all ORBIT5 parties, in index order.
+pub fn orbit5_roles() -> [Role; ORBIT5_PARTY_COUNT as usize] {
+    std::array::from_fn(Role::new)
+}
+
+/// An unordered, canonically-ordered pair of two distinct parties.
+///
+/// `PartyPair::new(a, b) == PartyPair::new(b, a)`, so it can be used as a
+/// map key representing the pair `{a, b}` regardless of which order the two
+/// roles are known in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PartyPair(Role, Role);
+
+impl PartyPair {
+    pub fn new(a: Role, b: Role) -> Self {
+        assert_ne!(a, b, "a PartyPair requires two distinct roles");
+        if a.index() <= b.index() {
+            Self(a, b)
+        } else {
+            Self(b, a)
+        }
+    }
+
+    pub fn contains(&self, role: Role) -> bool {
+        self.0 == role || self.1 == role
+    }
+
+    pub fn parties(&self) -> (Role, Role) {
+        (self.0, self.1)
+    }
+
+    /// All unordered pairs among the five ORBIT5 parties that do not
+    /// contain `own_role`. There are `C(4, 2) = 6` of them.
+    pub fn excluding(own_role: Role) -> Vec<PartyPair> {
+        let roles = orbit5_roles();
+        let mut pairs = Vec::with_capacity(6);
+        for (idx, &a) in roles.iter().enumerate() {
+            if a == own_role {
+                continue;
+            }
+            for &b in &roles[idx + 1..] {
+                if b == own_role {
+                    continue;
+                }
+                pairs.push(PartyPair::new(a, b));
+            }
+        }
+        pairs
+    }
+}
+
+/// A `(3, 5)` shared-PRF key configuration for the ORBIT5 (5-party) protocol.
+///
+/// For every unordered pair of parties `{i, j}` there is one key `k_{i,j}`,
+/// known only to the three parties *not* in `{i, j}`. Each party therefore
+/// owns keys for the `C(4, 2) = 6` pairs that exclude it. This is a
+/// generalization, to five parties, of the same trick that the replicated
+/// (3-party) [`Prf`] above is built on: a value only the "other" parties can
+/// predict is exactly what is needed to mask/rerandomize shares that those
+/// parties, and not the excluded pair, must be able to jointly verify or
+/// reconstruct.
+///
+/// Construct one with [`from_seeds`](Self::from_seeds) once the underlying
+/// seeds have been agreed with the other owners of each key (see
+/// `setup_threshold_prf_keys` in `protocol::ops`).
+#[derive(Debug)]
+pub struct ThresholdPrfKeys {
+    own_role: Role,
+    keys: BTreeMap<PartyPair, PrfRng>,
+}
+
+impl ThresholdPrfKeys {
+    /// Build the key set from one already-agreed seed per owned pair.
+    ///
+    /// Fails unless `seeds` contains exactly the six pairs returned by
+    /// [`PartyPair::excluding(own_role)`](PartyPair::excluding).
+    pub fn from_seeds(own_role: Role, seeds: BTreeMap<PartyPair, PrfSeed>) -> Result<Self> {
+        let expected: BTreeSet<PartyPair> = PartyPair::excluding(own_role).into_iter().collect();
+        let actual: BTreeSet<PartyPair> = seeds.keys().copied().collect();
+        if actual != expected {
+            bail!(
+                "threshold PRF key set for role {own_role:?} does not match the expected \
+                 3-of-5 key set: expected {expected:?}, got {actual:?}"
+            );
+        }
+        let keys = seeds
+            .into_iter()
+            .map(|(pair, seed)| (pair, seed_to_rng(seed)))
+            .collect();
+        Ok(Self { own_role, keys })
+    }
+
+    pub fn own_role(&self) -> Role {
+        self.own_role
+    }
+
+    /// The PRF for key `k_{i,j}`. Returns `None` if this party does not own
+    /// that key (i.e. `own_role` is `i` or `j`) or if `i == j`.
+    pub fn get_mut(&mut self, i: Role, j: Role) -> Option<&mut PrfRng> {
+        if i == j {
+            return None;
+        }
+        self.keys.get_mut(&PartyPair::new(i, j))
+    }
+
+    /// The excluded pairs whose key this party holds.
+    pub fn owned_pairs(&self) -> impl Iterator<Item = PartyPair> + '_ {
+        self.keys.keys().copied()
+    }
+}
+
+/// Pairwise shared-PRF keys: for every unordered pair of parties `{i, j}`,
+/// a key `\lambda_{i,j}` known only to `i` and `j` themselves. Each party
+/// owns one such key per other party.
+///
+/// Construct one with [`from_seeds`](Self::from_seeds) once the underlying
+/// seed has been agreed with the other party of each pair (see
+/// `setup_pairwise_prf_keys` in `protocol::ops`).
+#[derive(Debug)]
+pub struct PairwisePrfKeys {
+    own_role: Role,
+    keys: BTreeMap<Role, PrfRng>,
+}
+
+impl PairwisePrfKeys {
+    /// Build the key set from one already-agreed seed per other party.
+    ///
+    /// Fails unless `seeds` contains exactly one entry per other party in
+    /// the ORBIT5 configuration (i.e. `0..ORBIT5_PARTY_COUNT`, excluding
+    /// `own_role`).
+    pub fn from_seeds(own_role: Role, seeds: BTreeMap<Role, PrfSeed>) -> Result<Self> {
+        let expected: BTreeSet<Role> = orbit5_roles()
+            .into_iter()
+            .filter(|role| *role != own_role)
+            .collect();
+        let actual: BTreeSet<Role> = seeds.keys().copied().collect();
+        if actual != expected {
+            bail!(
+                "pairwise PRF key set for role {own_role:?} does not match the expected \
+                 key set: expected {expected:?}, got {actual:?}"
+            );
+        }
+        let keys = seeds
+            .into_iter()
+            .map(|(role, seed)| (role, seed_to_rng(seed)))
+            .collect();
+        Ok(Self { own_role, keys })
+    }
+
+    pub fn own_role(&self) -> Role {
+        self.own_role
+    }
+
+    /// The PRF for key `\lambda_{own_role, other}`. Returns `None` if
+    /// `other` is not a party this key set was built for.
+    pub fn get_mut(&mut self, other: Role) -> Option<&mut PrfRng> {
+        self.keys.get_mut(&other)
+    }
+
+    /// The other parties this party shares a pairwise key with.
+    pub fn parties(&self) -> impl Iterator<Item = Role> + '_ {
+        self.keys.keys().copied()
     }
 }
 
@@ -255,5 +429,64 @@ mod tests {
         helper(5)?;
 
         Ok(())
+    }
+
+    #[test]
+    fn test_party_pair_excluding_gives_six_disjoint_pairs() {
+        for own_role in orbit5_roles() {
+            let pairs = PartyPair::excluding(own_role);
+            assert_eq!(pairs.len(), 6);
+            assert!(pairs.iter().all(|pair| !pair.contains(own_role)));
+
+            let unique: std::collections::HashSet<_> = pairs.iter().collect();
+            assert_eq!(unique.len(), 6, "pairs must be pairwise distinct");
+        }
+
+        // Every one of the 10 possible pairs is owned by exactly 3 of the 5 parties.
+        let mut owner_counts: HashMap<PartyPair, u32> = HashMap::new();
+        for own_role in orbit5_roles() {
+            for pair in PartyPair::excluding(own_role) {
+                *owner_counts.entry(pair).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(owner_counts.len(), 10);
+        assert!(owner_counts.values().all(|&count| count == 3));
+    }
+
+    #[test]
+    fn test_threshold_prf_keys_from_seeds_rejects_wrong_key_set() {
+        let own_role = Role::new(0);
+        // Missing key set (empty) should be rejected.
+        assert!(ThresholdPrfKeys::from_seeds(own_role, BTreeMap::new()).is_err());
+
+        // A key set that includes a pair containing own_role should be rejected.
+        let mut seeds: BTreeMap<PartyPair, PrfSeed> = PartyPair::excluding(Role::new(1))
+            .into_iter()
+            .map(|pair| (pair, [0u8; 16]))
+            .collect();
+        assert!(ThresholdPrfKeys::from_seeds(own_role, seeds.clone()).is_err());
+
+        // The correct key set is accepted.
+        seeds = PartyPair::excluding(own_role)
+            .into_iter()
+            .map(|pair| (pair, [0u8; 16]))
+            .collect();
+        assert!(ThresholdPrfKeys::from_seeds(own_role, seeds).is_ok());
+    }
+
+    #[test]
+    fn test_pairwise_prf_keys_from_seeds_rejects_wrong_key_set() {
+        let own_role = Role::new(0);
+        assert!(PairwisePrfKeys::from_seeds(own_role, BTreeMap::new()).is_err());
+
+        // Including a key for `own_role` itself should be rejected.
+        let mut seeds: BTreeMap<Role, PrfSeed> = orbit5_roles()
+            .into_iter()
+            .map(|role| (role, [0u8; 16]))
+            .collect();
+        assert!(PairwisePrfKeys::from_seeds(own_role, seeds.clone()).is_err());
+
+        seeds.remove(&own_role);
+        assert!(PairwisePrfKeys::from_seeds(own_role, seeds).is_ok());
     }
 }

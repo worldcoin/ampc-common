@@ -1,10 +1,13 @@
 // Protocol operations for MPC
 // This file contains only the non-iris-specific protocol operations
 
+use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::mpc::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
-use crate::protocol::prf::{Prf, PrfSeed};
+use crate::protocol::prf::{
+    orbit5_roles, PairwisePrfKeys, PartyPair, Prf, PrfSeed, ThresholdPrfKeys, ORBIT5_PARTY_COUNT,
+};
 use ampc_secret_sharing::shares::bit::Bit;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::RingRandFillable;
@@ -14,6 +17,7 @@ use ampc_secret_sharing::shares::{
 use eyre::{bail, eyre, Result};
 use itertools::{izip, Itertools};
 use rand_distr::{Distribution, Standard};
+use std::collections::BTreeMap;
 use tracing::instrument;
 
 pub type DistancePair<T> = (DistanceShare<T>, DistanceShare<T>);
@@ -113,6 +117,109 @@ pub async fn setup_shared_seed(session: &mut NetworkSession, my_seed: PrfSeed) -
 
     let shared_seed = std::array::from_fn(|i| my_seed[i] ^ prev_seed[i] ^ next_seed[i]);
     Ok(shared_seed)
+}
+
+fn xor_seeds(a: PrfSeed, b: PrfSeed) -> PrfSeed {
+    std::array::from_fn(|i| a[i] ^ b[i])
+}
+
+fn decode_prf_seed(msg: Result<NetworkValue>, from: Role) -> Result<PrfSeed> {
+    match msg {
+        Ok(NetworkValue::PrfKey(seed)) => Ok(seed),
+        Ok(_) => Err(eyre!("expected a PrfKey message from {from:?}")),
+        Err(e) => Err(e),
+    }
+}
+
+/// Establishes the `(3, 5)` threshold PRF key configuration described by
+/// [`ThresholdPrfKeys`]. Requires exactly [`ORBIT5_PARTY_COUNT`] parties.
+///
+/// For each of the six excluded pairs `{i, j}` not containing this party's
+/// role, this party and the other two owners each contribute a random seed;
+/// the three contributions are exchanged and XORed together, so no single
+/// owner controls the resulting key.
+///
+/// Must run to completion, on every party, before any other message is sent
+/// on `session` — and before [`setup_pairwise_prf_keys`] is called on the
+/// same session — since both exchange bare, uncorrelated `PrfKey` messages.
+#[instrument(
+    level = "trace",
+    target = "mpc::network",
+    fields(party = ?session.own_role),
+    skip_all
+)]
+pub async fn setup_threshold_prf_keys(session: &mut NetworkSession) -> Result<ThresholdPrfKeys> {
+    let own_role = session.own_role();
+    let num_parties = session.role_assignments.len();
+    if num_parties != ORBIT5_PARTY_COUNT as usize {
+        bail!(
+            "threshold PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
+        );
+    }
+
+    let mut seeds = BTreeMap::new();
+    for pair in PartyPair::excluding(own_role) {
+        let (a, b) = pair.parties();
+        let co_owners: Vec<Role> = orbit5_roles()
+            .into_iter()
+            .filter(|role| *role != a && *role != b && *role != own_role)
+            .collect();
+        debug_assert_eq!(co_owners.len(), 2);
+
+        let my_seed = Prf::gen_seed();
+        for co_owner in &co_owners {
+            session
+                .send_to(NetworkValue::PrfKey(my_seed), co_owner)
+                .await?;
+        }
+
+        let mut combined = my_seed;
+        for co_owner in &co_owners {
+            let seed = decode_prf_seed(session.receive_from(co_owner).await, *co_owner)?;
+            combined = xor_seeds(combined, seed);
+        }
+        seeds.insert(pair, combined);
+    }
+
+    ThresholdPrfKeys::from_seeds(own_role, seeds)
+}
+
+/// Establishes one pairwise PRF key per other party, as described by
+/// [`PairwisePrfKeys`]. Requires exactly [`ORBIT5_PARTY_COUNT`] parties.
+///
+/// This party and each other party contribute a random seed for their
+/// shared key; the two contributions are XORed together so neither party
+/// alone controls the result.
+///
+/// Must run to completion, on every party, before any other message is sent
+/// on `session` — and before [`setup_threshold_prf_keys`] is called on the
+/// same session — since both exchange bare, uncorrelated `PrfKey` messages.
+#[instrument(
+    level = "trace",
+    target = "mpc::network",
+    fields(party = ?session.own_role),
+    skip_all
+)]
+pub async fn setup_pairwise_prf_keys(session: &mut NetworkSession) -> Result<PairwisePrfKeys> {
+    let own_role = session.own_role();
+    let num_parties = session.role_assignments.len();
+    if num_parties != ORBIT5_PARTY_COUNT as usize {
+        bail!(
+            "pairwise PRF key setup requires exactly {ORBIT5_PARTY_COUNT} parties, found {num_parties}"
+        );
+    }
+
+    let mut seeds = BTreeMap::new();
+    for other in orbit5_roles().into_iter().filter(|role| *role != own_role) {
+        let my_seed = Prf::gen_seed();
+        session
+            .send_to(NetworkValue::PrfKey(my_seed), &other)
+            .await?;
+        let other_seed = decode_prf_seed(session.receive_from(&other).await, other)?;
+        seeds.insert(other, xor_seeds(my_seed, other_seed));
+    }
+
+    PairwisePrfKeys::from_seeds(own_role, seeds)
 }
 
 /// Convert Galois Ring elements to replicated secret shares (Rep3)
@@ -670,7 +777,9 @@ pub async fn batch_signed_lift_vec_ring48(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::local::{generate_local_identities, LocalRuntime};
+    use crate::execution::local::{
+        generate_local_identities, generate_local_identities_orbit5, LocalRuntime,
+    };
     use crate::protocol::test_utils::create_array_sharing;
     use aes_prng::AesRng;
     use rand::RngCore;
@@ -728,6 +837,74 @@ mod tests {
             prf2.get_prev_prf().next_u64(),
             Prf::new(seeds[2], seeds[1]).get_prev_prf().next_u64()
         );
+    }
+
+    #[tokio::test]
+    async fn test_setup_threshold_and_pairwise_prf_keys_five_parties() {
+        let identities = generate_local_identities_orbit5();
+        let mut seeds = Vec::new();
+        for i in 0..ORBIT5_PARTY_COUNT {
+            let mut seed = [0_u8; 16];
+            seed[0] = i;
+            seeds.push(seed);
+        }
+        let runtime = LocalRuntime::new(identities.clone(), seeds.clone())
+            .await
+            .unwrap();
+
+        let mut jobs = JoinSet::new();
+        for session in runtime.sessions {
+            jobs.spawn(async move {
+                let mut network_session = session.network_session;
+                let threshold = setup_threshold_prf_keys(&mut network_session)
+                    .await
+                    .unwrap();
+                let pairwise = setup_pairwise_prf_keys(&mut network_session).await.unwrap();
+                (threshold, pairwise)
+            });
+        }
+        let mut by_role: Vec<(ThresholdPrfKeys, PairwisePrfKeys)> = jobs.join_all().await;
+        by_role.sort_by_key(|(t, _)| t.own_role().index());
+
+        for (threshold, pairwise) in &by_role {
+            let role = threshold.own_role();
+            assert_eq!(threshold.owned_pairs().count(), 6);
+            assert!(threshold.owned_pairs().all(|pair| !pair.contains(role)));
+            assert_eq!(pairwise.parties().count(), 4);
+            assert!(pairwise.parties().all(|other| other != role));
+        }
+
+        // Every threshold key must be agreed identically by all three owners.
+        for a in 0..ORBIT5_PARTY_COUNT {
+            for b in (a + 1)..ORBIT5_PARTY_COUNT {
+                let (role_a, role_b) = (Role::new(a as usize), Role::new(b as usize));
+                let mut agreed_value: Option<u64> = None;
+                let mut num_owners = 0;
+                for (threshold, _) in by_role.iter_mut() {
+                    let Some(rng) = threshold.get_mut(role_a, role_b) else {
+                        continue;
+                    };
+                    num_owners += 1;
+                    let value = rng.next_u64();
+                    match agreed_value {
+                        None => agreed_value = Some(value),
+                        Some(expected) => assert_eq!(value, expected),
+                    }
+                }
+                assert_eq!(num_owners, 3, "pair ({a},{b}) should have 3 owners");
+            }
+        }
+
+        // Every pairwise key must be agreed identically by both parties.
+        for a in 0..ORBIT5_PARTY_COUNT {
+            for b in (a + 1)..ORBIT5_PARTY_COUNT {
+                let role_a = Role::new(a as usize);
+                let role_b = Role::new(b as usize);
+                let a_value = by_role[a as usize].1.get_mut(role_b).unwrap().next_u64();
+                let b_value = by_role[b as usize].1.get_mut(role_a).unwrap().next_u64();
+                assert_eq!(a_value, b_value);
+            }
+        }
     }
 
     #[tokio::test]
