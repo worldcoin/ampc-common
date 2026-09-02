@@ -6,9 +6,10 @@ use crate::execution::session::{NetworkSession, Session, SessionHandles};
 use crate::network::mpc::{NetworkInt, NetworkValue};
 use crate::protocol::binary::{bit_inject, extract_msb_batch, lift, lift_to_ring48, open_bin};
 use crate::protocol::prf::{
-    orbit5_roles, PairwisePrfKeys, PartyPair, Prf, PrfSeed, ThresholdPrfKeys, ORBIT5_PARTY_COUNT,
+    orbit5_roles, PairwisePrfKeys, PartyPair, Prf, PrfSeed, ThresholdPrfKeys,
 };
 use ampc_secret_sharing::shares::bit::Bit;
+use ampc_secret_sharing::shares::rss5::ORBIT5_PARTY_COUNT;
 use ampc_secret_sharing::shares::share::DistanceShare;
 use ampc_secret_sharing::shares::RingRandFillable;
 use ampc_secret_sharing::shares::{
@@ -845,7 +846,7 @@ mod tests {
         let mut seeds = Vec::new();
         for i in 0..ORBIT5_PARTY_COUNT {
             let mut seed = [0_u8; 16];
-            seed[0] = i;
+            seed[0] = i as u8;
             seeds.push(seed);
         }
         let runtime = LocalRuntime::new(identities.clone(), seeds.clone())

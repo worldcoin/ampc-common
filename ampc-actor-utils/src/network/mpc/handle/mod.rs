@@ -17,7 +17,7 @@ use crate::network::mpc::handle::control_channel::{ControlChannel, MeshControlCh
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
-use crate::protocol::prf::ORBIT5_PARTY_COUNT;
+use ampc_secret_sharing::shares::rss5::ORBIT5_PARTY_COUNT;
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;

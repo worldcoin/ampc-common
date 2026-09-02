@@ -3,6 +3,7 @@ use crate::protocol::shuffle::Permutation;
 use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
+    rss5::ORBIT5_PARTY_COUNT,
 };
 use eyre::{bail, Result};
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
@@ -169,10 +170,6 @@ fn seed_to_rng(seed: PrfSeed) -> PrfRng {
         PrfRng::from_seed(seed)
     }
 }
-
-/// Number of parties in the ORBIT5 (5-party) protocol configuration used by
-/// [`ThresholdPrfKeys`] and [`PairwisePrfKeys`].
-pub const ORBIT5_PARTY_COUNT: u8 = 5;
 
 /// The roles of all ORBIT5 parties, in index order.
 pub fn orbit5_roles() -> [Role; ORBIT5_PARTY_COUNT as usize] {
