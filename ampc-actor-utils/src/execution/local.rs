@@ -28,6 +28,19 @@ pub fn generate_local_identities() -> Vec<Identity> {
     ]
 }
 
+/// The fixed identities of the five ORBIT5 parties, in role order. Used both
+/// in tests and to derive a consistent per-index self-identity across
+/// parties in production (see `build_network_handle`).
+pub fn generate_local_identities_orbit5() -> Vec<Identity> {
+    vec![
+        Identity::from("alice"),
+        Identity::from("bob"),
+        Identity::from("charlie"),
+        Identity::from("dave"),
+        Identity::from("erin"),
+    ]
+}
+
 static USED_PORTS: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub async fn get_free_local_addresses(num_ports: usize) -> Result<Vec<String>> {
