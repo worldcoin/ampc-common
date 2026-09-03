@@ -116,7 +116,7 @@ impl<T: IntRing2k> Mul<T> for RssShare<T> {
 /// `MUL_ASSIGN[i]` lists the right-hand slots that a party pairs with its own
 /// left-hand slot `i`, so party `p` computes
 ///
-/// ```
+/// ```ignore
 /// v_p = sum over i of ( a_i * sum over j in MUL_ASSIGN[i] of b_j )
 /// ```
 ///
