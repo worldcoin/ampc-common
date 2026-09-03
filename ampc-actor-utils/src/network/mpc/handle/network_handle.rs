@@ -446,17 +446,18 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use tracing_test::traced_test;
 
-    use crate::execution::local::generate_local_identities_n;
+    use crate::execution::local::{generate_local_identities, generate_local_identities_orbit5};
+    use crate::execution::player::Identity;
     use crate::network::tcp::ConnectionState;
 
-    /// Establishes `num_parties` TCP handles (each connected to every other
+    /// Establishes one TCP handle per identity (each connected to every other
     /// party) and has every party exchange raw bytes with every peer over
     /// every connection, to verify the N-peer connection-establishment path
     /// (not just the 3-party ring case).
-    async fn run_tcp_network_handle_test(num_parties: u8) -> Result<()> {
+    async fn run_tcp_network_handle_test(identities: Vec<Identity>) -> Result<()> {
         const CONNECTIONS_PER_PEER: u32 = 2;
 
-        let identities = generate_local_identities_n(num_parties as usize);
+        let num_parties = identities.len() as u8;
         let handles = get_local_mpc_handles(identities, CONNECTIONS_PER_PEER as usize, 1).await?;
         let cs = ConnectionState::new(CancellationToken::new(), CancellationToken::new());
 
@@ -510,12 +511,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
     async fn test_tcp_network_handle() -> Result<()> {
-        run_tcp_network_handle_test(3).await
+        run_tcp_network_handle_test(generate_local_identities()).await
     }
 
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
     async fn test_tcp_network_handle_five_parties() -> Result<()> {
-        run_tcp_network_handle_test(5).await
+        run_tcp_network_handle_test(generate_local_identities_orbit5()).await
     }
 }
