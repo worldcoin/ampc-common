@@ -1,11 +1,12 @@
-// Convert 5-of-5 and 3-of-3 additive shares. 
+// Convert 5-of-5 and 3-of-3 additive shares.
 // See `FiveToThreeRoles`/`reshare_five_to_three_additive` below.
 
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
-use crate::protocol::prf::{PairwisePrfKeys, FIVE_PARTY_COUNT};
+use crate::protocol::prf::PairwisePrfKeys;
 use ampc_secret_sharing::shares::ring_impl::RingElement;
+use ampc_secret_sharing::shares::rss5::ORBIT5_PARTY_COUNT;
 use eyre::{bail, eyre, Result};
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
@@ -44,15 +45,13 @@ impl FiveToThreeRoles {
             .chain(self.senders.iter())
             .copied()
             .collect();
-        if given.len() != FIVE_PARTY_COUNT as usize {
+        if given.len() != ORBIT5_PARTY_COUNT {
             bail!(
-                "FiveToThreeRoles must name {FIVE_PARTY_COUNT} distinct roles, got {}: {self:?}",
+                "FiveToThreeRoles must name {ORBIT5_PARTY_COUNT} distinct roles, got {}: {self:?}",
                 given.len()
             );
         }
-        let expected: BTreeSet<Role> = (0..FIVE_PARTY_COUNT)
-            .map(|i| Role::new(i as usize))
-            .collect();
+        let expected: BTreeSet<Role> = (0..ORBIT5_PARTY_COUNT).map(Role::new).collect();
         if given != expected {
             bail!("FiveToThreeRoles does not cover the 5-party role set: {self:?}");
         }
@@ -61,7 +60,7 @@ impl FiveToThreeRoles {
 }
 
 /// Converts a 5-of-5 additive sharing `d = d_0 + ... + d_4` into a 3-of-3
-/// additive sharing held by `roles.recipients` using pariwise PRF keys. 
+/// additive sharing held by `roles.recipients` using pariwise PRF keys.
 /// <1 communication round, one message per sender (batched), and 2 PRF draws per
 /// non-collector party>
 ///
@@ -102,12 +101,13 @@ where
 
     // prf_piece is a helper that given a pairwise instance (tied to own role)
     // and a role of other party + len of vector, returns a vector of random elements of that length
-    let prf_piece = |pairwise: &mut PairwisePrfKeys, other: Role, len: usize| -> Result<Vec<RingElement<T>>> {
-        let rng = pairwise
-            .get_mut(other)
-            .ok_or_else(|| eyre!("no pairwise PRF key held with {other:?}"))?;
-        Ok((0..len).map(|_| rng.gen::<RingElement<T>>()).collect())
-    };
+    let prf_piece =
+        |pairwise: &mut PairwisePrfKeys, other: Role, len: usize| -> Result<Vec<RingElement<T>>> {
+            let rng = pairwise
+                .get_mut(other)
+                .ok_or_else(|| eyre!("no pairwise PRF key held with {other:?}"))?;
+            Ok((0..len).map(|_| rng.gen::<RingElement<T>>()).collect())
+        };
 
     if own_role == s0 || own_role == s1 {
         let mask_r0 = prf_piece(pairwise, r0, shares.len())?;
@@ -118,9 +118,7 @@ where
             .zip(mask_r1)
             .map(|((d, a), b)| d - a - b)
             .collect();
-        session
-            .send_to(T::new_network_vec(correction), &r2)
-            .await?;
+        session.send_to(T::new_network_vec(correction), &r2).await?;
         Ok(vec![])
     } else if own_role == r0 || own_role == r1 {
         let mask_s0 = prf_piece(pairwise, s0, shares.len())?;
@@ -164,7 +162,8 @@ where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    reshare_five_to_three_party_additive(session, pairwise, &FiveToThreeRoles::canonical(), shares).await
+    reshare_five_to_three_party_additive(session, pairwise, &FiveToThreeRoles::canonical(), shares)
+        .await
 }
 
 #[cfg(test)]
@@ -172,7 +171,9 @@ mod tests {
     use super::*;
     use crate::execution::local::{generate_local_identities_n, LocalRuntime};
     use crate::protocol::ops::setup_pairwise_prf_keys;
-    use crate::protocol::test_utils::{create_array_sharing_additive_5party, reconstruct_additive_shares};
+    use crate::protocol::test_utils::{
+        create_array_sharing_additive_5party, reconstruct_additive_shares,
+    };
     use aes_prng::AesRng;
     use rand::SeedableRng;
     use tokio::task::JoinSet;
@@ -181,14 +182,14 @@ mod tests {
         roles: FiveToThreeRoles,
         per_party_shares: [Vec<RingElement<u16>>; 5],
     ) -> Vec<(Role, Vec<RingElement<u16>>)> {
-        let identities = generate_local_identities_n(FIVE_PARTY_COUNT as usize);
+        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT);
         let mut seeds = Vec::new();
 
         // this test assigns deterministic seeds to each party
-        // g3: potentially update the seeds to be from rng? 
-        for i in 0..FIVE_PARTY_COUNT {
+        // g3: potentially update the seeds to be from rng?
+        for i in 0..ORBIT5_PARTY_COUNT {
             let mut seed = [0_u8; 16];
-            seed[0] = i;
+            seed[0] = i as u8;
             seeds.push(seed);
         }
         let runtime = LocalRuntime::new(identities, seeds).await.unwrap();
@@ -219,8 +220,10 @@ mod tests {
     }
 
     /// Reconstructs the plaintext values from the 3 recipients' 3-of-3
-    /// additive shares 
-    fn reconstruct_additive_shares_5of3(recipient_shares: &[(Role, Vec<RingElement<u16>>)]) -> Vec<u16> {
+    /// additive shares
+    fn reconstruct_additive_shares_5of3(
+        recipient_shares: &[(Role, Vec<RingElement<u16>>)],
+    ) -> Vec<u16> {
         let recipient_columns: Vec<&Vec<RingElement<u16>>> = recipient_shares
             .iter()
             .filter(|(_, v)| !v.is_empty())
@@ -247,7 +250,10 @@ mod tests {
 
         for (role, shares) in &results {
             if roles.senders.contains(role) {
-                assert!(shares.is_empty(), "sender {role:?} should hold no output share");
+                assert!(
+                    shares.is_empty(),
+                    "sender {role:?} should hold no output share"
+                );
             } else {
                 assert_eq!(shares.len(), values.len());
             }
