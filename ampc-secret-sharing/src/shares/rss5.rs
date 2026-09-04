@@ -8,15 +8,22 @@ use super::{int_ring::IntRing2k, ring_impl::RingElement};
 use num_traits::Zero;
 use std::ops::{Add, Mul, Sub};
 
-/// Number of parties.
-pub const RSS5_PARTIES: usize = 5;
+/// Number of parties in the ORBIT5 (5-party) protocol configuration.
+pub const ORBIT5_PARTY_COUNT: usize = 5;
 
 /// Number of shares held by each party: `C(4, 2)`.
 pub const RSS5_SLOTS_HELD: usize = 6;
 
 /// The index pair of each locally-held slot, as offsets from the holder's own
 /// role. Slot `i` of party `p` is the share indexed by the pair
-/// `{p + SLOT_OFFSETS[i].0, p + SLOT_OFFSETS[i].1}` (mod [`RSS5_PARTIES`]).
+/// `{p + SLOT_OFFSETS[i].0, p + SLOT_OFFSETS[i].1}` (mod [`ORBIT5_PARTY_COUNT`]).
+/// In particular:
+/// Role 0: [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
+/// Role 1: [(2, 3), (2, 4), (0, 2), (3, 4), (0, 3), (0, 4)]
+/// Role 2: [(3, 4), (0, 3), (1, 3), (0, 4), (1, 4), (0, 1)]
+/// Role 3: [(0, 4), (1, 4), (2, 4), (0, 1), (0, 2), (1, 2)]
+/// Role 4: [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+///
 /// See Appedix C of "Multi-Party Replicated Secret Sharing over a Ring with
 /// Applications to Privacy-Preserving Machine Learning" by Baccarini, Blanton and Yuan,
 /// for the mapping below
@@ -27,7 +34,10 @@ pub const SLOT_OFFSETS: [(usize, usize); RSS5_SLOTS_HELD] =
 /// ordered pair of absolute role indices.
 pub fn slot_pair(role: usize, slot: usize) -> (usize, usize) {
     let (i, j) = SLOT_OFFSETS[slot];
-    let (i, j) = ((role + i) % RSS5_PARTIES, (role + j) % RSS5_PARTIES);
+    let (i, j) = (
+        (role + i) % ORBIT5_PARTY_COUNT,
+        (role + j) % ORBIT5_PARTY_COUNT,
+    );
     if i <= j {
         (i, j)
     } else {
@@ -106,7 +116,7 @@ impl<T: IntRing2k> Mul<T> for RssShare<T> {
 /// `MUL_ASSIGN[i]` lists the right-hand slots that a party pairs with its own
 /// left-hand slot `i`, so party `p` computes
 ///
-/// ```
+/// ```ignore
 /// v_p = sum over i of ( a_i * sum over j in MUL_ASSIGN[i] of b_j )
 /// ```
 ///
@@ -116,7 +126,7 @@ impl<T: IntRing2k> Mul<T> for RssShare<T> {
 /// to `p` uses only slots that `p` holds.
 ///
 /// Taken from Appendix C of Baccarini, Blanton and Yuan.
-const MUL_ASSIGN: [&[usize]; RSS5_SLOTS_HELD] = [
+const MUL_OPERAND_ASSIGN: [&[usize]; RSS5_SLOTS_HELD] = [
     &[0, 1, 2, 3, 4, 5], // a_0 * (b_0 + b_1 + b_2 + b_3 + b_4 + b_5)
     &[0, 1, 2, 3, 4, 5], // a_1 * (b_0 + b_1 + b_2 + b_3 + b_4 + b_5)
     &[1, 3],             // a_2 * (b_1 + b_3)
@@ -132,7 +142,7 @@ impl<T: IntRing2k> Mul<Self> for &RssShare<T> {
 
     fn mul(self, rhs: Self) -> Self::Output {
         let mut acc = RingElement::zero();
-        for (i, rhs_slots) in MUL_ASSIGN.iter().enumerate() {
+        for (i, rhs_slots) in MUL_OPERAND_ASSIGN.iter().enumerate() {
             let mut rhs_sum = RingElement::zero();
             for &j in rhs_slots.iter() {
                 rhs_sum += rhs.slots[j];
@@ -155,13 +165,13 @@ mod tests {
 
     /// The ten unordered pairs of distinct parties, i.e. every share index.
     fn all_pairs() -> Vec<(usize, usize)> {
-        (0..RSS5_PARTIES)
-            .flat_map(|i| (i + 1..RSS5_PARTIES).map(move |j| (i, j)))
+        (0..ORBIT5_PARTY_COUNT)
+            .flat_map(|i| (i + 1..ORBIT5_PARTY_COUNT).map(move |j| (i, j)))
             .collect()
     }
 
     /// Deal a fresh sharing of `value` and return all five parties' views.
-    fn get_shares<T: IntRing2k>(rng: &mut impl Rng, value: T) -> [RssShare<T>; RSS5_PARTIES]
+    fn get_shares<T: IntRing2k>(rng: &mut impl Rng, value: T) -> [RssShare<T>; ORBIT5_PARTY_COUNT]
     where
         Standard: Distribution<T>,
     {
@@ -187,7 +197,9 @@ mod tests {
     /// Reconstruct a secret from all five views, checking on the way that the
     /// parties agree on the shares they replicate and that every one of the ten
     /// shares is held by somebody.
-    fn reconstruct_shares<T: IntRing2k>(shares: &[RssShare<T>; RSS5_PARTIES]) -> RingElement<T> {
+    fn reconstruct_shares<T: IntRing2k>(
+        shares: &[RssShare<T>; ORBIT5_PARTY_COUNT],
+    ) -> RingElement<T> {
         let mut slots: HashMap<(usize, usize), RingElement<T>> = HashMap::new();
         for (role, share) in shares.iter().enumerate() {
             for (slot, value) in share.slots.iter().enumerate() {
@@ -210,22 +222,23 @@ mod tests {
     /// Reconstruct from the 5-of-5 additive sharing that the local halves of a
     /// multiplication produce.
     fn reconstruct_mul_shares<T: IntRing2k>(
-        parts: [RingElement<T>; RSS5_PARTIES],
+        parts: [RingElement<T>; ORBIT5_PARTY_COUNT],
     ) -> RingElement<T> {
         parts
             .iter()
             .fold(RingElement::zero(), |acc, part| acc + *part)
     }
 
-    /// [`MUL_ASSIGN`] must partition the cross-terms: each of the 100 ordered
+    /// [`MUL_OPERAND_ASSIGN`] must partition the cross-terms: each of the 100 ordered
     /// pairs of share indices assigned to exactly one party, and no party
     /// assigned a term over a share it does not hold.
     #[test]
     fn mul_assignment_partitions_all_cross_terms() {
-        let mut assigned_to: HashMap<((usize, usize), (usize, usize)), usize> = HashMap::new();
+        type SlotPair = ((usize, usize), (usize, usize));
+        let mut assigned_to: HashMap<SlotPair, usize> = HashMap::new();
 
-        for role in 0..RSS5_PARTIES {
-            for (i, rhs_slots) in MUL_ASSIGN.iter().enumerate() {
+        for role in 0..ORBIT5_PARTY_COUNT {
+            for (i, rhs_slots) in MUL_OPERAND_ASSIGN.iter().enumerate() {
                 for &j in rhs_slots.iter() {
                     let (lhs, rhs) = (slot_pair(role, i), slot_pair(role, j));
 
@@ -278,7 +291,7 @@ mod tests {
 
             // Multiplication
             let expected_mul = RingElement(a_t.wrapping_mul(&b_t));
-            let c: [RingElement<T>; RSS5_PARTIES] = std::array::from_fn(|i| &a[i] * &b[i]);
+            let c: [RingElement<T>; ORBIT5_PARTY_COUNT] = std::array::from_fn(|i| &a[i] * &b[i]);
             assert_eq!(reconstruct_mul_shares(c), expected_mul);
         }
     }

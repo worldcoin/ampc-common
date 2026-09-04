@@ -10,13 +10,14 @@ use std::time::Duration;
 
 use self::config::MpcConfig;
 use self::network_handle::MpcNetworkHandle;
-use crate::execution::local::generate_local_identities_n;
+use crate::execution::local::{generate_local_identities, generate_local_identities_orbit5};
 use crate::execution::player::{Role, RoleAssignment};
 use crate::execution::session::{NetworkSession, Session};
 use crate::network::mpc::handle::control_channel::{ControlChannel, MeshControlChannel};
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
+use ampc_secret_sharing::shares::rss5::ORBIT5_PARTY_COUNT;
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -78,7 +79,11 @@ pub async fn build_network_handle(
 ) -> Result<Box<dyn NetworkHandle>> {
     tcp::init_rustls_crypto_provider();
 
-    let identities = generate_local_identities_n(args.addresses.len());
+    let identities = match args.addresses.len() {
+        3 => generate_local_identities(),
+        n if n == ORBIT5_PARTY_COUNT => generate_local_identities_orbit5(),
+        n => eyre::bail!("unsupported party count {n}: expected 3 or {ORBIT5_PARTY_COUNT}"),
+    };
     let role_assignments: RoleAssignment = identities
         .iter()
         .enumerate()
@@ -321,7 +326,7 @@ mod tests {
     use tokio::time::sleep;
     use tracing_test::traced_test;
 
-    use crate::execution::local::{generate_local_identities, generate_local_identities_n};
+    use crate::execution::local::{generate_local_identities, generate_local_identities_orbit5};
     use crate::execution::player::{Identity, Role};
     use crate::execution::session::NetworkSession;
     use crate::network::mpc::NetworkValue;
@@ -459,7 +464,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[traced_test]
     async fn test_mpc_comms_correct_five_parties() -> Result<()> {
-        let identities = generate_local_identities_n(5);
+        let identities = generate_local_identities_orbit5();
         let (_managers, mut sessions) =
             setup_local_mpc_networking(identities.clone(), 1, 1).await?;
         sleep(Duration::from_millis(500)).await;

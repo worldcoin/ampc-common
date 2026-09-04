@@ -3,6 +3,7 @@ use crate::protocol::shuffle::Permutation;
 use ampc_secret_sharing::shares::{
     int_ring::IntRing2k,
     ring_impl::{RingElement, RingRandFillable, VecRingElement},
+    rss5::ORBIT5_PARTY_COUNT,
 };
 use eyre::{bail, Result};
 use rand::{distributions::Standard, prelude::Distribution, Rng, SeedableRng};
@@ -170,11 +171,8 @@ fn seed_to_rng(seed: PrfSeed) -> PrfRng {
     }
 }
 
-/// Number of parties in the 5-party protocol configuration used by
-/// [`ThresholdPrfKeys`] and [`PairwisePrfKeys`].
-pub const FIVE_PARTY_COUNT: u8 = 5;
-
-fn five_party_roles() -> [Role; FIVE_PARTY_COUNT as usize] {
+/// The roles of all ORBIT5 parties, in index order.
+pub fn orbit5_roles() -> [Role; ORBIT5_PARTY_COUNT] {
     std::array::from_fn(Role::new)
 }
 
@@ -204,10 +202,10 @@ impl PartyPair {
         (self.0, self.1)
     }
 
-    /// All unordered pairs among the five parties that do not contain
-    /// `own_role`. There are `C(4, 2) = 6` of them.
+    /// All unordered pairs among the five ORBIT5 parties that do not
+    /// contain `own_role`. There are `C(4, 2) = 6` of them.
     pub fn excluding(own_role: Role) -> Vec<PartyPair> {
-        let roles = five_party_roles();
+        let roles = orbit5_roles();
         let mut pairs = Vec::with_capacity(6);
         for (idx, &a) in roles.iter().enumerate() {
             if a == own_role {
@@ -224,7 +222,7 @@ impl PartyPair {
     }
 }
 
-/// A `(3, 5)` shared-PRF key configuration for a 5-party protocol.
+/// A `(3, 5)` shared-PRF key configuration for the ORBIT5 (5-party) protocol.
 ///
 /// For every unordered pair of parties `{i, j}` there is one key `k_{i,j}`,
 /// known only to the three parties *not* in `{i, j}`. Each party therefore
@@ -301,10 +299,10 @@ impl PairwisePrfKeys {
     /// Build the key set from one already-agreed seed per other party.
     ///
     /// Fails unless `seeds` contains exactly one entry per other party in
-    /// the 5-party configuration (i.e. `0..FIVE_PARTY_COUNT`, excluding
+    /// the ORBIT5 configuration (i.e. `0..ORBIT5_PARTY_COUNT`, excluding
     /// `own_role`).
     pub fn from_seeds(own_role: Role, seeds: BTreeMap<Role, PrfSeed>) -> Result<Self> {
-        let expected: BTreeSet<Role> = five_party_roles()
+        let expected: BTreeSet<Role> = orbit5_roles()
             .into_iter()
             .filter(|role| *role != own_role)
             .collect();
@@ -432,8 +430,7 @@ mod tests {
 
     #[test]
     fn test_party_pair_excluding_gives_six_disjoint_pairs() {
-        for own in 0..FIVE_PARTY_COUNT {
-            let own_role = Role::new(own as usize);
+        for own_role in orbit5_roles() {
             let pairs = PartyPair::excluding(own_role);
             assert_eq!(pairs.len(), 6);
             assert!(pairs.iter().all(|pair| !pair.contains(own_role)));
@@ -444,8 +441,8 @@ mod tests {
 
         // Every one of the 10 possible pairs is owned by exactly 3 of the 5 parties.
         let mut owner_counts: HashMap<PartyPair, u32> = HashMap::new();
-        for own in 0..FIVE_PARTY_COUNT {
-            for pair in PartyPair::excluding(Role::new(own as usize)) {
+        for own_role in orbit5_roles() {
+            for pair in PartyPair::excluding(own_role) {
                 *owner_counts.entry(pair).or_insert(0) += 1;
             }
         }
@@ -480,8 +477,9 @@ mod tests {
         assert!(PairwisePrfKeys::from_seeds(own_role, BTreeMap::new()).is_err());
 
         // Including a key for `own_role` itself should be rejected.
-        let mut seeds: BTreeMap<Role, PrfSeed> = (0..FIVE_PARTY_COUNT)
-            .map(|i| (Role::new(i as usize), [0u8; 16]))
+        let mut seeds: BTreeMap<Role, PrfSeed> = orbit5_roles()
+            .into_iter()
+            .map(|role| (role, [0u8; 16]))
             .collect();
         assert!(PairwisePrfKeys::from_seeds(own_role, seeds.clone()).is_err());
 
