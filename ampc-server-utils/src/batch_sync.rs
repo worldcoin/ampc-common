@@ -13,6 +13,16 @@ use std::sync::{Arc, LazyLock};
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
+// Reuse connections and avoid rebuilding the TLS client for every local poll.
+static BATCH_SYNC_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
+// A peer moving between adjacent batches is ordinary progress, not a transport
+// failure. Start promptly, then cap polling at ten requests/second for long lag.
+async fn wait_for_peer(delay: &mut Duration) {
+    tokio::time::sleep(*delay).await;
+    *delay = (*delay * 2).min(Duration::from_millis(100));
+}
+
 pub static CURRENT_BATCH_SHA: LazyLock<std::sync::Mutex<[u8; 32]>> =
     LazyLock::new(|| std::sync::Mutex::new([0; 32]));
 pub static CURRENT_BATCH_VALID_ENTRIES: LazyLock<std::sync::Mutex<Vec<bool>>> =
@@ -221,6 +231,7 @@ pub async fn get_batch_sync_states(
 
     for host in [next_node, prev_node].iter() {
         let mut fetched_state: Option<BatchSyncState> = None;
+        let mut peer_delay = Duration::from_millis(5);
         // Records why the most recent poll attempt did not succeed, so that if
         // the outer timeout fires we can report the actual cause rather than a
         // bare "timeout" message.
@@ -231,7 +242,7 @@ pub async fn get_batch_sync_states(
             loop {
                 // Add batch_id as query parameter
                 let url = format!("{}?batch_id={}", host.as_str(), reference_batch_id);
-                let res = match reqwest::get(&url).await {
+                let res = match BATCH_SYNC_CLIENT.get(&url).send().await {
                     Ok(res) => res,
                     Err(e) => {
                         tracing::warn!(
@@ -259,7 +270,7 @@ pub async fn get_batch_sync_states(
                         .unwrap_or_else(|_| "Unknown error".to_string());
                     if status == reqwest::StatusCode::CONFLICT {
                         tracing::debug!(
-                            "Party {} returned batch ID mismatch: {}. Retrying in 1 second...",
+                            "Party {} returned batch ID mismatch: {}. Retrying shortly...",
                             host,
                             error_body
                         );
@@ -272,7 +283,11 @@ pub async fn get_batch_sync_states(
                         );
                     }
                     last_observed = Some(format!("HTTP {}: {}", status, error_body));
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    if status == reqwest::StatusCode::CONFLICT {
+                        wait_for_peer(&mut peer_delay).await;
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
                     continue;
                 }
 
@@ -292,7 +307,7 @@ pub async fn get_batch_sync_states(
 
                 if state.batch_id < reference_batch_id {
                     tracing::debug!(
-                        "Party {} (batch_id {}) is behind own batch_id {}. Retrying in 1 second...",
+                        "Party {} (batch_id {}) is behind own batch_id {}. Retrying shortly...",
                         host,
                         state.batch_id,
                         reference_batch_id
@@ -301,7 +316,7 @@ pub async fn get_batch_sync_states(
                         "peer at batch_id {} is behind reference {}",
                         state.batch_id, reference_batch_id
                     ));
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    wait_for_peer(&mut peer_delay).await;
                 } else {
                     fetched_state = Some(state);
                     break;
@@ -395,6 +410,7 @@ pub async fn get_batch_sync_entries(
 
     for host in [next_node, prev_node].iter() {
         let mut fetched_state: Option<BatchSyncEntries> = None;
+        let mut peer_delay = Duration::from_millis(5);
         // Records why the most recent poll attempt did not succeed, so that if
         // the outer timeout fires we can report the actual cause rather than a
         // bare "timeout" message.
@@ -403,7 +419,7 @@ pub async fn get_batch_sync_entries(
         match timeout(polling_timeout_duration, async {
             // Outer timeout bounds all retry logic in this loop
             loop {
-                let res = match reqwest::get(host.as_str()).await {
+                let res = match BATCH_SYNC_CLIENT.get(host.as_str()).send().await {
                     Ok(res) => res,
                     Err(e) => {
                         tracing::warn!(
@@ -450,7 +466,7 @@ pub async fn get_batch_sync_entries(
 
                 if !state.batch_sha.eq(&own_sync_state.batch_sha) {
                     tracing::debug!(
-                        "Party {} (batch_hash {}) differs from own ({}). Retrying in 1 second...",
+                        "Party {} (batch_hash {}) differs from own ({}). Retrying shortly...",
                         host,
                         hex::encode(&state.batch_sha[0..4]),
                         hex::encode(&own_sync_state.batch_sha[0..4])
@@ -460,7 +476,7 @@ pub async fn get_batch_sync_entries(
                         hex::encode(&state.batch_sha[0..4]),
                         hex::encode(&own_sync_state.batch_sha[0..4])
                     ));
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    wait_for_peer(&mut peer_delay).await;
                     continue;
                 } else {
                     fetched_state = Some(state);
@@ -523,5 +539,98 @@ pub async fn get_own_batch_sync_entries() -> BatchSyncEntries {
     BatchSyncEntries {
         valid_entries: current_batch_valid_entries.clone(),
         batch_sha: current_batch_hash.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{extract::ConnectInfo, Json};
+    use std::{
+        collections::HashSet,
+        net::SocketAddr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    #[tokio::test]
+    async fn batch_progress_retries_promptly_and_reuses_connections() -> Result<()> {
+        let state_calls = Arc::new(AtomicUsize::new(0));
+        let entry_calls = Arc::new(AtomicUsize::new(0));
+        let connections = Arc::new(Mutex::new(HashSet::new()));
+        let state_route = {
+            let calls = state_calls.clone();
+            let connections = connections.clone();
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
+                let calls = calls.clone();
+                let connections = connections.clone();
+                async move {
+                    connections.lock().await.insert(peer);
+                    match calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => (StatusCode::CONFLICT, "peer has not advanced").into_response(),
+                        n => Json(BatchSyncState {
+                            batch_id: if n == 1 { 6 } else { 7 },
+                            messages_to_poll: 1,
+                        })
+                        .into_response(),
+                    }
+                }
+            }
+        };
+        let entry_route = {
+            let calls = entry_calls.clone();
+            let connections = connections.clone();
+            move |ConnectInfo(peer): ConnectInfo<SocketAddr>| {
+                let calls = calls.clone();
+                let connections = connections.clone();
+                async move {
+                    connections.lock().await.insert(peer);
+                    Json(BatchSyncEntries {
+                        batch_sha: if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                            [0; 32]
+                        } else {
+                            [7; 32]
+                        },
+                        valid_entries: vec![true, false],
+                    })
+                }
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = Router::new()
+            .route("/batch-sync-state", get(state_route))
+            .route("/batch-sync-entries", get(entry_route));
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        });
+        let mut config: ServerCoordinationConfig = serde_json::from_str("{}")?;
+        config.node_hostnames = vec!["127.0.0.1".into(); 3];
+        config.healthcheck_ports = vec![address.port().to_string(); 3];
+        let own_state = BatchSyncState {
+            batch_id: 7,
+            messages_to_poll: 1,
+        };
+        let own_entries = BatchSyncEntries {
+            batch_sha: [7; 32],
+            valid_entries: vec![true, false],
+        };
+        let result = timeout(Duration::from_millis(750), async {
+            let states = get_batch_sync_states(&config, Some(&own_state), 20).await?;
+            assert_eq!(states, vec![own_state; 3]);
+            let entries = get_batch_sync_entries(&config, Some(own_entries.clone())).await?;
+            assert_eq!(entries, vec![own_entries; 3]);
+            Ok::<_, eyre::Report>(())
+        })
+        .await;
+        server.abort();
+        result??;
+        assert_eq!(state_calls.load(Ordering::SeqCst), 4);
+        assert_eq!(entry_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(connections.lock().await.len(), 1);
+        Ok(())
     }
 }
