@@ -360,6 +360,27 @@ pub mod degree4 {
                 .unwrap()
         }
 
+        pub fn encode_5<R: CryptoRng + Rng>(
+            input: &GaloisRingElement<Monomial>,
+            rng: &mut R,
+        ) -> [ShamirGaloisRingShare; 5] {
+            let coefs = [
+                *input,
+                GaloisRingElement::random(rng),
+                GaloisRingElement::random(rng),
+            ];
+            (1..=5)
+                .map(|i| {
+                    let element = GaloisRingElement::EXCEPTIONAL_SEQUENCE[i];
+                    let share = coefs[0] + coefs[1] * element + coefs[2] * element * element;
+                    ShamirGaloisRingShare { id: i, y: share }
+                })
+                .collect::<Vec<_>>()
+                .as_slice()
+                .try_into()
+                .unwrap()
+        }
+
         pub fn encode_3_mat<R: CryptoRng + Rng>(
             input: &[u16; 4],
             rng: &mut R,
@@ -415,6 +436,28 @@ pub mod degree4 {
             res = res
                 * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
                     - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse();
+            res
+        }
+
+        pub fn orbit5_deg_2_lagrange_polys_at_zero(
+            my_id: PartyID,
+            other_id_1: PartyID,
+            other_id_2: PartyID,
+        ) -> GaloisRingElement<Monomial> {
+            let mut res = GaloisRingElement::ONE;
+            let i = usize::from(my_id) + 1;
+            let j = usize::from(other_id_1) + 1;
+            let k = usize::from(other_id_2) + 1;
+            res = res
+                * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[k]);
+            res = res
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse()
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[k])
                     .inverse();
             res
         }
