@@ -18,7 +18,6 @@ pub trait Role {
     Clone, Copy, Debug, PartialEq, Default, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash,
 )]
 #[serde(bound = "")]
-//TODO evagelia: change this for 5pc
 /// A replicated share of a value in a ring.
 /// The value is shared among three parties, with each party holding two shares.
 /// The shares are represented as a pair of [RingElement], where `a` is the share held by party i and `b` is the share held by party i-1 (mod 3).
@@ -27,7 +26,6 @@ pub struct Share<T: IntRing2k + Sized> {
     pub b: RingElement<T>,
 }
 
-////TODO evagelia: check operators for 5pc
 impl<T: IntRing2k> Share<T> {
     pub fn new(a: RingElement<T>, b: RingElement<T>) -> Self {
         Self { a, b }
@@ -38,7 +36,6 @@ impl<T: IntRing2k> Share<T> {
         res.add_assign_const_role(value, role);
         res
     }
-    //TODO evagelia: change this for 5pc
     pub fn add_assign_const_role<R: Role>(&mut self, other: T, role: R) {
         match role.index() {
             0 => self.a += RingElement(other),
@@ -180,7 +177,6 @@ impl<T: IntRing2k> MulAssign<T> for Share<T> {
         self.b *= rhs;
     }
 }
-//TODO evagelia: change this for 5pc
 /// This is only the local part of the multiplication (so without randomness and
 /// without communication)!
 impl<T: IntRing2k> Mul<Self> for &Share<T> {
@@ -370,7 +366,6 @@ impl<T: IntRing2k> Shl<u32> for &Share<T> {
 /// The greater the ratio `code_dot / mask_dot`, the more similar the irises are.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
-//TODO evagelia: check if this needs changing for 5pc
 pub struct DistanceShare<T: IntRing2k> {
     pub code_dot: Share<T>,
     pub mask_dot: Share<T>,

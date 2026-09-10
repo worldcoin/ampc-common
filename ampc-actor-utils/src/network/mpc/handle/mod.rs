@@ -17,7 +17,7 @@ use crate::network::mpc::handle::control_channel::{ControlChannel, MeshControlCh
 use crate::network::tcp::connection::client::{BoxTcpClient, TcpClient, TlsClient};
 use crate::network::tcp::connection::server::{BoxTcpServer, TcpServer, TlsServer};
 use crate::network::tcp::{self, TcpStreamConn, TlsClientConfig, TlsConfig, TlsServerConfig};
-use crate::protocol::prf::ORBIT5_PARTY_COUNT;
+use ampc_secret_sharing::shares::rss5::ORBIT5_PARTY_COUNT;
 use async_trait::async_trait;
 use eyre::Result;
 use itertools::izip;
@@ -81,7 +81,7 @@ pub async fn build_network_handle(
 
     let identities = match args.addresses.len() {
         3 => generate_local_identities(),
-        n if n == ORBIT5_PARTY_COUNT as usize => generate_local_identities_orbit5(),
+        n if n == ORBIT5_PARTY_COUNT => generate_local_identities_orbit5(),
         n => eyre::bail!("unsupported party count {n}: expected 3 or {ORBIT5_PARTY_COUNT}"),
     };
     let role_assignments: RoleAssignment = identities
