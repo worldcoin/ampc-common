@@ -1,5 +1,5 @@
 // Convert 5-of-5 and 3-of-3 additive shares.
-// See `FiveToThreeRoles`/`reshare_five_to_three_additive` below.
+// See `FiveToThreeRoles`/`reshare_five_to_three_party_additive` below.
 
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
@@ -60,9 +60,10 @@ impl FiveToThreeRoles {
 }
 
 /// Converts a 5-of-5 additive sharing `d = d_0 + ... + d_4` into a 3-of-3
-/// additive sharing held by `roles.recipients` using pariwise PRF keys.
-/// <1 communication round, one message per sender (batched), and 2 PRF draws per
-/// non-collector party>
+/// additive sharing held by `roles.receivers` using pairwise PRF keys.
+///
+/// This takes one communication round, with one batched message per sender and
+/// two PRF draws per non-collector party.
 ///
 /// Every one of the 5 parties must call this with its own 5-of-5 additive
 /// share of each value in `shares` (all parties pass batches of the same
@@ -70,8 +71,8 @@ impl FiveToThreeRoles {
 /// output share. The 3 receiver parties get back their 3-of-3 additive
 /// share of each value, in the same order as `shares`.
 ///
-/// Testing requires that `pairwise` setup for the
-/// same session, and this party's `own_role` must appear in
+/// The `pairwise` keys must be set up for the same session, and this party's
+/// `own_role` must appear in
 /// `roles.receivers` or `roles.senders`.
 
 #[instrument(
@@ -90,7 +91,10 @@ where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    roles.validate()?;
+    debug_assert!(
+        roles.validate().is_ok(),
+        "invalid FiveToThreeRoles: {roles:?}"
+    );
     if shares.is_empty() {
         bail!("reshare_5to3_party_additive: shares must not be empty");
     }
@@ -151,7 +155,7 @@ where
     }
 }
 
-/// Convenience wrapper over [`reshare_five_to_three_additive`] hardcoding the
+/// Convenience wrapper over [`reshare_five_to_three_party_additive`] hardcoding the
 /// canonical P0, P1, P2 (recipients) / P3, P4 (resharers) role split.
 pub async fn reshare_five_to_three_additive_canonical<T>(
     session: &mut NetworkSession,
@@ -221,7 +225,7 @@ mod tests {
 
     /// Reconstructs the plaintext values from the 3 recipients' 3-of-3
     /// additive shares
-    fn reconstruct_additive_shares_5of3(
+    fn reconstruct_three_party_additive_shares(
         recipient_shares: &[(Role, Vec<RingElement<u16>>)],
     ) -> Vec<u16> {
         let recipient_columns: Vec<&Vec<RingElement<u16>>> = recipient_shares
@@ -259,7 +263,7 @@ mod tests {
             }
         }
 
-        let reconstructed = reconstruct_additive_shares_5of3(&results);
+        let reconstructed = reconstruct_three_party_additive_shares(&results);
         assert_eq!(reconstructed, values);
     }
 
@@ -275,7 +279,7 @@ mod tests {
         };
 
         let results = test_reshare_5to3_additive(roles, per_party_shares).await;
-        let reconstructed = reconstruct_additive_shares_5of3(&results);
+        let reconstructed = reconstruct_three_party_additive_shares(&results);
         assert_eq!(reconstructed, values);
     }
 
