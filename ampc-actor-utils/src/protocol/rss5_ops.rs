@@ -15,11 +15,11 @@ use tracing::instrument;
 
 /// Role assignment for one round of 5-of-5 -> 3-of-3 additive resharing.
 ///
-/// `receivers[0]` and `receivers[1]` derive their piece of each senders'
-/// share locally from a pairwise PRF key. `receivers[2]` is the one
-/// recipient that instead receives its correction over the network from each
-/// sender. `senders` are the two parties whose 5-of-5 additive share is
-/// being split up and distributed to the recipients.
+/// `senders[0]` masks its share for `receivers[0]` and `receivers[2]`, then
+/// sends the correction to `receivers[1]`. `senders[1]` masks its share for
+/// `receivers[0]` and `receivers[1]`, then sends the correction to
+/// `receivers[2]`. This distributes the two network messages across two
+/// receivers instead of sending both to one receiver.
 #[derive(Clone, Copy, Debug)]
 pub struct FiveToThreeRoles {
     pub receivers: [Role; 3],
@@ -33,6 +33,20 @@ impl FiveToThreeRoles {
         Self {
             receivers: [Role::new(0), Role::new(1), Role::new(2)],
             senders: [Role::new(3), Role::new(4)],
+        }
+    }
+
+    /// Returns the two receivers that derive masks with `sender` and the
+    /// receiver to which `sender` sends its correction.
+    fn sender_route(&self, sender: Role) -> Option<([Role; 2], Role)> {
+        let [r0, r1, r2] = self.receivers;
+        let [s0, s1] = self.senders;
+        if sender == s0 {
+            Some(([r0, r2], r1))
+        } else if sender == s1 {
+            Some(([r0, r1], r2))
+        } else {
+            None
         }
     }
 
@@ -62,8 +76,8 @@ impl FiveToThreeRoles {
 /// Converts a 5-of-5 additive sharing `d = d_0 + ... + d_4` into a 3-of-3
 /// additive sharing held by `roles.receivers` using pairwise PRF keys.
 ///
-/// This takes one communication round, with one batched message per sender and
-/// two PRF draws per non-collector party.
+/// This takes one communication round, with one batched message and two
+/// PRF-derived masks per sender share.
 ///
 /// Every one of the 5 parties must call this with its own 5-of-5 additive
 /// share of each value in `shares` (all parties pass batches of the same
@@ -113,18 +127,20 @@ where
             Ok((0..len).map(|_| rng.gen::<RingElement<T>>()).collect())
         };
 
-    if own_role == s0 || own_role == s1 {
-        let mask_r0 = prf_piece(pairwise, r0, shares.len())?;
-        let mask_r1 = prf_piece(pairwise, r1, shares.len())?;
+    if let Some((masked_receivers, correction_receiver)) = roles.sender_route(own_role) {
+        let mask_0 = prf_piece(pairwise, masked_receivers[0], shares.len())?;
+        let mask_1 = prf_piece(pairwise, masked_receivers[1], shares.len())?;
         let correction: Vec<RingElement<T>> = shares
             .into_iter()
-            .zip(mask_r0)
-            .zip(mask_r1)
+            .zip(mask_0)
+            .zip(mask_1)
             .map(|((d, a), b)| d - a - b)
             .collect();
-        session.send_to(T::new_network_vec(correction), &r2).await?;
+        session
+            .send_to(T::new_network_vec(correction), &correction_receiver)
+            .await?;
         Ok(vec![])
-    } else if own_role == r0 || own_role == r1 {
+    } else if own_role == r0 {
         let mask_s0 = prf_piece(pairwise, s0, shares.len())?;
         let mask_s1 = prf_piece(pairwise, s1, shares.len())?;
         Ok(shares
@@ -133,21 +149,21 @@ where
             .zip(mask_s1)
             .map(|((d, a), b)| d + a + b)
             .collect())
-    } else if own_role == r2 {
-        let from_s0 = T::into_vec(session.receive_from(&s0).await?)?;
-        let from_s1 = T::into_vec(session.receive_from(&s1).await?)?;
-        if from_s0.len() != shares.len() || from_s1.len() != shares.len() {
+    } else if own_role == r1 || own_role == r2 {
+        let (masked_sender, correction_sender) = if own_role == r1 { (s1, s0) } else { (s0, s1) };
+        let mask = prf_piece(pairwise, masked_sender, shares.len())?;
+        let correction = T::into_vec(session.receive_from(&correction_sender).await?)?;
+        if correction.len() != shares.len() {
             bail!(
-                "reshare_five_to_three_party_additive: expected {} elements from each resharer, got {} and {}",
+                "reshare_five_to_three_party_additive: expected {} elements from correction sender {correction_sender:?}, got {}",
                 shares.len(),
-                from_s0.len(),
-                from_s1.len()
+                correction.len()
             );
         }
         Ok(shares
             .into_iter()
-            .zip(from_s0)
-            .zip(from_s1)
+            .zip(mask)
+            .zip(correction)
             .map(|((d, a), b)| d + a + b)
             .collect())
     } else {
@@ -281,6 +297,17 @@ mod tests {
         let results = test_reshare_5to3_additive(roles, per_party_shares).await;
         let reconstructed = reconstruct_three_party_additive_shares(&results);
         assert_eq!(reconstructed, values);
+    }
+
+    #[test]
+    fn test_correction_routes_are_distributed() {
+        let roles = FiveToThreeRoles::canonical();
+        let [r0, r1, r2] = roles.receivers;
+        let [s0, s1] = roles.senders;
+
+        assert_eq!(roles.sender_route(s0), Some(([r0, r2], r1)));
+        assert_eq!(roles.sender_route(s1), Some(([r0, r1], r2)));
+        assert_eq!(roles.sender_route(r0), None);
     }
 
     #[test]
