@@ -270,7 +270,7 @@ impl IrisVector {
                 self.0[i + 3] as u16,
             ]);
             let element = element.to_monomial();
-            let share = ShamirGaloisRingShare::encode_5(&element, rng);
+            let share = ShamirGaloisRingShare::encode_5_mat(&element.coefs, rng);
             for j in 0..5 {
                 shares[j].0[i] = share[j].y.coefs[0];
                 shares[j].0[i + 1] = share[j].y.coefs[1];
