@@ -334,6 +334,82 @@ mod tests {
     use rand::SeedableRng;
     use tokio::task::JoinSet;
 
+    #[tokio::test]
+    async fn test_rss5_and_many() {
+        const K: usize = 10000;
+        check_rss5_and_many(K).await;
+    }
+
+    async fn check_rss5_and_many(k: usize) {
+        use crate::protocol::test_utils::rss5_boolean::{reconstruct, share};
+
+        let mut rng = AesRng::seed_from_u64(52);
+        // Keep small boundary batches as well as K random operand pairs.
+        let cases: Vec<(Vec<u64>, Vec<u64>)> = [0, 1, 64, 65, k]
+            .into_iter()
+            .map(|len| {
+                let lhs = (0..len).map(|_| rng.gen()).collect();
+                let rhs = (0..len).map(|_| rng.gen()).collect();
+                (lhs, rhs)
+            })
+            .collect();
+        let shared: Vec<_> = cases
+            .iter()
+            .map(|(lhs, rhs)| (share(&mut rng, lhs), share(&mut rng, rhs)))
+            .collect();
+        let runtime = LocalRuntime::new(
+            generate_local_identities_n(5),
+            (0..5).map(|i| [i; 16]).collect(),
+        )
+        .await
+        .unwrap();
+        let mut jobs = JoinSet::new();
+        for session in runtime.sessions {
+            let shared = shared.clone();
+            jobs.spawn(async move {
+                let mut network = session.network_session;
+                let role = network.own_role().index();
+                let mut threshold = setup_threshold_prf_keys(&mut network).await.unwrap();
+                let mut outputs = Vec::new();
+                for (lhs, rhs) in shared {
+                    let lhs = &lhs[role];
+                    let rhs = &rhs[role];
+                    if !lhs.is_empty() {
+                        assert!(
+                            and_many(&mut network, &mut threshold, lhs, &rhs[..rhs.len() - 1])
+                                .await
+                                .is_err()
+                        );
+                    }
+                    let product = and_many(&mut network, &mut threshold, lhs, rhs)
+                        .await
+                        .unwrap();
+                    // Reuse both the PRF state and the freshly reshared AND output.
+                    let repeated = and_many(&mut network, &mut threshold, &product, lhs)
+                        .await
+                        .unwrap();
+                    outputs.push((product, repeated));
+                }
+                (role, outputs)
+            });
+        }
+        let mut results = tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
+            .await
+            .expect("AND protocol timed out");
+        results.sort_by_key(|(role, _)| *role);
+        for (case, (lhs, rhs)) in cases.iter().enumerate() {
+            let expected: Vec<u64> = lhs.iter().zip(rhs).map(|(x, y)| x & y).collect();
+            let product = reconstruct(std::array::from_fn(|role| {
+                results[role].1[case].0.as_slice()
+            }));
+            let repeated = reconstruct(std::array::from_fn(|role| {
+                results[role].1[case].1.as_slice()
+            }));
+            assert_eq!(product, expected);
+            assert_eq!(repeated, expected);
+        }
+    }
+
     async fn test_reshare_5to3_additive(
         roles: FiveToThreeRoles,
         per_party_shares: [Vec<RingElement<u16>>; 5],

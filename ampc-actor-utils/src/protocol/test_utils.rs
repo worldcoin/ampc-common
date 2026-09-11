@@ -3,6 +3,67 @@ use num_traits::Zero;
 use rand::{Rng, RngCore};
 use rand_distr::{Distribution, Standard};
 
+#[cfg(test)]
+pub(crate) mod rss5_boolean {
+    use ampc_secret_sharing::shares::rss5::{slot_pair, RssShare};
+    use ampc_secret_sharing::RingElement;
+    use rand::Rng;
+    use std::collections::BTreeMap;
+
+    pub fn share(rng: &mut impl Rng, values: &[u64]) -> [Vec<RssShare<u64>>; 5] {
+        let mut result: [Vec<RssShare<u64>>; 5] = std::array::from_fn(|_| Vec::new());
+        for &value in values {
+            // Nine random components and one correction, indexed by excluded pair.
+            let mut components = BTreeMap::new();
+            let mut correction = value;
+            for i in 0..5 {
+                for j in i + 1..5 {
+                    let component = if (i, j) == (3, 4) {
+                        correction
+                    } else {
+                        rng.gen()
+                    };
+                    correction ^= component;
+                    components.insert((i, j), component);
+                }
+            }
+            for (role, shares) in result.iter_mut().enumerate() {
+                shares.push(RssShare {
+                    slots: std::array::from_fn(|slot| {
+                        RingElement(components[&slot_pair(role, slot)])
+                    }),
+                });
+            }
+        }
+        result
+    }
+
+    pub fn reconstruct(parties: [&[RssShare<u64>]; 5]) -> Vec<u64> {
+        let len = parties[0].len();
+        assert!(parties.iter().all(|shares| shares.len() == len));
+        (0..len)
+            .map(|index| {
+                let mut components = BTreeMap::new();
+                for (role, shares) in parties.iter().enumerate() {
+                    for (slot, component) in shares[index].slots.iter().enumerate() {
+                        let entry = components
+                            .entry(slot_pair(role, slot))
+                            .or_insert((component.0, 0));
+                        assert_eq!(entry.0, component.0, "inconsistent RSS replicas");
+                        entry.1 += 1;
+                    }
+                }
+                assert_eq!(components.len(), 10);
+                // XOR each distinct component once, after checking all three replicas.
+                components.values().fold(0, |acc, &(value, count)| {
+                    assert_eq!(count, 3);
+                    acc ^ value
+                })
+            })
+            .collect()
+    }
+}
+
 fn create_single_sharing<R: RngCore, T: IntRing2k>(
     rng: &mut R,
     input: T,
