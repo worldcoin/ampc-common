@@ -1,4 +1,63 @@
-use super::{ring48::Ring48, ring_impl::RingElement, share::Share, vecshare::VecShare};
+use super::{
+    ring48::Ring48,
+    ring_impl::RingElement,
+    rss5::{RssShare, RSS5_SLOTS_HELD},
+    share::Share,
+    vecshare::VecShare,
+};
+use eyre::{ensure, Result};
+
+/// Locally compact one summand's batch of 16 Boolean bit sharings per comparison.
+/// Inputs must share individual bits in least-significant-bit-first order.
+pub fn compact_rss5_u16_bits(bits: &[Vec<RssShare<u16>>]) -> Result<Vec<RssShare<u16>>> {
+    let mut result = Vec::with_capacity(bits.len());
+    for (comparison, bit_shares) in bits.iter().enumerate() {
+        ensure!(
+            bit_shares.len() == u16::BITS as usize,
+            "comparison {comparison} has {} bit shares, expected 16",
+            bit_shares.len()
+        );
+
+        let mut compact = RssShare {
+            slots: [RingElement(0u16); RSS5_SLOTS_HELD],
+        };
+        for (bit_index, bit_share) in bit_shares.iter().enumerate() {
+            for (output, component) in compact.slots.iter_mut().zip(&bit_share.slots) {
+                // Only the LSB shares the secret bit; upper bits mask zeros.
+                // Move each extracted bit to its own position in the same slot.
+                output.0 |= (component.0 & 1) << bit_index;
+            }
+        }
+        result.push(compact);
+    }
+    Ok(result)
+}
+
+/// Transpose compact Boolean RSS shares into 16 bit planes, LSB first.
+/// Each u64 packs one bit from up to 64 comparisons; unused lanes are zero.
+pub fn transpose_rss5_u16(shares: &[RssShare<u16>]) -> [Vec<RssShare<u64>>; 16] {
+    let packed_len = shares.len().div_ceil(64);
+    let mut result: [Vec<RssShare<u64>>; 16] = std::array::from_fn(|_| {
+        vec![
+            RssShare {
+                slots: [RingElement(0u64); RSS5_SLOTS_HELD],
+            };
+            packed_len
+        ]
+    });
+
+    for (comparison, share) in shares.iter().enumerate() {
+        let group = comparison / 64;
+        let lane = comparison % 64;
+        for (bit_index, plane) in result.iter_mut().enumerate() {
+            // Move this comparison's bit into its lane, preserving the six slots.
+            for (output, component) in plane[group].slots.iter_mut().zip(&share.slots) {
+                output.0 |= u64::from((component.0 >> bit_index) & 1) << lane;
+            }
+        }
+    }
+    result
+}
 
 pub trait Transpose64 {
     fn transpose_pack_u64(self) -> Vec<VecShare<u64>>;
@@ -455,6 +514,44 @@ mod tests {
     use super::*;
     use crate::shares::{vecshare::VecShare, IntRing2k};
     use rand::Rng;
+
+    #[test]
+    fn test_rss5_transpose_u16() {
+        const K: usize = 100000;
+        check_rss5_transpose_u16(K);
+    }
+
+    fn check_rss5_transpose_u16(k: usize) {
+        use rand::{rngs::StdRng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(51);
+        for len in [0usize, 1, 63, 64, 65, 127, 128, 129, k] {
+            let shares: Vec<RssShare<u16>> = (0..len)
+                .map(|_| RssShare {
+                    slots: std::array::from_fn(|_| RingElement(rng.gen())),
+                })
+                .collect();
+            let planes = transpose_rss5_u16(&shares);
+            assert!(planes.iter().all(|plane| plane.len() == len.div_ceil(64)));
+
+            // Recover every local component, including the zero-padded comparisons.
+            for comparison in 0..len.div_ceil(64) * 64 {
+                for slot in 0..RSS5_SLOTS_HELD {
+                    let recovered = planes.iter().rev().fold(0u16, |acc, plane| {
+                        (acc << 1)
+                            | ((plane[comparison / 64].slots[slot].0 >> (comparison % 64)) & 1)
+                                as u16
+                    });
+                    let expected = shares
+                        .get(comparison)
+                        .map_or(0, |share| share.slots[slot].0);
+                    assert_eq!(
+                        recovered, expected,
+                        "length {len}, comparison {comparison}, slot {slot}"
+                    );
+                }
+            }
+        }
+    }
 
     fn check_transposed<T: IntRing2k, U: IntRing2k>(
         transposed: Vec<VecShare<T>>,
