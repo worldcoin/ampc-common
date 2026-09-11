@@ -21,6 +21,12 @@ itertools = { workspace = true }
 itertools = { workspace = true }
 aes-prng = { git = "https://github.com/tf-encrypted/aes-prng.git", branch = "dragos/display" }
 rand_distr = "0.4"
+criterion = "0.8.1"
+
+[[bench]]
+name = "galois_encode"
+harness = false
+path = "benches/galois_encode.rs"
 
 [lib]
 name = "ampc_secret_sharing"
