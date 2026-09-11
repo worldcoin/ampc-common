@@ -21,7 +21,7 @@ use rand_distr::{Distribution, Standard};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy)]
-enum ShareType {
+pub(crate) enum ShareType {
     Arithmetic,
     Boolean,
 }
@@ -61,7 +61,10 @@ fn correction_route(dealer: Role) -> Result<(PartyPair, [Role; 2])> {
     Ok((PartyPair::new(others[0], others[1]), [others[2], others[3]]))
 }
 
-async fn dealer_rss5_batch<T>(
+/// Shares a nonempty batch using arithmetic addition or bitwise XOR.
+/// All parties pass the same dealer, mode, and batch length; only the dealer's
+/// input values are read. Boolean mode preserves the packed bits without decomposition.
+pub(crate) async fn dealer_rss5_batch<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
