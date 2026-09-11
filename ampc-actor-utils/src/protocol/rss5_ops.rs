@@ -4,10 +4,10 @@
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
-use crate::protocol::dealer_5pc::dealer_rss5_boolean_batch;
-use crate::protocol::prf::{PairwisePrfKeys, ThresholdPrfKeys};
+use crate::protocol::dealer_5pc::{dealer_rss5_batch, dealer_rss5_boolean_batch, ShareType};
+use crate::protocol::prf::{orbit5_roles, PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
-use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT};
+use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
 use eyre::{bail, eyre, Result};
 use num_traits::Zero;
 use rand::Rng;
@@ -266,6 +266,59 @@ where
     dealer_batches
         .try_into()
         .map_err(|_| eyre!("3-party additive-to-boolean RSS5 expected three dealer batches"))
+}
+
+/// Computes ANDs on batches of Boolean RSS shares, with 64 bits packed per element.
+/// All five parties must use the same batch length and call order with matching
+/// session-specific threshold PRF streams. Empty batches require no communication.
+pub async fn and_many(
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    lhs: &[RssShare<u64>],
+    rhs: &[RssShare<u64>],
+) -> Result<Vec<RssShare<u64>>> {
+    if lhs.len() != rhs.len() {
+        bail!("AND input batches must have equal lengths");
+    }
+    if lhs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Each party computes its assigned cross-terms for every packed element.
+    let local: Vec<RingElement<u64>> = lhs.iter().zip(rhs).map(|(a, b)| a & b).collect();
+    let own_role = session.own_role();
+    let mut result = vec![
+        RssShare {
+            slots: [RingElement::zero(); RSS5_SLOTS_HELD],
+        };
+        lhs.len()
+    ];
+
+    // Complete one dealer call at a time, in a common order. This reuses the
+    // existing API; it does not yet schedule all five dealers in one round.
+    for dealer in orbit5_roles() {
+        let dealer_input = if dealer == own_role {
+            local.clone()
+        } else {
+            vec![RingElement::zero(); lhs.len()]
+        };
+        let shared =
+            dealer_rss5_batch(session, threshold, dealer, dealer_input, ShareType::Boolean).await?;
+        if shared.len() != lhs.len() {
+            bail!(
+                "Boolean dealer {dealer:?} returned {} AND contributions, expected {}",
+                shared.len(),
+                lhs.len()
+            );
+        }
+
+        // XOR the five sharings to obtain RSS shares of the AND result.
+        for (output, contribution) in result.iter_mut().zip(shared) {
+            *output ^= contribution;
+        }
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
