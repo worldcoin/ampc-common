@@ -381,146 +381,48 @@ pub mod degree4 {
                 .unwrap()
         }
 
+        /// Evaluate P(z) = s + rz + tz^2 at 1, X, 1 + X, X^2, and 1 + X^2.
+        /// Reusing multiples of X gives a circuit of 51 scalar wrapping additions.
         pub fn encode_5_mat<R: CryptoRng + Rng>(
             input: &[u16; 4],
             rng: &mut R,
         ) -> [ShamirGaloisRingShare; 5] {
-            let invec = [
-                // s = secret = s0 + s1 X + s2 X^2 + s3 X^3
-                input[0], // invec[0] = s0
-                input[1], // invec[1] = s1
-                input[2], // invec[2] = s2
-                input[3], // invec[3] = s3
-                // r = randomness 1 = r0 + r1 X + r2 X^2 + r3 X^3
-                rng.gen(), // invec[4] = r0
-                rng.gen(), // invec[5] = r1
-                rng.gen(), // invec[6] = r2
-                rng.gen(), // invec[7] = r3
-                // t = randomness 2 = t0 + t1 X + t2 X^2 + t3 X^3
-                rng.gen(), // invec[8] = t0
-                rng.gen(), // invec[9] = t1
-                rng.gen(), // invec[10] = t2
-                rng.gen(), // invec[11] = t3
-            ];
-
-            // share1 = P(e1) = s + r * e1 + t * e1^2
-            //        = s + r * 1 + t * 1
-            //        = (s0 + r0 + t0) + (s1 + r1 + t1)*X + (s2 + r2 + t2)*X^2 + (s3 + r3 + t3)*X^3
-            let share1 = ShamirGaloisRingShare {
-                id: 1,
-                y: GaloisRingElement::from_coefs([
-                    invec[0].wrapping_add(invec[4]).wrapping_add(invec[8]),
-                    invec[1].wrapping_add(invec[5]).wrapping_add(invec[9]),
-                    invec[2].wrapping_add(invec[6]).wrapping_add(invec[10]),
-                    invec[3].wrapping_add(invec[7]).wrapping_add(invec[11]),
-                ]),
+            // X^4 = X + 1, so multiplication by X costs one scalar addition.
+            let mul_x = |a: GaloisRingElement<Monomial>| {
+                let [a0, a1, a2, a3] = a.coefs;
+                GaloisRingElement::from_coefs([a3, a0.wrapping_add(a3), a1, a2])
             };
 
-            // share2 = P(e2) = s + r * e2 + t * e2^2
-            //        = s + r * X + t * X^2
-            //        = (s0 + r3 + t2) + (s1 + r0 + r3 + t2 + t3)*X + (s2 + r1 + t0 + t3)*X^2 + (s3 + r2 + t1)*X^3
-            let share2 = ShamirGaloisRingShare {
-                id: 2,
-                y: GaloisRingElement::from_coefs([
-                    invec[0].wrapping_add(invec[7]).wrapping_add(invec[10]),
-                    invec[1]
-                        .wrapping_add(invec[4])
-                        .wrapping_add(invec[7])
-                        .wrapping_add(invec[10])
-                        .wrapping_add(invec[11]),
-                    invec[2]
-                        .wrapping_add(invec[5])
-                        .wrapping_add(invec[8])
-                        .wrapping_add(invec[11]),
-                    invec[3].wrapping_add(invec[6]).wrapping_add(invec[9]),
-                ]),
-            };
+            let s = GaloisRingElement::from_coefs(*input);
+            let r = GaloisRingElement::random(rng);
+            let t = GaloisRingElement::random(rng);
 
-            // share3 = P(e3) = s + r * e3 + t * e3^2
-            //        = s + r * (1 + X) + t * (1 + X)^2
-            //        = P(e1) + P(e2) + (-s0 + 2t3) + (-s1 + 2t0 + 2t3)*X + (-s2 + 2t1)*X^2 + (-s3 +
-            //        2t2)*X^3
-            let share3 = ShamirGaloisRingShare {
-                id: 3,
-                y: GaloisRingElement::from_coefs([
-                    share1.y.coefs[0]
-                        .wrapping_add(share2.y.coefs[0])
-                        .wrapping_sub(invec[0])
-                        .wrapping_add(invec[11].wrapping_mul(2)),
-                    share1.y.coefs[1]
-                        .wrapping_add(share2.y.coefs[1])
-                        .wrapping_sub(invec[1])
-                        .wrapping_add(invec[8].wrapping_mul(2))
-                        .wrapping_add(invec[11].wrapping_mul(2)),
-                    share1.y.coefs[2]
-                        .wrapping_add(share2.y.coefs[2])
-                        .wrapping_sub(invec[2])
-                        .wrapping_add(invec[9].wrapping_mul(2)),
-                    share1.y.coefs[3]
-                        .wrapping_add(share2.y.coefs[3])
-                        .wrapping_sub(invec[3])
-                        .wrapping_add(invec[10].wrapping_mul(2)),
-                ]),
-            };
+            // Six scalar additions: four for r + t, one for each multiple of X.
+            let q = r + t;
+            let tx = mul_x(t);
+            let txx = mul_x(tx);
 
-            // share4 = P(e4) = s + r * e4 + t * e4^2
-            //        = s + r * X^2 + t * X^4
-            //        = (s0 + r2 + t0 + t3) + (s1 + r2 + r3 + t0 + t1 + t3)*X + (s2 + r0 + r3 + t1 +
-            //        t2)*X^2 + (s3 + r1 + t2 + t3)*X^3
-            let share4 = ShamirGaloisRingShare {
-                id: 4,
-                y: GaloisRingElement::from_coefs([
-                    invec[0]
-                        .wrapping_add(invec[6])
-                        .wrapping_add(invec[8])
-                        .wrapping_add(invec[11]),
-                    invec[1]
-                        .wrapping_add(invec[6])
-                        .wrapping_add(invec[7])
-                        .wrapping_add(invec[8])
-                        .wrapping_add(invec[9])
-                        .wrapping_add(invec[11]),
-                    invec[2]
-                        .wrapping_add(invec[4])
-                        .wrapping_add(invec[7])
-                        .wrapping_add(invec[9])
-                        .wrapping_add(invec[10]),
-                    invec[3]
-                        .wrapping_add(invec[5])
-                        .wrapping_add(invec[10])
-                        .wrapping_add(invec[11]),
-                ]),
-            };
+            // P(1), P(X), and P(X^2), using Horner's rule (23 additions).
+            let y1 = s + q;
+            let y2 = s + mul_x(r + tx);
+            let y4 = s + mul_x(mul_x(r + txx));
 
-            // share5 = P(e5) = s + r * e5 + t * e5^2
-            //        = s + r * (1 + X^2) + t * (1 + X^2)^2
-            //        = P(e1) + P(e4) + (-s0 + 2t2) + (-s1 + 2t2 + 2t3)*X + (-s2 + 2t0 + 2t3)*X^2 +
-            //        (-s3 + 2t1)*X^3
-            let share5 = ShamirGaloisRingShare {
-                id: 5,
-                y: GaloisRingElement::from_coefs([
-                    share1.y.coefs[0]
-                        .wrapping_add(share4.y.coefs[0])
-                        .wrapping_sub(invec[0])
-                        .wrapping_add(invec[10].wrapping_mul(2)),
-                    share1.y.coefs[1]
-                        .wrapping_add(share4.y.coefs[1])
-                        .wrapping_sub(invec[1])
-                        .wrapping_add(invec[10].wrapping_mul(2))
-                        .wrapping_add(invec[11].wrapping_mul(2)),
-                    share1.y.coefs[2]
-                        .wrapping_add(share4.y.coefs[2])
-                        .wrapping_sub(invec[2])
-                        .wrapping_add(invec[8].wrapping_mul(2))
-                        .wrapping_add(invec[11].wrapping_mul(2)),
-                    share1.y.coefs[3]
-                        .wrapping_add(share4.y.coefs[3])
-                        .wrapping_sub(invec[3])
-                        .wrapping_add(invec[9].wrapping_mul(2)),
-                ]),
-            };
+            // Compute 2t, 2Xt, and 2X^2t with six more additions.
+            let d = t + t;
+            let dx = mul_x(d);
+            let dxx = mul_x(dx);
 
-            [share1, share2, share3, share4, share5]
+            // P(1 + z) = P(z) + (r + t) + 2zt (16 additions for both shares).
+            let y3 = y2 + q + dx;
+            let y5 = y4 + q + dxx;
+
+            [
+                ShamirGaloisRingShare { id: 1, y: y1 },
+                ShamirGaloisRingShare { id: 2, y: y2 },
+                ShamirGaloisRingShare { id: 3, y: y3 },
+                ShamirGaloisRingShare { id: 4, y: y4 },
+                ShamirGaloisRingShare { id: 5, y: y5 },
+            ]
         }
 
         pub fn encode_3_mat<R: CryptoRng + Rng>(
@@ -771,6 +673,30 @@ pub mod degree4 {
             let expected = input1 * input2;
 
             assert_eq!(reconstructed, expected);
+        }
+
+        #[test]
+        fn encode_5_mat_matches_encode_5() {
+            use rand::{rngs::StdRng, SeedableRng};
+
+            let mut rng = StdRng::seed_from_u64(0);
+            let edge_cases = [[0; 4], [u16::MAX; 4], [0, 1, 0x8000, u16::MAX]];
+            for i in 0..1024 {
+                let input = if i < edge_cases.len() {
+                    GaloisRingElement::from_coefs(edge_cases[i])
+                } else {
+                    GaloisRingElement::random(&mut rng)
+                };
+                let mut reference_rng = rng.clone();
+                let expected = ShamirGaloisRingShare::encode_5(&input, &mut reference_rng);
+                let actual = ShamirGaloisRingShare::encode_5_mat(&input.coefs, &mut rng);
+                assert_eq!(actual, expected, "input {i}");
+                // Both encoders must also consume the same randomness.
+                assert_eq!(
+                    GaloisRingElement::<basis::Monomial>::random(&mut rng),
+                    GaloisRingElement::<basis::Monomial>::random(&mut reference_rng),
+                );
+            }
         }
 
         #[test]
