@@ -15,7 +15,7 @@ use ampc_secret_sharing::shares::int_ring::IntRing2k;
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{slot_pair, RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
 use eyre::{bail, eyre, Result, WrapErr};
-use num_traits::{One, Zero};
+use num_traits::Zero;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
@@ -219,62 +219,42 @@ where
     dealer_rss5_batch(session, threshold, dealer, shares, ShareType::Arithmetic).await
 }
 
-/// Bit-decomposes and deals one ring element as `T::K` boolean RSS shares.
+/// Deals one boolean secret.
+/// Equivalent to decomposing `secret` into bits and the dealer sharing each bit.
 ///
-/// The output is ordered least-significant bit first. All parties call this
-/// with the same `dealer`; only the dealer's `secret` is read.
+/// All parties call this with the same `dealer`. Only the dealer's `share` is
+/// read; other parties may pass zero.
 pub async fn dealer_rss5_boolean<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
     secret: RingElement<T>,
-) -> Result<Vec<RssShare<T>>>
+) -> Result<RssShare<T>>
 where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    let bits = (0..T::K).map(|index| secret.get_bit(index)).collect();
-    dealer_rss5_batch(session, threshold, dealer, bits, ShareType::Boolean).await
+    dealer_rss5_batch(session, threshold, dealer, vec![secret], ShareType::Boolean)
+        .await?
+        .pop()
+        .ok_or_else(|| eyre!("boolean RSS5 dealer returned no scalar share"))
 }
 
-/// Bit-decomposes and deals a non-empty batch of ring elements.
+/// Deals a non-empty batch of boolean secrets in one network message.
 ///
-/// The outer output vector follows the input order. Each inner vector contains
-/// `T::K` boolean RSS shares in least-significant-bit-first order.
+/// All parties must provide the same batch length. Only the dealer's shares
+/// are read; other parties may provide a same-length vector of zeros.
 pub async fn dealer_rss5_boolean_batch<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
     shares: Vec<RingElement<T>>,
-) -> Result<Vec<Vec<RssShare<T>>>>
+) -> Result<Vec<RssShare<T>>>
 where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    if shares.is_empty() {
-        bail!("boolean RSS5 batch must not be empty");
-    }
-
-    let batch_len = shares.len();
-    let bits = shares
-        .into_iter()
-        .flat_map(|share| (0..T::K).map(move |index| share.get_bit(index)))
-        .collect();
-    let flat_shares =
-        dealer_rss5_batch(session, threshold, dealer, bits, ShareType::Boolean).await?;
-    let expected_len = batch_len
-        .checked_mul(T::K)
-        .ok_or_else(|| eyre!("boolean RSS5 batch size overflow"))?;
-    if flat_shares.len() != expected_len {
-        bail!(
-            "boolean RSS5 dealer produced {} bit shares, expected {expected_len}",
-            flat_shares.len()
-        );
-    }
-    let mut flat_shares = flat_shares.into_iter();
-    Ok((0..batch_len)
-        .map(|_| flat_shares.by_ref().take(T::K).collect())
-        .collect())
+    dealer_rss5_batch(session, threshold, dealer, shares, ShareType::Boolean).await
 }
 
 fn validate_reconstruction_roles<T>(shares: &[(Role, T)]) -> Result<()> {
@@ -364,75 +344,22 @@ pub fn reconstruct_arithmetic_batch<T: IntRing2k>(
     reconstruct_rss5(shares, ShareType::Arithmetic)
 }
 
-fn pack_boolean_bits<T: IntRing2k>(bits: &[RingElement<T>]) -> Result<RingElement<T>> {
-    if bits.len() != T::K {
-        bail!(
-            "boolean RSS5 reconstruction requires {} bits, got {}",
-            T::K,
-            bits.len()
-        );
-    }
-
-    let mut value = RingElement::zero();
-    for (index, bit) in bits.iter().copied().enumerate() {
-        if bit != RingElement::zero() && bit != RingElement::one() {
-            bail!("boolean RSS5 share at bit index {index} reconstructed to {bit}, not 0 or 1");
-        }
-        let shift = u32::try_from(index)
-            .map_err(|_| eyre!("boolean RSS5 bit index {index} does not fit in u32"))?;
-        value |= bit << shift;
-    }
-    Ok(value)
+/// Checks all five replicated views and reconstructs one boolean secret.
+pub fn reconstruct_boolean<T: IntRing2k>(shares: &[(Role, RssShare<T>)]) -> Result<RingElement<T>> {
+    let batched: Vec<(Role, Vec<RssShare<T>>)> = shares
+        .iter()
+        .map(|(role, share)| (*role, vec![*share]))
+        .collect();
+    reconstruct_rss5(&batched, ShareType::Boolean)?
+        .pop()
+        .ok_or_else(|| eyre!("boolean RSS5 reconstruction returned no scalar"))
 }
 
-/// Reconstructs `T::K` boolean RSS bit shares into one ring element.
-///
-/// The input bits must be ordered least-significant bit first and each must
-/// reconstruct to exactly zero or one.
-pub fn reconstruct_boolean<T: IntRing2k>(
-    shares: &[(Role, Vec<RssShare<T>>)],
-) -> Result<RingElement<T>> {
-    let bits = reconstruct_rss5(shares, ShareType::Boolean)?;
-    pack_boolean_bits(&bits)
-}
-
-/// Reconstructs a batch of bit-decomposed boolean RSS values.
+/// Checks all five replicated views and reconstructs a boolean batch.
 pub fn reconstruct_boolean_batch<T: IntRing2k>(
-    shares: &[(Role, Vec<Vec<RssShare<T>>>)],
+    shares: &[(Role, Vec<RssShare<T>>)],
 ) -> Result<Vec<RingElement<T>>> {
-    validate_reconstruction_roles(shares)?;
-
-    let batch_len = shares.first().map_or(0, |(_, batch)| batch.len());
-    let flat_len = batch_len
-        .checked_mul(T::K)
-        .ok_or_else(|| eyre!("boolean RSS5 batch size overflow"))?;
-    let mut flattened = Vec::with_capacity(ORBIT5_PARTY_COUNT);
-
-    for (role, batch) in shares {
-        if batch.len() != batch_len {
-            bail!(
-                "boolean RSS5 reconstruction expected {batch_len} values from {role:?}, got {}",
-                batch.len()
-            );
-        }
-        let mut bit_shares = Vec::with_capacity(flat_len);
-        for (index, bits) in batch.iter().enumerate() {
-            if bits.len() != T::K {
-                bail!(
-                    "boolean RSS5 value {index} from {role:?} requires {} bit shares, got {}",
-                    T::K,
-                    bits.len()
-                );
-            }
-            bit_shares.extend_from_slice(bits);
-        }
-        flattened.push((*role, bit_shares));
-    }
-
-    reconstruct_rss5(&flattened, ShareType::Boolean)?
-        .chunks(T::K)
-        .map(pack_boolean_bits)
-        .collect()
+    reconstruct_rss5(&shares, ShareType::Boolean)
 }
 
 #[cfg(test)]
@@ -503,7 +430,7 @@ mod tests {
         (scalar, batch)
     }
 
-    type BooleanShares = Vec<RssShare<u16>>;
+    type BooleanShares = RssShare<u16>;
     type BooleanBatchShares = Vec<BooleanShares>;
 
     async fn run_boolean(
@@ -573,9 +500,6 @@ mod tests {
         let expected_batch = vec![0, 0xffff, 0x1234, 0xaaaa];
         let (scalar, batch) = run_boolean(Role::new(3), 0xa55a, expected_batch.clone()).await;
 
-        assert!(scalar
-            .iter()
-            .all(|(_, bit_shares)| bit_shares.len() == <u16 as IntRing2k>::K));
         assert_eq!(reconstruct_boolean(&scalar).unwrap(), RingElement(0xa55a));
         assert_eq!(
             reconstruct_boolean_batch(&batch).unwrap(),
@@ -584,25 +508,5 @@ mod tests {
                 .map(RingElement)
                 .collect::<Vec<_>>()
         );
-    }
-
-    #[test]
-    fn reconstruction_rejects_invalid_party_views_and_boolean_width() {
-        let zero = RssShare {
-            slots: [RingElement(0_u16); RSS5_SLOTS_HELD],
-        };
-        let duplicate_roles = vec![
-            (Role::new(0), zero),
-            (Role::new(0), zero),
-            (Role::new(1), zero),
-            (Role::new(2), zero),
-            (Role::new(3), zero),
-        ];
-        assert!(reconstruct_arithmetic(&duplicate_roles).is_err());
-
-        let wrong_width: Vec<(Role, Vec<RssShare<u16>>)> = (0..ORBIT5_PARTY_COUNT)
-            .map(|role| (Role::new(role), vec![zero; <u16 as IntRing2k>::K - 1]))
-            .collect();
-        assert!(reconstruct_boolean(&wrong_width).is_err());
     }
 }

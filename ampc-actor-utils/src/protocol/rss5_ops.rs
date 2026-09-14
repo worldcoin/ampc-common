@@ -200,16 +200,16 @@ where
 /// therefore cannot infer the batch length.
 ///
 /// Receiver roles must pass their `batch_len` additive shares. Sender roles
-/// must pass an empty vector. The returned outer vector follows the input
-/// order; each inner vector contains `T::K` bit shares, least-significant bit
-/// first.
+/// must pass an empty vector. Each returned batch follows the input order
+/// and contains one packed boolean RSS5 share per value, with all `T::K`
+/// bits shared using coordinate-wise XOR.
 pub async fn dealer_three_party_additive_as_boolean_rss5_batches<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     roles: &FiveToThreeRoles,
     additive_shares: Vec<RingElement<T>>,
     batch_len: usize,
-) -> Result<[Vec<Vec<RssShare<T>>>; 3]>
+) -> Result<[Vec<RssShare<T>>; 3]>
 where
     T: NetworkInt,
     Standard: Distribution<T>,
