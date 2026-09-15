@@ -365,7 +365,7 @@ pub fn reconstruct_boolean_batch<T: IntRing2k>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::local::{generate_local_identities_n, LocalRuntime};
+    use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
     use crate::protocol::ops::setup_threshold_prf_keys;
     use tokio::task::JoinSet;
 
@@ -384,7 +384,7 @@ mod tests {
         scalar: u16,
         batch: Vec<u16>,
     ) -> (Vec<(Role, RssShare<u16>)>, Vec<(Role, Vec<RssShare<u16>>)>) {
-        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT);
+        let identities = generate_local_identities_orbit5();
         let runtime = LocalRuntime::new(identities, local_seeds()).await.unwrap();
         let mut jobs = JoinSet::new();
 
@@ -438,7 +438,7 @@ mod tests {
         scalar: u16,
         batch: Vec<u16>,
     ) -> (Vec<(Role, BooleanShares)>, Vec<(Role, BooleanBatchShares)>) {
-        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT);
+        let identities = generate_local_identities_orbit5();
         let runtime = LocalRuntime::new(identities, local_seeds()).await.unwrap();
         let mut jobs = JoinSet::new();
 

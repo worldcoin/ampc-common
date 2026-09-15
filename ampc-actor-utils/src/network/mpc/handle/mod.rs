@@ -23,6 +23,8 @@ use eyre::Result;
 use itertools::izip;
 use tokio_util::sync::CancellationToken;
 
+pub const DEFAULT_MPC_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[async_trait]
 pub trait NetworkHandle: Send + Sync {
     // warning: dropping sessions may close the underlying connection. If other MPC
@@ -77,6 +79,14 @@ pub async fn build_network_handle(
     args: NetworkHandleArgs,
     shutdown_ct: CancellationToken,
 ) -> Result<Box<dyn NetworkHandle>> {
+    build_network_handle_with_timeout(args, shutdown_ct, DEFAULT_MPC_TIMEOUT).await
+}
+
+pub async fn build_network_handle_with_timeout(
+    args: NetworkHandleArgs,
+    shutdown_ct: CancellationToken,
+    timeout_duration: Duration,
+) -> Result<Box<dyn NetworkHandle>> {
     tcp::init_rustls_crypto_provider();
 
     let identities = match args.addresses.len() {
@@ -97,7 +107,7 @@ pub async fn build_network_handle(
     let my_addr = tcp::to_inaddr_any(my_address.parse::<SocketAddr>()?);
 
     let tcp_config = MpcConfig::new(
-        Duration::from_secs(10),
+        timeout_duration,
         args.connection_parallelism,
         args.request_parallelism * args.sessions_per_request,
     );

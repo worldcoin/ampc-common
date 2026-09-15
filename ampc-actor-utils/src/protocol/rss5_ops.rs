@@ -271,7 +271,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::local::{generate_local_identities_n, LocalRuntime};
+    use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
     use crate::protocol::dealer_5pc::reconstruct_boolean_batch;
     use crate::protocol::ops::{setup_pairwise_prf_keys, setup_threshold_prf_keys};
     use crate::protocol::test_utils::{
@@ -285,7 +285,7 @@ mod tests {
         roles: FiveToThreeRoles,
         per_party_shares: [Vec<RingElement<u16>>; 5],
     ) -> Vec<(Role, Vec<RingElement<u16>>)> {
-        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT);
+        let identities = generate_local_identities_orbit5();
         let mut seeds = Vec::new();
 
         // this test assigns deterministic seeds to each party
@@ -390,7 +390,7 @@ mod tests {
         let batch_len = values.len();
         let per_party_shares = create_additive_shares(&mut rng, &values);
         let roles = FiveToThreeRoles::canonical();
-        let identities = generate_local_identities_n(ORBIT5_PARTY_COUNT);
+        let identities = generate_local_identities_orbit5();
         let seeds = (0..ORBIT5_PARTY_COUNT)
             .map(|index| {
                 let mut seed = [0_u8; 16];

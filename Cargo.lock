@@ -155,6 +155,7 @@ dependencies = [
  "aes-prng",
  "base64",
  "bytemuck",
+ "criterion",
  "eyre",
  "itertools 0.13.0",
  "num-traits",
