@@ -102,48 +102,83 @@ mod tests {
     }
 
     async fn check_rss5_full_adder_reduce(k: usize) {
+        // The dealer stage rejects empty batches; empty adder inputs are tested separately below.
         assert!(k > 0, "Stage 2 requires a nonempty batch");
+
+        // Fix the seed so failures can be reproduced with the same plaintext inputs.
         let mut rng = AesRng::seed_from_u64(53);
-        // Each comparison has three independently random u16 summands.
+
+        // Test a partial packed word, a full word, a word boundary, and the requested batch size.
+        // Each comparison contains three random u16 summands [d1, d2, d3].
         let cases: Vec<Vec<[u16; 3]>> = [1, 64, 65, k]
             .into_iter()
             .map(|len| (0..len).map(|_| rng.gen()).collect())
             .collect();
+
+        // Create five connected local party sessions with deterministic per-party RNG seeds.
         let runtime = LocalRuntime::new(
             generate_local_identities_n(5),
             (0..5).map(|i| [i; 16]).collect(),
         )
         .await
         .unwrap();
+
+        // Collect the concurrent tasks that simulate the five independent parties.
         let mut jobs = JoinSet::new();
+
+        // Each session runs only its own party's side of the protocol.
         for session in runtime.sessions {
+            // Copy the test fixtures into this task; only its assigned summand enters the protocol.
             let cases = cases.clone();
+
+            // Run parties concurrently
             jobs.spawn(async move {
+                // Find this party's role
                 let mut network = session.network_session;
                 let own_role = network.own_role();
+
+                // Establish shared PRF streams once and reuse their advancing state across cases.
                 let mut threshold = setup_threshold_prf_keys(&mut network).await.unwrap();
 
+                // Represent three summands, each with 16 bit planes and zero packed words.
                 let empty: [[Vec<RssShare<u64>>; 16]; 3] =
                     std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
+
+                // Call the adder directly to exercise its empty-input behavior.
                 let (a, b) = full_adder_reduce(&mut network, &mut threshold, &empty)
                     .await
                     .unwrap();
+
+                // Both output summands must have empty vectors in every bit plane.
                 assert!(a.iter().chain(&b).all(Vec::is_empty));
+
+                // Start with empty planes, then make one plane inconsistent with the others.
                 let mut malformed = empty;
+
+                // Add one packed share only to bit 15 of the third summand.
                 malformed[2][15].push(RssShare {
                     slots: [RingElement(0); RSS5_SLOTS_HELD],
                 });
+
+                // Mismatched plane lengths must be rejected before interactive AND work begins.
                 assert!(full_adder_reduce(&mut network, &mut threshold, &malformed)
                     .await
                     .is_err());
 
+                // Save this party's output shares for later reconstruction by the test
                 let mut outputs = Vec::new();
+
+                // Process every batch using the same session and PRF streams.
                 for (case, values) in cases.into_iter().enumerate() {
                     // Rotate the Stage 2 dealers between batches, retaining PRF state.
                     let roles = FiveToThreeRoles {
+                        // These three roles hold d1, d2, and d3 and act as dealers in Stage 2.
                         receivers: std::array::from_fn(|i| Role::new((i + case) % 5)),
+                        // The remaining two roles hold no additive summand at this stage.
                         senders: std::array::from_fn(|i| Role::new((i + 3 + case) % 5)),
                     };
+
+                    // Select this party's summand column; non-holders get an empty input vector.
                     let additive = roles
                         .receivers
                         .iter()
@@ -155,6 +190,9 @@ mod tests {
                                 .collect()
                         })
                         .unwrap_or_default();
+
+                    // Share each of the three additive summands separately as Boolean RSS5.
+                    // All five parties participate and receive their own local share of each batch.
                     let summands = dealer_three_party_additive_as_boolean_rss5_batches(
                         &mut network,
                         &mut threshold,
@@ -164,50 +202,81 @@ mod tests {
                     )
                     .await
                     .unwrap();
+
                     // Stage 2 already stores all 16 shared bits in each u16 component.
+                    // Transpose each batch into 16 planes, packing one bit from up to 64 comparisons.
                     let inputs = summands.map(|summand| transpose_rss5_u16(&summand));
+
+                    // Reduce d1, d2, d3 to two shared words A and B with the same sum modulo 2^16.
                     let (a, b) = full_adder_reduce(&mut network, &mut threshold, &inputs)
                         .await
                         .unwrap();
+
+                    // Every output plane needs one u64 share per group of up to 64 comparisons.
                     assert!(a
                         .iter()
                         .chain(&b)
                         .all(|plane| plane.len() == values.len().div_ceil(64)));
+
+                    // B is the carry shifted left by one bit, so its lowest plane is locally zero.
                     assert!(b[0]
                         .iter()
                         .all(|share| share.slots.iter().all(|component| component.0 == 0)));
+
+                    // Keep this case's two output sharings in the same order as the input cases.
                     outputs.push((a, b));
                 }
+                // Label the party's results so completion order does not affect reconstruction.
                 (own_role.index(), outputs)
             });
         }
+        // Wait for all parties, failing if communication stalls or the test takes too long.
         let mut results = tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
             .await
             .expect("full-adder protocol timed out");
+        // Put party views in role order, as required by the reconstruction helper.
         results.sort_by_key(|(role, _)| *role);
+
+        // Reconstruct and check each batch against the original plaintext test fixtures.
         for (case, values) in cases.iter().enumerate() {
+            // Combine all five party views of each A plane into plaintext packed u64 words.
             let a: [Vec<u64>; 16] = std::array::from_fn(|bit| {
                 reconstruct(std::array::from_fn(|role| {
                     results[role].1[case].0[bit].as_slice()
                 }))
             });
+            // Reconstruct B in the same bit-plane layout as A.
             let b: [Vec<u64>; 16] = std::array::from_fn(|bit| {
                 reconstruct(std::array::from_fn(|role| {
                     results[role].1[case].1[bit].as_slice()
                 }))
             });
+
+            // Include unused lanes in the final packed word to check zero padding as well.
             for comparison in 0..values.len().div_ceil(64) * 64 {
+                // Recover one comparison's u16 from its lane across all 16 bit planes.
                 let unpack = |planes: &[Vec<u64>; 16]| {
+                    // Read planes from MSB to LSB, shifting the accumulated word before each bit.
                     planes.iter().rev().fold(0u16, |acc, plane| {
+                        // comparison / 64 selects the packed word; comparison % 64 selects its lane.
                         (acc << 1) | ((plane[comparison / 64] >> (comparison % 64)) & 1) as u16
                     })
                 };
+
+                // Extract this comparison's reconstructed sum-without-carry word.
                 let actual_a = unpack(&a);
+
+                // Extract this comparison's reconstructed shifted-carry word.
                 let actual_b = unpack(&b);
+
+                // Padding lanes represent three zero inputs rather than a real comparison.
                 let [x, y, z] = values.get(comparison).copied().unwrap_or([0; 3]);
-                // Use the majority formula as an independent reference for carry.
+
+                // A must contain the XOR of the three input bits at every position.
                 assert_eq!(actual_a, x ^ y ^ z);
+                // Use majority as an independent carry formula, shifted left with overflow discarded.
                 assert_eq!(actual_b, ((x & y) | (x & z) | (y & z)).wrapping_shl(1));
+                // Finally verify A + B equals the original arithmetic sum modulo 2^16.
                 assert_eq!(
                     actual_a.wrapping_add(actual_b),
                     (u32::from(x) + u32::from(y) + u32::from(z)) as u16
