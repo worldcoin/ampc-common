@@ -431,7 +431,7 @@ mod tests {
     use crate::PartyID;
     use crate::ShamirGaloisRingShare;
     use base64::Engine as _;
-    use rand::thread_rng;
+    use rand::{rngs::StdRng, thread_rng, SeedableRng};
 
     #[test]
     fn test_random_normalized() {
@@ -518,7 +518,7 @@ mod tests {
         let original = IrisVector::random_normalized(&mut rng);
         let shares = original.secret_share_5_parties(&mut rng).unwrap();
 
-        // Simulate reconstruction by using the first two shares.
+        // Simulate reconstruction by using the first three shares.
         let lagrange_coeffs = [
             ShamirGaloisRingShare::orbit5_deg_2_lagrange_polys_at_zero(
                 PartyID::ID0,
@@ -565,6 +565,44 @@ mod tests {
             .iter()
             .map(|&x| (x as i16) as i8) // Convert back from u16 to i8
             .collect();
+
+        assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_5pc_secret_sharing_all_five_shares_reconstruct_original() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let original = IrisVector::random_normalized(&mut rng);
+        let shares = original.secret_share_5_parties(&mut rng).unwrap();
+
+        // A degree-2 sharing polynomial can also be reconstructed from all five
+        // evaluation points using the degree-4 Lagrange coefficients at zero.
+        let lagrange_coeffs = ShamirGaloisRingShare::orbit5_deg_4_lagrange_polys_at_zero();
+
+        let mut reconstructed = [0u16; IRIS_VECTOR_SIZE];
+        for (id, share) in shares.iter().enumerate() {
+            let mut share_copy = share.clone();
+
+            for i in (0..share_copy.0.len()).step_by(4) {
+                let element = GaloisRingElement::<basis::Monomial>::from_coefs([
+                    share_copy.0[i],
+                    share_copy.0[i + 1],
+                    share_copy.0[i + 2],
+                    share_copy.0[i + 3],
+                ]);
+                let element: GaloisRingElement<basis::Monomial> = element * lagrange_coeffs[id];
+                let element = element.to_basis_A();
+                share_copy.0[i] = element.coefs[0];
+                share_copy.0[i + 1] = element.coefs[1];
+                share_copy.0[i + 2] = element.coefs[2];
+                share_copy.0[i + 3] = element.coefs[3];
+            }
+            for (j, entry) in reconstructed.iter_mut().enumerate() {
+                *entry = entry.wrapping_add(share_copy.0[j]);
+            }
+        }
+
+        let reconstructed_i8: Vec<i8> = reconstructed.iter().map(|&x| (x as i16) as i8).collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
     }
