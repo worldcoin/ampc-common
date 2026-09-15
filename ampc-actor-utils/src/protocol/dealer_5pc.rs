@@ -359,7 +359,7 @@ pub fn reconstruct_boolean<T: IntRing2k>(shares: &[(Role, RssShare<T>)]) -> Resu
 pub fn reconstruct_boolean_batch<T: IntRing2k>(
     shares: &[(Role, Vec<RssShare<T>>)],
 ) -> Result<Vec<RingElement<T>>> {
-    reconstruct_rss5(&shares, ShareType::Boolean)
+    reconstruct_rss5(shares, ShareType::Boolean)
 }
 
 #[cfg(test)]
