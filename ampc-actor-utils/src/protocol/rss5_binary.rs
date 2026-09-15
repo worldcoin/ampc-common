@@ -89,9 +89,7 @@ mod tests {
         test_utils::rss5_boolean::reconstruct,
     };
     use aes_prng::AesRng;
-    use ampc_secret_sharing::shares::vecshare_bittranspose::{
-        compact_rss5_u16_bits, transpose_rss5_u16,
-    };
+    use ampc_secret_sharing::shares::vecshare_bittranspose::transpose_rss5_u16;
     use rand::{Rng, SeedableRng};
     use tokio::task::JoinSet;
 
@@ -155,7 +153,7 @@ mod tests {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let bits = dealer_three_party_additive_as_boolean_rss5_batches(
+                    let summands = dealer_three_party_additive_as_boolean_rss5_batches(
                         &mut network,
                         &mut threshold,
                         &roles,
@@ -164,9 +162,8 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                    let inputs = bits.map(|summand| {
-                        transpose_rss5_u16(&compact_rss5_u16_bits(&summand).unwrap())
-                    });
+                    // Stage 2 already stores all 16 shared bits in each u16 component.
+                    let inputs = summands.map(|summand| transpose_rss5_u16(&summand));
                     let (a, b) = full_adder_reduce(&mut network, &mut threshold, &inputs)
                         .await
                         .unwrap();

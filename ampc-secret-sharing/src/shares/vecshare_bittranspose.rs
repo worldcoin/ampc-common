@@ -5,33 +5,6 @@ use super::{
     share::Share,
     vecshare::VecShare,
 };
-use eyre::{ensure, Result};
-
-/// Locally compact one summand's batch of 16 Boolean bit sharings per comparison.
-/// Inputs must share individual bits in least-significant-bit-first order.
-pub fn compact_rss5_u16_bits(bits: &[Vec<RssShare<u16>>]) -> Result<Vec<RssShare<u16>>> {
-    let mut result = Vec::with_capacity(bits.len());
-    for (comparison, bit_shares) in bits.iter().enumerate() {
-        ensure!(
-            bit_shares.len() == u16::BITS as usize,
-            "comparison {comparison} has {} bit shares, expected 16",
-            bit_shares.len()
-        );
-
-        let mut compact = RssShare {
-            slots: [RingElement(0u16); RSS5_SLOTS_HELD],
-        };
-        for (bit_index, bit_share) in bit_shares.iter().enumerate() {
-            for (output, component) in compact.slots.iter_mut().zip(&bit_share.slots) {
-                // Only the LSB shares the secret bit; upper bits mask zeros.
-                // Move each extracted bit to its own position in the same slot.
-                output.0 |= (component.0 & 1) << bit_index;
-            }
-        }
-        result.push(compact);
-    }
-    Ok(result)
-}
 
 /// Transpose compact Boolean RSS shares into 16 bit planes, LSB first.
 /// Each u64 packs one bit from up to 64 comparisons; unused lanes are zero.

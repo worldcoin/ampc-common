@@ -4,7 +4,7 @@
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
-use crate::protocol::dealer_5pc::{dealer_rss5_batch, dealer_rss5_boolean_batch, ShareType};
+use crate::protocol::dealer_5pc::dealer_rss5_boolean_batch;
 use crate::protocol::prf::{orbit5_roles, PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
@@ -302,8 +302,7 @@ pub async fn and_many(
         } else {
             vec![RingElement::zero(); lhs.len()]
         };
-        let shared =
-            dealer_rss5_batch(session, threshold, dealer, dealer_input, ShareType::Boolean).await?;
+        let shared = dealer_rss5_boolean_batch(session, threshold, dealer, dealer_input).await?;
         if shared.len() != lhs.len() {
             bail!(
                 "Boolean dealer {dealer:?} returned {} AND contributions, expected {}",
