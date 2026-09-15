@@ -221,6 +221,10 @@ pub struct BucketStatistics2D {
     pub left_opposite_mirror_match: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub right_opposite_mirror_match: Option<bool>,
+    /// Sampling stratum for this Deep Identifier histogram: the configured random-sample rate, or
+    /// 100 for non-sampled rows retained by an exception. Absent for non-DI 2D statistics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling_rate: Option<u8>,
 }
 
 impl BucketStatistics2D {
@@ -244,6 +248,9 @@ impl Display for BucketStatistics2D {
             "    right_opposite_mirror_match: {:?}",
             self.right_opposite_mirror_match
         )?;
+        if let Some(sampling_rate) = self.sampling_rate {
+            writeln!(f, "    sampling_rate: {sampling_rate}")?;
+        }
         match &self.end_time_utc_timestamp {
             Some(end) => writeln!(f, "    end_time_utc: {}", end)?,
             None => writeln!(f, "    end_time_utc: <none>")?,
@@ -289,6 +296,7 @@ impl BucketStatistics2D {
             is_mirror_orientation: false,
             left_opposite_mirror_match,
             right_opposite_mirror_match,
+            sampling_rate: None,
         }
     }
 
@@ -580,6 +588,27 @@ mod tests {
             assert_eq!(r0, round_boundary(r0), "right lower has fp noise: {r0}");
             assert_eq!(r1, round_boundary(r1), "right upper has fp noise: {r1}");
         }
+    }
+
+    #[test]
+    fn test_2d_sampling_rate_is_only_serialized_when_present() {
+        let mut stats = BucketStatistics2D::new(
+            128,
+            10,
+            0,
+            DistanceFunction::QuantizedCosine,
+            AnonStatsResultSource::Aggregator,
+            None,
+            Some(false),
+            Some(false),
+        );
+
+        let non_di_json = serde_json::to_value(&stats).unwrap();
+        assert!(non_di_json.get("sampling_rate").is_none());
+
+        stats.sampling_rate = Some(20);
+        let di_json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(di_json["sampling_rate"], 20);
     }
 
     #[test]
