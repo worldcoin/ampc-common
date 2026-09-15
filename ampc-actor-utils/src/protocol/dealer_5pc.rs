@@ -471,7 +471,7 @@ mod tests {
         let results = jobs.join_all().await;
         let scalar = results
             .iter()
-            .map(|(role, shares, _)| (*role, shares.clone()))
+            .map(|(role, shares, _)| (*role, *shares))
             .collect();
         let batch = results
             .into_iter()
