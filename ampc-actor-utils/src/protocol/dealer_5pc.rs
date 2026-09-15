@@ -362,7 +362,7 @@ pub fn reconstruct_boolean<T: IntRing2k>(shares: &[(Role, RssShare<T>)]) -> Resu
 pub fn reconstruct_boolean_batch<T: IntRing2k>(
     shares: &[(Role, Vec<RssShare<T>>)],
 ) -> Result<Vec<RingElement<T>>> {
-    reconstruct_rss5(&shares, ShareType::Boolean)
+    reconstruct_rss5(shares, ShareType::Boolean)
 }
 
 #[cfg(test)]
@@ -474,7 +474,7 @@ mod tests {
         let results = jobs.join_all().await;
         let scalar = results
             .iter()
-            .map(|(role, shares, _)| (*role, shares.clone()))
+            .map(|(role, shares, _)| (*role, *shares))
             .collect();
         let batch = results
             .into_iter()

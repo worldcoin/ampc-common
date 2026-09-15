@@ -10,6 +10,7 @@ use eyre::{ensure, Result};
 /// Inputs and outputs are 16 bit planes, LSB first, with 64 comparisons per element.
 /// All parties must agree on the batch layout and threshold PRF call order.
 #[tracing::instrument(level = "trace", target = "mpc::network", skip_all)]
+#[allow(clippy::type_complexity)]
 pub async fn full_adder_reduce(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
@@ -31,10 +32,11 @@ pub async fn full_adder_reduce(
     let mut and_lhs = Vec::with_capacity(15 * packed_len);
     let mut and_rhs = Vec::with_capacity(15 * packed_len);
     for (bit, plane) in a.iter_mut().enumerate() {
-        for group in 0..packed_len {
-            let x = inputs[0][bit][group];
-            let y = inputs[1][bit][group];
-            let z = inputs[2][bit][group];
+        for ((&x, &y), &z) in inputs[0][bit]
+            .iter()
+            .zip(&inputs[1][bit])
+            .zip(&inputs[2][bit])
+        {
             let x_xor_y = x ^ y;
 
             // A = x XOR y XOR z, computed locally for all 16 bits.
