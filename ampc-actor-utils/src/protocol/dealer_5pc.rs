@@ -57,6 +57,9 @@ fn select_correction_pair_and_recipients(dealer: Role) -> Result<(PartyPair, [Ro
     Ok((PartyPair::new(others[0], others[1]), [others[2], others[3]]))
 }
 
+/// Shares a nonempty batch using arithmetic addition or bitwise XOR.
+/// All parties pass the same dealer, mode, and batch length; only the dealer's
+/// input values are read. Boolean mode preserves the packed bits without decomposition.
 async fn dealer_rss5_batch<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,

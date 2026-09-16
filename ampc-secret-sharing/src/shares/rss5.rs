@@ -6,7 +6,7 @@
 
 use super::{int_ring::IntRing2k, ring_impl::RingElement};
 use num_traits::Zero;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, BitAnd, BitXor, BitXorAssign, Mul, Sub};
 
 /// Number of parties in the ORBIT5 (5-party) protocol configuration.
 pub const ORBIT5_PARTY_COUNT: usize = 5;
@@ -57,6 +57,27 @@ pub fn slot_pair(role: usize, slot: usize) -> (usize, usize) {
 /// be combined.
 pub struct RssShare<T: IntRing2k + Sized> {
     pub slots: [RingElement<T>; RSS5_SLOTS_HELD],
+}
+
+/// Local XOR of two Boolean RSS shares held by the same party.
+impl<T: IntRing2k> BitXor<Self> for RssShare<T> {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        RssShare {
+            // Matching slots represent the same excluded pair on both inputs.
+            slots: std::array::from_fn(|i| self.slots[i] ^ rhs.slots[i]),
+        }
+    }
+}
+
+/// In-place XOR of two Boolean RSS shares held by the same party.
+impl<T: IntRing2k> BitXorAssign<Self> for RssShare<T> {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        for (slot, rhs_slot) in self.slots.iter_mut().zip(rhs.slots) {
+            *slot ^= rhs_slot;
+        }
+    }
 }
 
 // Implementations of arithmetic operations for RssShare
@@ -148,6 +169,25 @@ impl<T: IntRing2k> Mul<Self> for &RssShare<T> {
                 rhs_sum += rhs.slots[j];
             }
             acc += self.slots[i] * rhs_sum;
+        }
+        acc
+    }
+}
+
+/// Local AND contribution for two Boolean RSS shares held by the same party.
+/// The result needs resharing before it can be used as a Boolean RSS share.
+impl<T: IntRing2k> BitAnd<Self> for &RssShare<T> {
+    type Output = RingElement<T>;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        let mut acc = RingElement::zero();
+        for (i, rhs_slots) in MUL_OPERAND_ASSIGN.iter().enumerate() {
+            // Group the assigned cross-terms using AND's distributivity over XOR.
+            let mut rhs_xor = RingElement::zero();
+            for &j in rhs_slots.iter() {
+                rhs_xor ^= rhs.slots[j];
+            }
+            acc ^= self.slots[i] & rhs_xor;
         }
         acc
     }
