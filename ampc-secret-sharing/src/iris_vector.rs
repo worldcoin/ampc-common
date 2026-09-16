@@ -55,6 +55,10 @@ impl IrisSecretSharedVector {
 impl IrisVector {
     /// Create a new [IrisVector] from an array of 512 i8 values.
     pub fn new(data: [i8; IRIS_VECTOR_SIZE]) -> Self {
+        debug_assert!(
+            data.iter().all(|&x| (-8..=7).contains(&x)),
+            "IrisVector values must be in [-8, 7]"
+        );
         IrisVector(data)
     }
 
