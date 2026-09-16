@@ -20,9 +20,14 @@ use rand::Rng;
 use rand_distr::{Distribution, Standard};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
+const EMPTY_BATCH_ERROR: &str = "RSS5 batch must not be empty";
+
+/// How the ten unique RSS5 pieces combine to reconstruct a value.
 #[derive(Clone, Copy)]
-enum ShareType {
+pub enum ShareType {
+    /// Addition modulo `2^k`.
     Arithmetic,
+    /// Bitwise XOR of packed ring elements.
     Boolean,
 }
 
@@ -69,7 +74,7 @@ where
     Standard: Distribution<T>,
 {
     if dealer_inputs.is_empty() {
-        bail!("dealer RSS5 batch must not be empty");
+        bail!(EMPTY_BATCH_ERROR);
     }
 
     let own_role = session.own_role();
@@ -180,7 +185,9 @@ where
 ///
 /// All parties must provide the same batch length. Only the dealer's inputs
 /// are read; other parties may provide a same-length vector of zeros.
-pub async fn dealer_rss5_arithmetic_batch<T>(
+/// Correction recipients validate the received length. Other parties receive
+/// no message, so this function cannot verify their batch lengths agree.
+pub async fn dealer_rss5_arithmetic<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
@@ -204,7 +211,9 @@ where
 ///
 /// All parties must provide the same batch length. Only the dealer's inputs
 /// are read; other parties may provide a same-length vector of zeros.
-pub async fn dealer_rss5_boolean_batch<T>(
+/// Correction recipients validate the received length. Other parties receive
+/// no message, so this function cannot verify their batch lengths agree.
+pub async fn dealer_rss5_boolean<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
@@ -240,14 +249,20 @@ fn validate_reconstruction_roles<T>(shares: &[(Role, T)]) -> Result<()> {
     Ok(())
 }
 
-fn reconstruct_rss5<T: IntRing2k>(
+fn rss5_reconstruction_impl<T: IntRing2k>(
     shares: &[(Role, Vec<RssShare<T>>)],
     share_type: ShareType,
 ) -> Result<Vec<RingElement<T>>> {
+    if shares.is_empty() {
+        bail!(EMPTY_BATCH_ERROR);
+    }
     validate_reconstruction_roles(shares)?;
 
     let batch_size = shares.first().map_or(0, |(_, batch)| batch.len());
     for (role, batch) in shares {
+        if batch.is_empty() {
+            bail!(EMPTY_BATCH_ERROR);
+        }
         if batch.len() != batch_size {
             bail!(
                 "RSS5 reconstruction expected {batch_size} shares from {role:?}, got {}",
@@ -291,42 +306,21 @@ fn reconstruct_rss5<T: IntRing2k>(
     Ok(secrets)
 }
 
-/// Checks all five replicated views and reconstructs one arithmetic secret.
-pub fn reconstruct_arithmetic<T: IntRing2k>(
-    shares: &[(Role, RssShare<T>)],
-) -> Result<RingElement<T>> {
-    let batched: Vec<(Role, Vec<RssShare<T>>)> = shares
-        .iter()
-        .map(|(role, share)| (*role, vec![*share]))
-        .collect();
-    reconstruct_rss5(&batched, ShareType::Arithmetic)?
-        .pop()
-        .ok_or_else(|| eyre!("arithmetic RSS5 reconstruction returned no scalar"))
-}
-
-/// Checks all five replicated views and reconstructs an arithmetic batch.
-pub fn reconstruct_arithmetic_batch<T: IntRing2k>(
+/// Checks all five replicated views and reconstructs a batch in input order.
+///
+/// Provide exactly one view for each role 0 through 4, in any order, with
+/// equal, non-empty batch lengths. A single value uses a batch of length one.
+/// Empty inputs, mismatched lengths, and inconsistent replicated pieces return
+/// an error.
+///
+/// `share_type` must match the dealer: arithmetic sums pieces modulo `2^k`,
+/// while boolean XORs packed ring elements without bit decomposition.
+/// This is a local operation over already collected shares, with no network IO.
+pub fn rss5_reconstruction<T: IntRing2k>(
     shares: &[(Role, Vec<RssShare<T>>)],
+    share_type: ShareType,
 ) -> Result<Vec<RingElement<T>>> {
-    reconstruct_rss5(shares, ShareType::Arithmetic)
-}
-
-/// Checks all five replicated views and reconstructs one boolean secret.
-pub fn reconstruct_boolean<T: IntRing2k>(shares: &[(Role, RssShare<T>)]) -> Result<RingElement<T>> {
-    let batched: Vec<(Role, Vec<RssShare<T>>)> = shares
-        .iter()
-        .map(|(role, share)| (*role, vec![*share]))
-        .collect();
-    reconstruct_rss5(&batched, ShareType::Boolean)?
-        .pop()
-        .ok_or_else(|| eyre!("boolean RSS5 reconstruction returned no scalar"))
-}
-
-/// Checks all five replicated views and reconstructs a boolean batch.
-pub fn reconstruct_boolean_batch<T: IntRing2k>(
-    shares: &[(Role, Vec<RssShare<T>>)],
-) -> Result<Vec<RingElement<T>>> {
-    reconstruct_rss5(shares, ShareType::Boolean)
+    rss5_reconstruction_impl(shares, share_type)
 }
 
 #[cfg(test)]
@@ -350,7 +344,10 @@ mod tests {
         dealer: Role,
         scalar: u16,
         batch: Vec<u16>,
-    ) -> (Vec<(Role, RssShare<u16>)>, Vec<(Role, Vec<RssShare<u16>>)>) {
+    ) -> (
+        Vec<(Role, Vec<RssShare<u16>>)>,
+        Vec<(Role, Vec<RssShare<u16>>)>,
+    ) {
         let identities = generate_local_identities_orbit5();
         let runtime = LocalRuntime::new(identities, local_seeds()).await.unwrap();
         let mut jobs = JoinSet::new();
@@ -363,13 +360,25 @@ mod tests {
                 let mut threshold = setup_threshold_prf_keys(&mut network_session)
                     .await
                     .unwrap();
+                assert_eq!(
+                    dealer_rss5_arithmetic::<u16>(
+                        &mut network_session,
+                        &mut threshold,
+                        dealer,
+                        vec![],
+                    )
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                    "RSS5 batch must not be empty"
+                );
                 let scalar = RingElement(if own_role == dealer { scalar } else { 0 });
                 let batch = batch
                     .into_iter()
                     .map(|value| RingElement(if own_role == dealer { value } else { 0 }))
                     .collect();
 
-                let single_shares = dealer_rss5_arithmetic_batch(
+                let single_shares = dealer_rss5_arithmetic(
                     &mut network_session,
                     &mut threshold,
                     dealer,
@@ -378,8 +387,7 @@ mod tests {
                 .await
                 .unwrap();
                 assert_eq!(single_shares.len(), 1);
-                let scalar_share = single_shares[0];
-                let batch_shares = dealer_rss5_arithmetic_batch(
+                let batch_shares = dealer_rss5_arithmetic(
                     &mut network_session,
                     &mut threshold,
                     dealer,
@@ -387,14 +395,14 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                (own_role, scalar_share, batch_shares)
+                (own_role, single_shares, batch_shares)
             });
         }
 
         let results = jobs.join_all().await;
         let scalar = results
             .iter()
-            .map(|(role, share, _)| (*role, *share))
+            .map(|(role, shares, _)| (*role, shares.clone()))
             .collect();
         let batch = results
             .into_iter()
@@ -410,7 +418,10 @@ mod tests {
         dealer: Role,
         scalar: u16,
         batch: Vec<u16>,
-    ) -> (Vec<(Role, BooleanShares)>, Vec<(Role, BooleanBatchShares)>) {
+    ) -> (
+        Vec<(Role, BooleanBatchShares)>,
+        Vec<(Role, BooleanBatchShares)>,
+    ) {
         let identities = generate_local_identities_orbit5();
         let runtime = LocalRuntime::new(identities, local_seeds()).await.unwrap();
         let mut jobs = JoinSet::new();
@@ -423,13 +434,25 @@ mod tests {
                 let mut threshold = setup_threshold_prf_keys(&mut network_session)
                     .await
                     .unwrap();
+                assert_eq!(
+                    dealer_rss5_boolean::<u16>(
+                        &mut network_session,
+                        &mut threshold,
+                        dealer,
+                        vec![],
+                    )
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                    "RSS5 batch must not be empty"
+                );
                 let scalar = RingElement(if own_role == dealer { scalar } else { 0 });
                 let batch = batch
                     .into_iter()
                     .map(|value| RingElement(if own_role == dealer { value } else { 0 }))
                     .collect();
 
-                let single_shares = dealer_rss5_boolean_batch(
+                let single_shares = dealer_rss5_boolean(
                     &mut network_session,
                     &mut threshold,
                     dealer,
@@ -438,19 +461,18 @@ mod tests {
                 .await
                 .unwrap();
                 assert_eq!(single_shares.len(), 1);
-                let scalar_shares = single_shares[0];
                 let batch_shares =
-                    dealer_rss5_boolean_batch(&mut network_session, &mut threshold, dealer, batch)
+                    dealer_rss5_boolean(&mut network_session, &mut threshold, dealer, batch)
                         .await
                         .unwrap();
-                (own_role, scalar_shares, batch_shares)
+                (own_role, single_shares, batch_shares)
             });
         }
 
         let results = jobs.join_all().await;
         let scalar = results
             .iter()
-            .map(|(role, shares, _)| (*role, *shares))
+            .map(|(role, shares, _)| (*role, shares.clone()))
             .collect();
         let batch = results
             .into_iter()
@@ -459,19 +481,44 @@ mod tests {
         (scalar, batch)
     }
 
+    fn check_reconstruction_batch_validation(
+        shares: &[(Role, Vec<RssShare<u16>>)],
+        share_type: ShareType,
+    ) {
+        let empty_batches: Vec<_> = shares.iter().map(|(role, _)| (*role, vec![])).collect();
+        for empty in [&[][..], empty_batches.as_slice()] {
+            assert_eq!(
+                rss5_reconstruction::<u16>(empty, share_type)
+                    .unwrap_err()
+                    .to_string(),
+                "RSS5 batch must not be empty"
+            );
+        }
+
+        let mut mismatched = shares.to_vec();
+        mismatched[1].1.pop();
+        let error = rss5_reconstruction(&mismatched, share_type).unwrap_err();
+        assert!(error.to_string().contains("expected 4 shares"));
+        assert!(error.to_string().contains("got 3"));
+    }
+
     #[tokio::test]
     async fn arithmetic_single_element_and_batch_round_trip() {
         let expected_batch = vec![0, 1, u16::MAX, 12_345];
         let (scalar, batch) = run_arithmetic(Role::new(0), 42, expected_batch.clone()).await;
 
-        assert_eq!(reconstruct_arithmetic(&scalar).unwrap(), RingElement(42));
         assert_eq!(
-            reconstruct_arithmetic_batch(&batch).unwrap(),
+            rss5_reconstruction(&scalar, ShareType::Arithmetic).unwrap(),
+            vec![RingElement(42)]
+        );
+        assert_eq!(
+            rss5_reconstruction(&batch, ShareType::Arithmetic).unwrap(),
             expected_batch
                 .into_iter()
                 .map(RingElement)
                 .collect::<Vec<_>>()
         );
+        check_reconstruction_batch_validation(&batch, ShareType::Arithmetic);
     }
 
     #[tokio::test]
@@ -479,13 +526,103 @@ mod tests {
         let expected_batch = vec![0, 0xffff, 0x1234, 0xaaaa];
         let (scalar, batch) = run_boolean(Role::new(3), 0xa55a, expected_batch.clone()).await;
 
-        assert_eq!(reconstruct_boolean(&scalar).unwrap(), RingElement(0xa55a));
         assert_eq!(
-            reconstruct_boolean_batch(&batch).unwrap(),
+            rss5_reconstruction(&scalar, ShareType::Boolean).unwrap(),
+            vec![RingElement(0xa55a)]
+        );
+        assert_eq!(
+            rss5_reconstruction(&batch, ShareType::Boolean).unwrap(),
             expected_batch
                 .into_iter()
                 .map(RingElement)
                 .collect::<Vec<_>>()
         );
+        check_reconstruction_batch_validation(&batch, ShareType::Boolean);
+    }
+
+    #[tokio::test]
+    //stress test that PRF outputs remain synchronized across batch size, dealer.
+    async fn dealer_rss5_many_instances() {
+        use ShareType::{Arithmetic, Boolean};
+
+        // Vary batch sizes for the same dealer, then rotate through the
+        // remaining dealers. Alternate arithmetic and boolean throughout.
+        let rounds: [(usize, ShareType, &[u16]); 7] = [
+            (0, Arithmetic, &[42]),
+            (0, Boolean, &[0, 1, 2, 3, 0x1234, 0xaaaa, u16::MAX]),
+            (0, Arithmetic, &[u16::MAX, 7]),
+            (1, Boolean, &[0xa55a, 0, 1]),
+            (2, Arithmetic, &[12345]),
+            (3, Boolean, &[0, 1, 2, 3, 0x1234, 0xaaaa, u16::MAX]),
+            (4, Arithmetic, &[0, u16::MAX]),
+        ];
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                .await
+                .unwrap();
+            let mut jobs = JoinSet::new();
+
+            for session in runtime.sessions {
+                jobs.spawn(async move {
+                    let mut session = session.network_session;
+                    let role = session.own_role();
+                    // Set up PRFs ONCE and reuse the same session and mutable keys
+                    // for every call. Resetting keys would hide synchronization bugs.
+                    let mut threshold = setup_threshold_prf_keys(&mut session).await.unwrap();
+                    let mut outputs = Vec::new();
+                    for (dealer, share_type, values) in rounds {
+                        let dealer = Role::new(dealer);
+                        // All parties use equal batch sizes within each round;
+                        // only the dealer supplies the actual values.
+                        let inputs = values
+                            .iter()
+                            .map(|value| RingElement(if role == dealer { *value } else { 0 }))
+                            .collect();
+                        let shares = match share_type {
+                            Arithmetic => {
+                                dealer_rss5_arithmetic(
+                                    &mut session,
+                                    &mut threshold,
+                                    dealer,
+                                    inputs,
+                                )
+                                .await
+                            }
+                            Boolean => {
+                                dealer_rss5_boolean(
+                                    &mut session,
+                                    &mut threshold,
+                                    dealer,
+                                    inputs,
+                                )
+                                .await
+                            }
+                        }
+                        .unwrap();
+                        assert_eq!(shares.len(), values.len());
+                        outputs.push(shares);
+                    }
+                    (role, outputs)
+                });
+            }
+
+            let results = jobs.join_all().await;
+            for (index, (dealer, share_type, values)) in rounds.into_iter().enumerate() {
+                let shares: Vec<_> = results
+                    .iter()
+                    .map(|(role, outputs)| (*role, outputs[index].clone()))
+                    .collect();
+                // Reconstruction checks that all replicated pieces still agree:
+                // this verifies PRF synchronization as well as the plaintext result.
+                assert_eq!(
+                    rss5_reconstruction(&shares, share_type).unwrap(),
+                    values.iter().copied().map(RingElement).collect::<Vec<_>>(),
+                    "round {index}, dealer {dealer}"
+                );
+            }
+        })
+        .await
+        .expect("RSS5 synchronization test timed out");
     }
 }

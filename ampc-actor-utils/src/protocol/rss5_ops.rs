@@ -4,7 +4,7 @@
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
-use crate::protocol::dealer_5pc::dealer_rss5_boolean_batch;
+use crate::protocol::dealer_5pc::dealer_rss5_boolean;
 use crate::protocol::prf::{PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT};
@@ -107,15 +107,18 @@ where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    debug_assert!(
-        roles.validate().is_ok(),
-        "invalid FiveToThreeRoles: {roles:?}"
-    );
+    roles.validate()?;
     if shares.is_empty() {
         bail!("reshare_5to3_party_additive: shares must not be empty");
     }
 
     let own_role = session.own_role();
+    if pairwise.own_role() != own_role {
+        bail!(
+            "pairwise PRF keys belong to {:?}, but the session belongs to {own_role:?}",
+            pairwise.own_role()
+        );
+    }
     let [r0, r1, r2] = roles.receivers;
     let [s0, s1] = roles.senders;
 
@@ -192,7 +195,7 @@ where
 ///
 /// All five parties call this after [`reshare_five_to_three_party_additive`].
 /// The three roles in `roles.receivers` each deal their additive share with
-/// [`dealer_rss5_boolean_batch`]. The three returned batches follow the order
+/// [`dealer_rss5_boolean`]. The three returned batches follow the order
 /// of `roles.receivers`; batch `i` reconstructs to that receiver's additive
 /// shares. These components must be combined with a boolean addition protocol
 /// when a boolean sharing of their arithmetic sum is needed. `batch_len` is
@@ -252,8 +255,7 @@ where
         } else {
             zero_batch()
         };
-        let dealer_batch =
-            dealer_rss5_boolean_batch(session, threshold, dealer, dealer_input).await?;
+        let dealer_batch = dealer_rss5_boolean(session, threshold, dealer, dealer_input).await?;
         if dealer_batch.len() != batch_len {
             bail!(
                 "boolean dealer {dealer:?} produced {} values, expected {batch_len}",
@@ -272,7 +274,7 @@ where
 mod tests {
     use super::*;
     use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
-    use crate::protocol::dealer_5pc::reconstruct_boolean_batch;
+    use crate::protocol::dealer_5pc::{rss5_reconstruction, ShareType};
     use crate::protocol::ops::{setup_pairwise_prf_keys, setup_threshold_prf_keys};
     use crate::protocol::test_utils::{
         create_array_sharing_additive_5party, reconstruct_additive_shares,
@@ -443,7 +445,7 @@ mod tests {
                 .map(|(_, shares, _)| shares)
                 .unwrap();
             assert_eq!(
-                reconstruct_boolean_batch(&boolean_batch).unwrap(),
+                rss5_reconstruction(&boolean_batch, ShareType::Boolean).unwrap(),
                 *expected
             );
         }
@@ -460,22 +462,74 @@ mod tests {
         assert_eq!(roles.sender_route(r0), None);
     }
 
-    #[test]
-    fn test_invalid_role_assignment_rejected() {
-        // Overlapping recipient/resharer role.
-        let roles = FiveToThreeRoles {
-            receivers: [Role::new(0), Role::new(1), Role::new(2)],
-            senders: [Role::new(2), Role::new(3)],
-        };
-        assert!(roles.validate().is_err());
+    #[tokio::test]
+    async fn test_invalid_role_assignment_and_key_owner_rejected() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let runtime = LocalRuntime::new(
+                generate_local_identities_orbit5(),
+                vec![[0; 16]; ORBIT5_PARTY_COUNT],
+            )
+            .await
+            .unwrap();
+            let mut session = runtime.sessions.into_iter().next().unwrap().network_session;
 
-        // Too few distinct roles (only covers 4 of 5).
-        let roles = FiveToThreeRoles {
-            receivers: [Role::new(0), Role::new(0), Role::new(1)],
-            senders: [Role::new(2), Role::new(3)],
-        };
-        assert!(roles.validate().is_err());
+            // Local keys suffice: invalid inputs must fail before communication
+            // or PRF consumption. Exercise the public API, including release builds.
+            let keys_for = |owner| {
+                PairwisePrfKeys::from_seeds(
+                    owner,
+                    (0..ORBIT5_PARTY_COUNT)
+                        .map(Role::new)
+                        .filter(|role| *role != owner)
+                        .map(|role| (role, [0; 16]))
+                        .collect(),
+                )
+                .unwrap()
+            };
+            let mut pairwise = keys_for(session.own_role());
+            let invalid_roles = [
+                // Overlapping recipient and sender.
+                FiveToThreeRoles {
+                    receivers: [Role::new(0), Role::new(1), Role::new(2)],
+                    senders: [Role::new(2), Role::new(3)],
+                },
+                // Duplicate receiver.
+                FiveToThreeRoles {
+                    receivers: [Role::new(0), Role::new(0), Role::new(1)],
+                    senders: [Role::new(2), Role::new(3)],
+                },
+                // Five distinct roles, but one is outside the five-party set.
+                FiveToThreeRoles {
+                    receivers: [Role::new(0), Role::new(1), Role::new(2)],
+                    senders: [Role::new(3), Role::new(5)],
+                },
+            ];
+            for roles in invalid_roles {
+                let error = reshare_five_to_three_party_additive(
+                    &mut session,
+                    &mut pairwise,
+                    &roles,
+                    vec![RingElement(42_u16)],
+                )
+                .await
+                .unwrap_err();
+                assert!(error.to_string().contains("FiveToThreeRoles"));
+            }
 
-        assert!(FiveToThreeRoles::canonical().validate().is_ok());
+            let mut wrong_keys = keys_for(Role::new(1));
+            let error = reshare_five_to_three_additive_canonical(
+                &mut session,
+                &mut wrong_keys,
+                vec![RingElement(42_u16)],
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "pairwise PRF keys belong to Role(1), but the session belongs to Role(0)"
+            );
+        })
+        .await
+        .expect("invalid resharing inputs must fail without waiting for peers");
     }
 }
