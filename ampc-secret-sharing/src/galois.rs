@@ -362,29 +362,26 @@ pub mod degree4 {
 
         /// Share with a random degree-2 polynomial at the first five nonzero
         /// exceptional-sequence points. Any three shares reconstruct the input.
+        /// Uses Horner's rule with two ring multiplications per share; consumes
+        /// the same randomness and returns the same ordered shares as `encode_5_mat`.
         pub fn encode_5<R: CryptoRng + Rng>(
             input: &GaloisRingElement<Monomial>,
             rng: &mut R,
         ) -> [ShamirGaloisRingShare; 5] {
-            let coefs = [
-                *input,
-                GaloisRingElement::random(rng),
-                GaloisRingElement::random(rng),
-            ];
-            (1..=5)
-                .map(|i| {
-                    let element = GaloisRingElement::EXCEPTIONAL_SEQUENCE[i];
-                    let share = coefs[0] + coefs[1] * element + coefs[2] * element * element;
-                    ShamirGaloisRingShare { id: i, y: share }
-                })
-                .collect::<Vec<_>>()
-                .as_slice()
-                .try_into()
-                .unwrap()
+            let r = GaloisRingElement::<Monomial>::random(rng);
+            let t = GaloisRingElement::<Monomial>::random(rng);
+
+            std::array::from_fn(|index| {
+                let id = index + 1;
+                let z = GaloisRingElement::EXCEPTIONAL_SEQUENCE[id];
+                let y = *input + (r + t * z) * z;
+
+                ShamirGaloisRingShare { id, y }
+            })
         }
 
         /// Evaluate P(z) = s + rz + tz^2 at 1, X, 1 + X, X^2, and 1 + X^2.
-        /// Reusing multiples of X gives a circuit of 51 scalar wrapping additions.
+        /// Reusing multiples of X gives a circuit of 50 scalar wrapping additions.
         pub fn encode_5_mat<R: CryptoRng + Rng>(
             input: &[u16; 4],
             rng: &mut R,
@@ -409,9 +406,11 @@ pub mod degree4 {
             let y2 = s + mul_x(r + tx);
             let y4 = s + mul_x(mul_x(r + txx));
 
-            // Compute 2t, 2Xt, and 2X^2t with six more additions.
-            let d = t + t;
-            let dx = mul_x(d);
+            // Original calculation: six additions including dxx below.
+            // let d = t + t;
+            // let dx = mul_x(d);
+            // Reuse Xt to compute 2Xt and 2X^2t with five additions.
+            let dx = tx + tx;
             let dxx = mul_x(dx);
 
             // P(1 + z) = P(z) + (r + t) + 2zt (16 additions for both shares).
