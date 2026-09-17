@@ -66,14 +66,15 @@ async fn dealer_rss5_batch<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
-    dealer_inputs: Vec<RingElement<T>>,
+    batch_len: usize,
+    dealer_inputs: Option<Vec<RingElement<T>>>,
     share_type: ShareType,
 ) -> Result<Vec<RssShare<T>>>
 where
     T: NetworkInt,
     Standard: Distribution<T>,
 {
-    if dealer_inputs.is_empty() {
+    if batch_len == 0 {
         bail!(EMPTY_BATCH_ERROR);
     }
 
@@ -85,7 +86,20 @@ where
         );
     }
     let (correction_pair, recipients) = select_correction_pair_and_recipients(dealer)?;
-    let batch_size = dealer_inputs.len();
+    match (own_role == dealer, dealer_inputs.as_ref()) {
+        (true, Some(inputs)) => {
+            if inputs.len() != batch_len {
+                bail!(
+                    "RSS5 dealer {dealer:?} provided {} inputs, expected {batch_len}",
+                    inputs.len()
+                );
+            }
+        }
+        (true, None) => bail!("RSS5 dealer {dealer:?} must provide inputs"),
+        (false, Some(_)) => bail!("RSS5 non-dealer {own_role:?} must not provide inputs"),
+        (false, None) => {}
+    }
+    let batch_size = batch_len;
 
     let mut slots: [Option<Vec<RingElement<T>>>; RSS5_SLOTS_HELD] = std::array::from_fn(|_| None);
     let mut correction_slot = None;
@@ -114,8 +128,7 @@ where
     }
 
     if let Some(slot) = correction_slot {
-        let correction = if own_role == dealer {
-            let mut correction = dealer_inputs;
+        let correction = if let Some(mut correction) = dealer_inputs {
             for masks in slots.iter().flatten() {
                 for (value, mask) in correction.iter_mut().zip(masks) {
                     *value = share_type.unmask(*value, *mask);
@@ -183,15 +196,16 @@ where
 
 /// Deals a non-empty batch of arithmetic secrets in one network message.
 ///
-/// All parties must provide the same batch length. Only the dealer's inputs
-/// are read; other parties may provide a same-length vector of zeros.
+/// All parties must provide the same nonzero `batch_len`. The dealer must
+/// provide `Some(inputs)` with that length; all other parties must pass `None`.
 /// Correction recipients validate the received length. Other parties receive
 /// no message, so this function cannot verify their batch lengths agree.
 pub async fn dealer_rss5_arithmetic<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
-    dealer_inputs: Vec<RingElement<T>>,
+    batch_len: usize,
+    dealer_inputs: Option<Vec<RingElement<T>>>,
 ) -> Result<Vec<RssShare<T>>>
 where
     T: NetworkInt,
@@ -201,6 +215,7 @@ where
         session,
         threshold,
         dealer,
+        batch_len,
         dealer_inputs,
         ShareType::Arithmetic,
     )
@@ -209,15 +224,16 @@ where
 
 /// Deals a non-empty batch of boolean secrets in one network message.
 ///
-/// All parties must provide the same batch length. Only the dealer's inputs
-/// are read; other parties may provide a same-length vector of zeros.
+/// All parties must provide the same nonzero `batch_len`. The dealer must
+/// provide `Some(inputs)` with that length; all other parties must pass `None`.
 /// Correction recipients validate the received length. Other parties receive
 /// no message, so this function cannot verify their batch lengths agree.
 pub async fn dealer_rss5_boolean<T>(
     session: &mut NetworkSession,
     threshold: &mut ThresholdPrfKeys,
     dealer: Role,
-    dealer_inputs: Vec<RingElement<T>>,
+    batch_len: usize,
+    dealer_inputs: Option<Vec<RingElement<T>>>,
 ) -> Result<Vec<RssShare<T>>>
 where
     T: NetworkInt,
@@ -227,6 +243,7 @@ where
         session,
         threshold,
         dealer,
+        batch_len,
         dealer_inputs,
         ShareType::Boolean,
     )
@@ -365,32 +382,29 @@ mod tests {
                         &mut network_session,
                         &mut threshold,
                         dealer,
-                        vec![],
+                        0,
+                        None,
                     )
                     .await
                     .unwrap_err()
                     .to_string(),
                     "RSS5 batch must not be empty"
                 );
-                let scalar = RingElement(if own_role == dealer { scalar } else { 0 });
-                let batch = batch
-                    .into_iter()
-                    .map(|value| RingElement(if own_role == dealer { value } else { 0 }))
-                    .collect();
+                let batch_len = batch.len();
+                let scalar = (own_role == dealer).then(|| vec![RingElement(scalar)]);
+                let batch =
+                    (own_role == dealer).then(|| batch.into_iter().map(RingElement).collect());
 
-                let single_shares = dealer_rss5_arithmetic(
-                    &mut network_session,
-                    &mut threshold,
-                    dealer,
-                    vec![scalar],
-                )
-                .await
-                .unwrap();
+                let single_shares =
+                    dealer_rss5_arithmetic(&mut network_session, &mut threshold, dealer, 1, scalar)
+                        .await
+                        .unwrap();
                 assert_eq!(single_shares.len(), 1);
                 let batch_shares = dealer_rss5_arithmetic(
                     &mut network_session,
                     &mut threshold,
                     dealer,
+                    batch_len,
                     batch,
                 )
                 .await
@@ -439,32 +453,33 @@ mod tests {
                         &mut network_session,
                         &mut threshold,
                         dealer,
-                        vec![],
+                        0,
+                        None,
                     )
                     .await
                     .unwrap_err()
                     .to_string(),
                     "RSS5 batch must not be empty"
                 );
-                let scalar = RingElement(if own_role == dealer { scalar } else { 0 });
-                let batch = batch
-                    .into_iter()
-                    .map(|value| RingElement(if own_role == dealer { value } else { 0 }))
-                    .collect();
+                let batch_len = batch.len();
+                let scalar = (own_role == dealer).then(|| vec![RingElement(scalar)]);
+                let batch =
+                    (own_role == dealer).then(|| batch.into_iter().map(RingElement).collect());
 
-                let single_shares = dealer_rss5_boolean(
+                let single_shares =
+                    dealer_rss5_boolean(&mut network_session, &mut threshold, dealer, 1, scalar)
+                        .await
+                        .unwrap();
+                assert_eq!(single_shares.len(), 1);
+                let batch_shares = dealer_rss5_boolean(
                     &mut network_session,
                     &mut threshold,
                     dealer,
-                    vec![scalar],
+                    batch_len,
+                    batch,
                 )
                 .await
                 .unwrap();
-                assert_eq!(single_shares.len(), 1);
-                let batch_shares =
-                    dealer_rss5_boolean(&mut network_session, &mut threshold, dealer, batch)
-                        .await
-                        .unwrap();
                 (own_role, single_shares, batch_shares)
             });
         }
@@ -500,6 +515,84 @@ mod tests {
         let error = rss5_reconstruction(&mismatched, share_type).unwrap_err();
         assert!(error.to_string().contains("expected 4 shares"));
         assert!(error.to_string().contains("got 3"));
+    }
+
+    #[tokio::test]
+    async fn invalid_dealer_inputs_rejected_before_communication_or_prf_use() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                .await
+                .unwrap();
+            let mut session = runtime.sessions.into_iter().next().unwrap().network_session;
+            let own_role = session.own_role();
+            let seeds = || {
+                PartyPair::excluding(own_role)
+                    .into_iter()
+                    .map(|pair| (pair, [0; 16]))
+                    .collect()
+            };
+            let mut threshold = ThresholdPrfKeys::from_seeds(own_role, seeds()).unwrap();
+            let mut untouched = ThresholdPrfKeys::from_seeds(own_role, seeds()).unwrap();
+
+            for share_type in [ShareType::Arithmetic, ShareType::Boolean] {
+                let cases = [
+                    (own_role, 0, None, "RSS5 batch must not be empty"),
+                    (own_role, 1, None, "must provide inputs"),
+                    (own_role, 1, Some(vec![]), "provided 0 inputs, expected 1"),
+                    (
+                        own_role,
+                        1,
+                        Some(vec![RingElement(7_u16); 2]),
+                        "provided 2 inputs, expected 1",
+                    ),
+                    (
+                        Role::new(1),
+                        1,
+                        Some(vec![RingElement(7_u16)]),
+                        "must not provide inputs",
+                    ),
+                    (Role::new(1), 1, Some(vec![]), "must not provide inputs"),
+                ];
+                for (dealer, batch_len, inputs, expected) in cases {
+                    let result = match share_type {
+                        ShareType::Arithmetic => {
+                            dealer_rss5_arithmetic(
+                                &mut session,
+                                &mut threshold,
+                                dealer,
+                                batch_len,
+                                inputs,
+                            )
+                            .await
+                        }
+                        ShareType::Boolean => {
+                            dealer_rss5_boolean(
+                                &mut session,
+                                &mut threshold,
+                                dealer,
+                                batch_len,
+                                inputs,
+                            )
+                            .await
+                        }
+                    };
+                    let error = result.unwrap_err().to_string();
+                    assert!(error.contains(expected), "unexpected error: {error}");
+                }
+            }
+
+            // Rejected calls must leave all shared random streams untouched.
+            for i in 0..ORBIT5_PARTY_COUNT {
+                for j in i + 1..ORBIT5_PARTY_COUNT {
+                    if let Some(rng) = threshold.get_mut(Role::new(i), Role::new(j)) {
+                        let expected = untouched.get_mut(Role::new(i), Role::new(j)).unwrap();
+                        assert_eq!(rng.gen::<u64>(), expected.gen::<u64>());
+                    }
+                }
+            }
+        })
+        .await
+        .expect("invalid dealer inputs must fail without waiting for peers");
     }
 
     #[tokio::test]
@@ -575,16 +668,15 @@ mod tests {
                         let dealer = Role::new(dealer);
                         // All parties use equal batch sizes within each round;
                         // only the dealer supplies the actual values.
-                        let inputs = values
-                            .iter()
-                            .map(|value| RingElement(if role == dealer { *value } else { 0 }))
-                            .collect();
+                        let inputs = (role == dealer)
+                            .then(|| values.iter().copied().map(RingElement).collect());
                         let shares = match share_type {
                             Arithmetic => {
                                 dealer_rss5_arithmetic(
                                     &mut session,
                                     &mut threshold,
                                     dealer,
+                                    values.len(),
                                     inputs,
                                 )
                                 .await
@@ -594,6 +686,7 @@ mod tests {
                                     &mut session,
                                     &mut threshold,
                                     dealer,
+                                    values.len(),
                                     inputs,
                                 )
                                 .await

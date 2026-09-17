@@ -9,7 +9,6 @@ use crate::protocol::prf::{PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT};
 use eyre::{bail, eyre, Result};
-use num_traits::Zero;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
 use std::collections::BTreeSet;
@@ -218,11 +217,13 @@ where
     Standard: Distribution<T>,
 {
     roles.validate()?;
+
     if batch_len == 0 {
         bail!("3-party additive-to-boolean RSS5 batch must not be empty");
     }
 
     let own_role = session.own_role();
+
     if threshold.own_role() != own_role {
         bail!(
             "threshold PRF keys belong to {:?}, but the session belongs to {own_role:?}",
@@ -247,15 +248,20 @@ where
         bail!("own role {own_role:?} is not part of the given FiveToThreeRoles: {roles:?}");
     }
 
-    let zero_batch = || vec![RingElement::zero(); batch_len];
+    let mut pending_input = if roles.receivers.contains(&own_role) {
+        Some(additive_shares)
+    } else {
+        None
+    };
     let mut dealer_batches = Vec::with_capacity(roles.receivers.len());
     for dealer in roles.receivers {
         let dealer_input = if own_role == dealer {
-            additive_shares.clone()
+            pending_input.take()
         } else {
-            zero_batch()
+            None
         };
-        let dealer_batch = dealer_rss5_boolean(session, threshold, dealer, dealer_input).await?;
+        let dealer_batch =
+            dealer_rss5_boolean(session, threshold, dealer, batch_len, dealer_input).await?;
         if dealer_batch.len() != batch_len {
             bail!(
                 "boolean dealer {dealer:?} produced {} values, expected {batch_len}",
@@ -384,14 +390,12 @@ mod tests {
         assert_eq!(reconstructed, values);
     }
 
-    #[tokio::test]
-    async fn three_party_additive_reshare_as_boolean_rss5() {
+    async fn check_three_party_additive_reshare_as_boolean_rss5(roles: FiveToThreeRoles) {
         let mut rng = AesRng::seed_from_u64(50);
         // Five batch values are dealt by each of the three dealers.
         let values: Vec<u16> = vec![0, 1, 42, 0x1234, u16::MAX];
         let batch_len = values.len();
         let per_party_shares = create_additive_shares(&mut rng, &values);
-        let roles = FiveToThreeRoles::canonical();
         let identities = generate_local_identities_orbit5();
         let seeds = (0..ORBIT5_PARTY_COUNT)
             .map(|index| {
@@ -449,6 +453,20 @@ mod tests {
                 *expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn three_party_additive_reshare_as_boolean_rss5() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            check_three_party_additive_reshare_as_boolean_rss5(FiveToThreeRoles::canonical()).await;
+            check_three_party_additive_reshare_as_boolean_rss5(FiveToThreeRoles {
+                receivers: [Role::new(2), Role::new(3), Role::new(4)],
+                senders: [Role::new(0), Role::new(1)],
+            })
+            .await;
+        })
+        .await
+        .expect("three-dealer RSS5 conversion timed out");
     }
 
     #[test]
