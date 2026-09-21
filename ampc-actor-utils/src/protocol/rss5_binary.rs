@@ -81,7 +81,7 @@ pub async fn full_adder_reduce(
 mod tests {
     use super::*;
     use crate::execution::{
-        local::{generate_local_identities_n, LocalRuntime},
+        local::{generate_local_identities_orbit5, LocalRuntime},
         player::Role,
         session::SessionHandles,
     };
@@ -117,7 +117,7 @@ mod tests {
 
         // Create five connected local party sessions with deterministic per-party RNG seeds.
         let runtime = LocalRuntime::new(
-            generate_local_identities_n(5),
+            generate_local_identities_orbit5(),
             (0..5).map(|i| [i; 16]).collect(),
         )
         .await

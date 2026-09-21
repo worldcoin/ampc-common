@@ -5,11 +5,9 @@ use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
 use crate::protocol::dealer_5pc::dealer_rss5_boolean;
-use crate::protocol::dealer_5pc::dealer_rss5_boolean_batch;
 use crate::protocol::prf::{orbit5_roles, PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
-use eyre::{bail, eyre, Result};
 use eyre::{bail, eyre, Result};
 use num_traits::Zero;
 use rand::Rng;
@@ -306,12 +304,9 @@ pub async fn and_many(
     // Complete one dealer call at a time, in a common order. This reuses the
     // existing API; it does not yet schedule all five dealers in one round.
     for dealer in orbit5_roles() {
-        let dealer_input = if dealer == own_role {
-            local.clone()
-        } else {
-            vec![RingElement::zero(); lhs.len()]
-        };
-        let shared = dealer_rss5_boolean_batch(session, threshold, dealer, dealer_input).await?;
+        let dealer_input = (dealer == own_role).then(|| local.clone());
+        let shared =
+            dealer_rss5_boolean(session, threshold, dealer, lhs.len(), dealer_input).await?;
         if shared.len() != lhs.len() {
             bail!(
                 "Boolean dealer {dealer:?} returned {} AND contributions, expected {}",
@@ -332,8 +327,8 @@ pub async fn and_many(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::local::{generate_local_identities_n, LocalRuntime};
-    use crate::protocol::dealer_5pc::reconstruct_boolean_batch;
+    use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
+    use crate::protocol::dealer_5pc::{rss5_reconstruction, ShareType};
     use crate::protocol::ops::{setup_pairwise_prf_keys, setup_threshold_prf_keys};
     use crate::protocol::test_utils::{
         create_array_sharing_additive_5party, reconstruct_additive_shares,
@@ -366,7 +361,7 @@ mod tests {
             .map(|(lhs, rhs)| (share(&mut rng, lhs), share(&mut rng, rhs)))
             .collect();
         let runtime = LocalRuntime::new(
-            generate_local_identities_n(5),
+            generate_local_identities_orbit5(),
             (0..5).map(|i| [i; 16]).collect(),
         )
         .await
@@ -582,6 +577,20 @@ mod tests {
                 *expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn three_party_additive_reshare_as_boolean_rss5() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            check_three_party_additive_reshare_as_boolean_rss5(FiveToThreeRoles::canonical()).await;
+            check_three_party_additive_reshare_as_boolean_rss5(FiveToThreeRoles {
+                receivers: [Role::new(2), Role::new(3), Role::new(4)],
+                senders: [Role::new(0), Role::new(1)],
+            })
+            .await;
+        })
+        .await
+        .expect("three-dealer RSS5 conversion timed out");
     }
 
     #[test]
