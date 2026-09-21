@@ -55,6 +55,10 @@ impl IrisSecretSharedVector {
 impl IrisVector {
     /// Create a new [IrisVector] from an array of 512 i8 values.
     pub fn new(data: [i8; IRIS_VECTOR_SIZE]) -> Self {
+        debug_assert!(
+            data.iter().all(|&x| (-8..=7).contains(&x)),
+            "IrisVector values must be in [-8, 7]"
+        );
         IrisVector(data)
     }
 
@@ -234,6 +238,54 @@ impl IrisVector {
         Ok(shares)
     }
 
+    /// Generate Shamir secret shares of this iris embedding vector for the
+    /// ORBIT5 (5-party) configuration: one share per party, each containing
+    /// 512 u16 values.
+    ///
+    /// The ORBIT5 counterpart of [`secret_share`](Self::secret_share): the
+    /// vector is processed in chunks of 4, each converted to a
+    /// [GaloisRingElement] and shared with a degree-2 polynomial evaluated at
+    /// 5 points, so any 3 of the 5 shares reconstruct the secret.
+    pub fn secret_share_5_parties<R: CryptoRng + Rng>(
+        &self,
+        rng: &mut R,
+    ) -> eyre::Result<[IrisSecretSharedVector; 5]> {
+        #[allow(clippy::manual_is_multiple_of)]
+        if IRIS_VECTOR_SIZE % 4 != 0 {
+            bail!(
+                "Vector size must be divisible by 4, got {}",
+                IRIS_VECTOR_SIZE
+            );
+        }
+
+        let mut shares = [
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+        ];
+
+        for i in (0..IRIS_VECTOR_SIZE).step_by(4) {
+            let element = GaloisRingElement::<basis::A>::from_coefs([
+                self.0[i] as u16,
+                self.0[i + 1] as u16,
+                self.0[i + 2] as u16,
+                self.0[i + 3] as u16,
+            ]);
+            let element = element.to_monomial();
+            let share = ShamirGaloisRingShare::encode_5_mat(&element.coefs, rng);
+            for j in 0..5 {
+                shares[j].0[i] = share[j].y.coefs[0];
+                shares[j].0[i + 1] = share[j].y.coefs[1];
+                shares[j].0[i + 2] = share[j].y.coefs[2];
+                shares[j].0[i + 3] = share[j].y.coefs[3];
+            }
+        }
+
+        Ok(shares)
+    }
+
     /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
     /// Mainly useful for tests, dev tooling, and PCP fixture generation.
     pub fn to_base64(&self) -> String {
@@ -383,7 +435,7 @@ mod tests {
     use crate::PartyID;
     use crate::ShamirGaloisRingShare;
     use base64::Engine as _;
-    use rand::thread_rng;
+    use rand::{rngs::StdRng, thread_rng, SeedableRng};
 
     #[test]
     fn test_random_normalized() {
@@ -460,6 +512,101 @@ mod tests {
             .iter()
             .map(|&x| (x as i16) as i8) // Convert back from u16 to i8
             .collect();
+
+        assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_5pc_secret_sharing_correctness() {
+        let mut rng = thread_rng();
+        let original = IrisVector::random_normalized(&mut rng);
+        let shares = original.secret_share_5_parties(&mut rng).unwrap();
+
+        // Simulate reconstruction by using the first three shares.
+        let lagrange_coeffs = [
+            ShamirGaloisRingShare::orbit5_deg_2_lagrange_polys_at_zero(
+                PartyID::ID0,
+                PartyID::ID1,
+                PartyID::ID2,
+            ),
+            ShamirGaloisRingShare::orbit5_deg_2_lagrange_polys_at_zero(
+                PartyID::ID1,
+                PartyID::ID0,
+                PartyID::ID2,
+            ),
+            ShamirGaloisRingShare::orbit5_deg_2_lagrange_polys_at_zero(
+                PartyID::ID2,
+                PartyID::ID0,
+                PartyID::ID1,
+            ),
+        ];
+
+        let mut reconstructed = [0u16; IRIS_VECTOR_SIZE];
+        for (id, share) in shares[0..3].iter().enumerate() {
+            let mut share_copy = share.clone();
+
+            for i in (0..share_copy.0.len()).step_by(4) {
+                let element = GaloisRingElement::<basis::Monomial>::from_coefs([
+                    share_copy.0[i],
+                    share_copy.0[i + 1],
+                    share_copy.0[i + 2],
+                    share_copy.0[i + 3],
+                ]);
+                let element: GaloisRingElement<basis::Monomial> = element * lagrange_coeffs[id];
+                let element = element.to_basis_A();
+                share_copy.0[i] = element.coefs[0];
+                share_copy.0[i + 1] = element.coefs[1];
+                share_copy.0[i + 2] = element.coefs[2];
+                share_copy.0[i + 3] = element.coefs[3];
+            }
+            for (j, entry) in reconstructed.iter_mut().enumerate() {
+                *entry = entry.wrapping_add(share_copy.0[j]);
+            }
+        }
+
+        // Convert reconstructed to i8 and compare with original.
+        let reconstructed_i8: Vec<i8> = reconstructed
+            .iter()
+            .map(|&x| (x as i16) as i8) // Convert back from u16 to i8
+            .collect();
+
+        assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_5pc_secret_sharing_all_five_shares_reconstruct_original() {
+        let mut rng = StdRng::seed_from_u64(0);
+        let original = IrisVector::random_normalized(&mut rng);
+        let shares = original.secret_share_5_parties(&mut rng).unwrap();
+
+        // A degree-2 sharing polynomial can also be reconstructed from all five
+        // evaluation points using the degree-4 Lagrange coefficients at zero.
+        let lagrange_coeffs = ShamirGaloisRingShare::orbit5_deg_4_lagrange_polys_at_zero();
+
+        let mut reconstructed = [0u16; IRIS_VECTOR_SIZE];
+        for (id, share) in shares.iter().enumerate() {
+            let mut share_copy = share.clone();
+
+            for i in (0..share_copy.0.len()).step_by(4) {
+                let element = GaloisRingElement::<basis::Monomial>::from_coefs([
+                    share_copy.0[i],
+                    share_copy.0[i + 1],
+                    share_copy.0[i + 2],
+                    share_copy.0[i + 3],
+                ]);
+                let element: GaloisRingElement<basis::Monomial> = element * lagrange_coeffs[id];
+                let element = element.to_basis_A();
+                share_copy.0[i] = element.coefs[0];
+                share_copy.0[i + 1] = element.coefs[1];
+                share_copy.0[i + 2] = element.coefs[2];
+                share_copy.0[i + 3] = element.coefs[3];
+            }
+            for (j, entry) in reconstructed.iter_mut().enumerate() {
+                *entry = entry.wrapping_add(share_copy.0[j]);
+            }
+        }
+
+        let reconstructed_i8: Vec<i8> = reconstructed.iter().map(|&x| (x as i16) as i8).collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
     }
