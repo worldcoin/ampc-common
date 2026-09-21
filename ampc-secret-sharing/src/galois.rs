@@ -360,31 +360,9 @@ pub mod degree4 {
                 .unwrap()
         }
 
-        pub fn encode_5<R: CryptoRng + Rng>(
-            input: &GaloisRingElement<Monomial>,
-            rng: &mut R,
-        ) -> [ShamirGaloisRingShare; 5] {
-            let coefs = [
-                *input,
-                GaloisRingElement::random(rng),
-                GaloisRingElement::random(rng),
-            ];
-            (1..=5)
-                .map(|i| {
-                    let element = GaloisRingElement::EXCEPTIONAL_SEQUENCE[i];
-                    let share = coefs[0] + coefs[1] * element + coefs[2] * element * element;
-                    ShamirGaloisRingShare { id: i, y: share }
-                })
-                .collect::<Vec<_>>()
-                .as_slice()
-                .try_into()
-                .unwrap()
-        }
-
-        /// Equivalent to [`Self::encode_5`], using direct array construction and
         /// Horner's rule to evaluate each share with two ring multiplications.
         /// Consumes the same randomness and returns the same ordered shares.
-        pub fn encode_5_array_horner<R: CryptoRng + Rng>(
+        pub fn encode_5<R: CryptoRng + Rng>(
             input: &GaloisRingElement<Monomial>,
             rng: &mut R,
         ) -> [ShamirGaloisRingShare; 5] {
@@ -716,31 +694,6 @@ pub mod degree4 {
                 assert_eq!(
                     GaloisRingElement::<basis::Monomial>::random(&mut rng),
                     GaloisRingElement::<basis::Monomial>::random(&mut reference_rng),
-                );
-            }
-        }
-
-        #[test]
-        fn encode_5_array_horner_matches_encode_5() {
-            use rand::{rngs::StdRng, SeedableRng};
-
-            let mut rng = StdRng::seed_from_u64(0);
-            let edge_cases = [[0; 4], [u16::MAX; 4], [0, 1, 0x8000, u16::MAX]];
-            for i in 0..1024 {
-                let input = if i < edge_cases.len() {
-                    GaloisRingElement::from_coefs(edge_cases[i])
-                } else {
-                    GaloisRingElement::random(&mut rng)
-                };
-                let mut reference_rng = rng.clone();
-                let expected = ShamirGaloisRingShare::encode_5(&input, &mut reference_rng);
-                let actual = ShamirGaloisRingShare::encode_5_array_horner(&input, &mut rng);
-                assert_eq!(actual, expected, "input {i}");
-                // The encoders must also leave the RNG at the same position.
-                assert_eq!(
-                    GaloisRingElement::<basis::Monomial>::random(&mut rng),
-                    GaloisRingElement::<basis::Monomial>::random(&mut reference_rng),
-                    "randomness consumption for input {i}",
                 );
             }
         }
