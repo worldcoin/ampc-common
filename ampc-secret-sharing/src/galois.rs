@@ -360,6 +360,70 @@ pub mod degree4 {
                 .unwrap()
         }
 
+        /// Horner's rule to evaluate each share with two ring multiplications.
+        /// Consumes the same randomness and returns the same ordered shares.
+        pub fn encode_5<R: CryptoRng + Rng>(
+            input: &GaloisRingElement<Monomial>,
+            rng: &mut R,
+        ) -> [ShamirGaloisRingShare; 5] {
+            let r = GaloisRingElement::<Monomial>::random(rng);
+            let t = GaloisRingElement::<Monomial>::random(rng);
+
+            std::array::from_fn(|index| {
+                let id = index + 1;
+                let z = GaloisRingElement::EXCEPTIONAL_SEQUENCE[id];
+                let y = *input + (r + t * z) * z;
+
+                ShamirGaloisRingShare { id, y }
+            })
+        }
+
+        /// Evaluate P(z) = s + rz + tz^2 at 1, X, 1 + X, X^2, and 1 + X^2.
+        /// Reusing multiples of X gives a circuit of 50 scalar wrapping additions.
+        pub fn encode_5_mat<R: CryptoRng + Rng>(
+            input: &[u16; 4],
+            rng: &mut R,
+        ) -> [ShamirGaloisRingShare; 5] {
+            // X^4 = X + 1, so multiplication by X costs one scalar addition.
+            let mul_x = |a: GaloisRingElement<Monomial>| {
+                let [a0, a1, a2, a3] = a.coefs;
+                GaloisRingElement::from_coefs([a3, a0.wrapping_add(a3), a1, a2])
+            };
+
+            let s = GaloisRingElement::from_coefs(*input);
+            let r = GaloisRingElement::random(rng);
+            let t = GaloisRingElement::random(rng);
+
+            // Six scalar additions: four for r + t, one for each multiple of X.
+            let q = r + t;
+            let tx = mul_x(t);
+            let txx = mul_x(tx);
+
+            // P(1), P(X), and P(X^2), using Horner's rule (23 additions).
+            let y1 = s + q;
+            let y2 = s + mul_x(r + tx);
+            let y4 = s + mul_x(mul_x(r + txx));
+
+            // Original calculation: six additions including dxx below.
+            // let d = t + t;
+            // let dx = mul_x(d);
+            // Reuse Xt to compute 2Xt and 2X^2t with five additions.
+            let dx = tx + tx;
+            let dxx = mul_x(dx);
+
+            // P(1 + z) = P(z) + (r + t) + 2zt (16 additions for both shares).
+            let y3 = y2 + q + dx;
+            let y5 = y4 + q + dxx;
+
+            [
+                ShamirGaloisRingShare { id: 1, y: y1 },
+                ShamirGaloisRingShare { id: 2, y: y2 },
+                ShamirGaloisRingShare { id: 3, y: y3 },
+                ShamirGaloisRingShare { id: 4, y: y4 },
+                ShamirGaloisRingShare { id: 5, y: y5 },
+            ]
+        }
+
         pub fn encode_3_mat<R: CryptoRng + Rng>(
             input: &[u16; 4],
             rng: &mut R,
@@ -419,6 +483,50 @@ pub mod degree4 {
             res
         }
 
+        /// Computes the Lagrange polynomial of degree 2 at zero for the given party and two other
+        /// parties. These are used is only used in testing to reconstruct the secret from 3
+        /// shares.
+        pub fn orbit5_deg_2_lagrange_polys_at_zero(
+            my_id: PartyID,
+            other_id_1: PartyID,
+            other_id_2: PartyID,
+        ) -> GaloisRingElement<Monomial> {
+            let mut res = GaloisRingElement::ONE;
+            let i = usize::from(my_id) + 1;
+            let j = usize::from(other_id_1) + 1;
+            let k = usize::from(other_id_2) + 1;
+            res = res
+                * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[k]);
+            res = res
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                    .inverse()
+                * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                    - GaloisRingElement::EXCEPTIONAL_SEQUENCE[k])
+                    .inverse();
+            res
+        }
+
+        /// Computes all five Lagrange polynomials of degree 4 at zero.
+        /// This can be used in production to turn the 5-of-5 Shamir secret shares of a
+        /// product into 5-of-5 additive shares.
+        pub fn orbit5_deg_4_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 5] {
+            let mut res = [GaloisRingElement::ONE; 5];
+            for i in 1..=5 {
+                for j in 1..=5 {
+                    if j != i {
+                        res[i - 1] = res[i - 1] * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
+                        res[i - 1] = res[i - 1]
+                            * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
+                                - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
+                                .inverse();
+                    }
+                }
+            }
+            res
+        }
+
         pub fn deg_1_lagrange_poly_at_v(
             my_id: usize,
             other_id: usize,
@@ -459,6 +567,17 @@ pub mod degree4 {
             shares: &[ShamirGaloisRingShare; 3],
         ) -> GaloisRingElement<Monomial> {
             let lagrange_polys_at_zero = Self::deg_2_lagrange_polys_at_zero();
+            shares
+                .iter()
+                .map(|s| s.y * lagrange_polys_at_zero[s.id - 1])
+                .reduce(|a, b| a + b)
+                .unwrap()
+        }
+
+        pub fn reconstruct_deg_4_shares(
+            shares: &[ShamirGaloisRingShare; 5],
+        ) -> GaloisRingElement<Monomial> {
+            let lagrange_polys_at_zero = Self::orbit5_deg_4_lagrange_polys_at_zero();
             shares
                 .iter()
                 .map(|s| s.y * lagrange_polys_at_zero[s.id - 1])
@@ -513,6 +632,27 @@ pub mod degree4 {
 
             assert_eq!(reconstructed, expected);
         }
+
+        #[test]
+        fn sharing_orbit5() {
+            let input1 = GaloisRingElement::random(&mut rand::thread_rng());
+            let input2 = GaloisRingElement::random(&mut rand::thread_rng());
+
+            let shares1 = ShamirGaloisRingShare::encode_5(&input1, &mut rand::thread_rng());
+            let shares2 = ShamirGaloisRingShare::encode_5(&input2, &mut rand::thread_rng());
+            let shares_mul = [
+                shares1[0] * shares2[0],
+                shares1[1] * shares2[1],
+                shares1[2] * shares2[2],
+                shares1[3] * shares2[3],
+                shares1[4] * shares2[4],
+            ];
+
+            let reconstructed = ShamirGaloisRingShare::reconstruct_deg_4_shares(&shares_mul);
+            let expected = input1 * input2;
+
+            assert_eq!(reconstructed, expected);
+        }
         #[test]
         fn sharing_mat() {
             let input1 = GaloisRingElement::random(&mut rand::thread_rng());
@@ -529,6 +669,53 @@ pub mod degree4 {
             ];
 
             let reconstructed = ShamirGaloisRingShare::reconstruct_deg_2_shares(&shares_mul);
+            let expected = input1 * input2;
+
+            assert_eq!(reconstructed, expected);
+        }
+
+        #[test]
+        fn encode_5_mat_matches_encode_5() {
+            use rand::{rngs::StdRng, SeedableRng};
+
+            let mut rng = StdRng::seed_from_u64(0);
+            let edge_cases = [[0; 4], [u16::MAX; 4], [0, 1, 0x8000, u16::MAX]];
+            for i in 0..1024 {
+                let input = if i < edge_cases.len() {
+                    GaloisRingElement::from_coefs(edge_cases[i])
+                } else {
+                    GaloisRingElement::random(&mut rng)
+                };
+                let mut reference_rng = rng.clone();
+                let expected = ShamirGaloisRingShare::encode_5(&input, &mut reference_rng);
+                let actual = ShamirGaloisRingShare::encode_5_mat(&input.coefs, &mut rng);
+                assert_eq!(actual, expected, "input {i}");
+                // Both encoders must also consume the same randomness.
+                assert_eq!(
+                    GaloisRingElement::<basis::Monomial>::random(&mut rng),
+                    GaloisRingElement::<basis::Monomial>::random(&mut reference_rng),
+                );
+            }
+        }
+
+        #[test]
+        fn sharing_mat_orbit5() {
+            let input1 = GaloisRingElement::random(&mut rand::thread_rng());
+            let input2 = GaloisRingElement::random(&mut rand::thread_rng());
+
+            let shares1 =
+                ShamirGaloisRingShare::encode_5_mat(&input1.coefs, &mut rand::thread_rng());
+            let shares2 =
+                ShamirGaloisRingShare::encode_5_mat(&input2.coefs, &mut rand::thread_rng());
+            let shares_mul = [
+                shares1[0] * shares2[0],
+                shares1[1] * shares2[1],
+                shares1[2] * shares2[2],
+                shares1[3] * shares2[3],
+                shares1[4] * shares2[4],
+            ];
+
+            let reconstructed = ShamirGaloisRingShare::reconstruct_deg_4_shares(&shares_mul);
             let expected = input1 * input2;
 
             assert_eq!(reconstructed, expected);
