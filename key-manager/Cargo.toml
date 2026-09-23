@@ -13,9 +13,8 @@ aws-sdk-secretsmanager = { workspace = true }
 clap = { workspace = true }
 base64 = { workspace = true }
 eyre = { workspace = true }
-rand = { workspace = true }
 reqwest = { workspace = true }
-sodiumoxide = { workspace = true }
+alkali = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
 

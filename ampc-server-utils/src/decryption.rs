@@ -1,3 +1,4 @@
+use alkali::asymmetric::seal::{self, Keypair, PrivateKey};
 use aws_sdk_secretsmanager::{
     error::SdkError, operation::get_secret_value::GetSecretValueError,
     Client as SecretsManagerClient,
@@ -5,10 +6,6 @@ use aws_sdk_secretsmanager::{
 use base64::{engine::general_purpose::STANDARD, Engine};
 use eyre::Result;
 use serde::de::DeserializeOwned;
-use sodiumoxide::crypto::{
-    box_::{PublicKey, SecretKey},
-    sealedbox,
-};
 use std::string::FromUtf8Error;
 use thiserror::Error;
 use zeroize::Zeroize;
@@ -31,6 +28,8 @@ pub enum SharesDecodingError {
     ParsingKeyError,
     #[error("Sealed box open error")]
     SealedBoxOpenError,
+    #[error("Cryptography error: {0}")]
+    CryptoError(#[from] alkali::AlkaliError),
     #[error("Previous key not found error")]
     PreviousKeyNotFound,
     #[error("Base64 decoding error")]
@@ -126,14 +125,13 @@ impl SharesEncryptionKeyPairs {
 }
 
 pub struct SharesEncryptionKeyPair {
-    pk: PublicKey,
-    sk: SecretKey,
+    keypair: Keypair,
 }
 
 impl Zeroize for SharesEncryptionKeyPair {
     fn zeroize(&mut self) {
-        self.pk.0.zeroize();
-        self.sk.0.zeroize();
+        self.keypair.public_key.zeroize();
+        self.keypair.private_key.as_mut().zeroize();
     }
 }
 
@@ -162,19 +160,28 @@ impl SharesEncryptionKeyPair {
             .decode(sk_b64)
             .map_err(SharesDecodingError::DecodingError)?;
 
-        let sk = SecretKey::from_slice(&sk_bytes).ok_or(SharesDecodingError::ParsingKeyError)?;
-
-        let pk_from_sk = sk.public_key();
-        Ok(Self { pk: pk_from_sk, sk })
+        if sk_bytes.len() != seal::PRIVATE_KEY_LENGTH {
+            return Err(SharesDecodingError::ParsingKeyError);
+        }
+        let sk = PrivateKey::try_from(sk_bytes.as_slice())?;
+        let keypair = Keypair::from_private_key(&sk)?;
+        Ok(Self { keypair })
     }
 
     #[allow(clippy::result_large_err)]
     pub fn open_sealed_box(&self, code: Vec<u8>) -> Result<Vec<u8>, SharesDecodingError> {
-        let decrypted = sealedbox::open(&code, &self.pk, &self.sk);
-        match decrypted {
-            Ok(bytes) => Ok(bytes),
-            Err(_) => Err(SharesDecodingError::SealedBoxOpenError),
-        }
+        let plaintext_len = code
+            .len()
+            .checked_sub(seal::OVERHEAD_LENGTH)
+            .ok_or(SharesDecodingError::SealedBoxOpenError)?;
+        let mut decrypted = vec![0; plaintext_len];
+        seal::decrypt(&code, &self.keypair, &mut decrypted).map_err(|error| match error {
+            alkali::AlkaliError::SealError(seal::SealError::DecryptionFailed) => {
+                SharesDecodingError::SealedBoxOpenError
+            }
+            other => SharesDecodingError::CryptoError(other),
+        })?;
+        Ok(decrypted)
     }
 }
 
@@ -257,11 +264,13 @@ pub fn decrypt_binary_share(
     share_bytes: Vec<u8>,
     key_pairs: &SharesEncryptionKeyPairs,
 ) -> Result<Vec<u8>, SharesDecodingError> {
-    if let Ok(decrypted_bytes) = key_pairs
+    match key_pairs
         .current_key_pair
         .open_sealed_box(share_bytes.clone())
     {
-        return Ok(decrypted_bytes);
+        Ok(decrypted_bytes) => return Ok(decrypted_bytes),
+        Err(SharesDecodingError::SealedBoxOpenError) => {}
+        Err(error) => return Err(error),
     }
 
     let previous_key_pair = key_pairs
@@ -269,40 +278,71 @@ pub fn decrypt_binary_share(
         .as_ref()
         .ok_or(SharesDecodingError::PreviousKeyNotFound)?;
 
-    previous_key_pair
-        .open_sealed_box(share_bytes)
-        .map_err(|_| SharesDecodingError::SealedBoxOpenError)
+    previous_key_pair.open_sealed_box(share_bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sodiumoxide::crypto::box_;
+
+    fn seal_for(message: &[u8], public_key: &seal::PublicKey) -> Vec<u8> {
+        let mut ciphertext = vec![0; message.len() + seal::OVERHEAD_LENGTH];
+        seal::encrypt(message, public_key, &mut ciphertext).expect("encryption failed");
+        ciphertext
+    }
+
+    #[test]
+    fn decrypts_existing_libsodium_sealed_box() {
+        let private_key = STANDARD.encode([7u8; 32]);
+        let key_pairs =
+            SharesEncryptionKeyPairs::from_b64_private_key_strings(private_key, String::new())
+                .unwrap();
+        // Generated with libsodium's crypto_box_seal for the private key above.
+        let ciphertext = hex::decode("a348d0a278d264a97a516d229b0fa0138d980a5d747921fba86eaba44fb0ba7a4db6c72dc81c74c8b2e40625546f7262d43f65dac3338fa0915ba0f9732d3194b2d8a8").unwrap();
+        assert_eq!(
+            key_pairs
+                .current_key_pair
+                .open_sealed_box(ciphertext)
+                .unwrap(),
+            b"legacy sealed share"
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_sealed_box() {
+        let keypair = Keypair::generate().unwrap();
+        let private_key = STANDARD.encode(keypair.private_key.as_ref());
+        let pair = SharesEncryptionKeyPair::from_b64_private_key_string(private_key).unwrap();
+        assert!(matches!(
+            pair.open_sealed_box(vec![0; seal::OVERHEAD_LENGTH - 1]),
+            Err(SharesDecodingError::SealedBoxOpenError)
+        ));
+    }
 
     #[test]
     fn decrypts_with_current_key() {
-        let (current_pk, current_sk) = box_::gen_keypair();
-        let current_b64 = STANDARD.encode(current_sk.0);
+        let current = Keypair::generate().unwrap();
+        let current_b64 = STANDARD.encode(current.private_key.as_ref());
         let key_pairs =
             SharesEncryptionKeyPairs::from_b64_private_key_strings(current_b64, String::new())
                 .expect("failed to build key pairs");
         let plaintext = b"hello binary share".to_vec();
-        let ciphertext = sealedbox::seal(&plaintext, &current_pk);
+        let ciphertext = seal_for(&plaintext, &current.public_key);
         let decrypted = decrypt_binary_share(ciphertext, &key_pairs).expect("decryption failed");
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
     fn falls_back_to_previous_key() {
-        let (_, current_sk) = box_::gen_keypair();
-        let current_b64 = STANDARD.encode(current_sk.0);
-        let (previous_pk, previous_sk) = box_::gen_keypair();
-        let previous_b64 = STANDARD.encode(previous_sk.0);
+        let current = Keypair::generate().unwrap();
+        let current_b64 = STANDARD.encode(current.private_key.as_ref());
+        let previous = Keypair::generate().unwrap();
+        let previous_b64 = STANDARD.encode(previous.private_key.as_ref());
         let key_pairs =
             SharesEncryptionKeyPairs::from_b64_private_key_strings(current_b64, previous_b64)
                 .expect("failed to build key pairs");
         let plaintext = b"sealed with the previous key".to_vec();
-        let ciphertext = sealedbox::seal(&plaintext, &previous_pk);
+        let ciphertext = seal_for(&plaintext, &previous.public_key);
 
         let decrypted = decrypt_binary_share(ciphertext, &key_pairs).expect("decryption failed");
         assert_eq!(decrypted, plaintext);
@@ -310,11 +350,11 @@ mod tests {
 
     #[test]
     fn errors_with_previous_key_not_found_when_no_previous() {
-        let (_, current_sk) = box_::gen_keypair();
-        let current_b64 = STANDARD.encode(current_sk.0);
+        let current = Keypair::generate().unwrap();
+        let current_b64 = STANDARD.encode(current.private_key.as_ref());
         // Seal with an unrelated key so the current key pair cannot open it.
-        let (unrelated_pk, _) = box_::gen_keypair();
-        let ciphertext = sealedbox::seal(b"unopenable", &unrelated_pk);
+        let unrelated = Keypair::generate().unwrap();
+        let ciphertext = seal_for(b"unopenable", &unrelated.public_key);
 
         let key_pairs =
             SharesEncryptionKeyPairs::from_b64_private_key_strings(current_b64, String::new())
@@ -325,15 +365,15 @@ mod tests {
 
     #[test]
     fn errors_with_sealed_box_open_when_neither_key_matches() {
-        let (_, current_sk) = box_::gen_keypair();
-        let current_b64 = STANDARD.encode(current_sk.0);
-        let (_, previous_sk) = box_::gen_keypair();
-        let previous_b64 = STANDARD.encode(previous_sk.0);
+        let current = Keypair::generate().unwrap();
+        let current_b64 = STANDARD.encode(current.private_key.as_ref());
+        let previous = Keypair::generate().unwrap();
+        let previous_b64 = STANDARD.encode(previous.private_key.as_ref());
         let key_pairs =
             SharesEncryptionKeyPairs::from_b64_private_key_strings(current_b64, previous_b64)
                 .expect("failed to build key pairs");
-        let (unrelated_pk, _) = box_::gen_keypair();
-        let ciphertext = sealedbox::seal(b"unopenable", &unrelated_pk);
+        let unrelated = Keypair::generate().unwrap();
+        let ciphertext = seal_for(b"unopenable", &unrelated.public_key);
         let err = decrypt_binary_share(ciphertext, &key_pairs).unwrap_err();
         assert!(matches!(err, SharesDecodingError::SealedBoxOpenError));
     }

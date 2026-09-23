@@ -27,7 +27,7 @@ futures = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
-sodiumoxide = { workspace = true }
+alkali = { workspace = true }
 zeroize = "1.8.1"
 thiserror = { workspace = true }
 metrics = "0.24.0"
