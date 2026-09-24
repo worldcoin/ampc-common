@@ -1,4 +1,3 @@
-
 use alkali::asymmetric::seal::{
     curve25519xsalsa20poly1305::{self as seal, Keypair, PrivateKey},
     SealError,
