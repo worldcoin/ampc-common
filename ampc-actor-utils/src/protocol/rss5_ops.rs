@@ -293,6 +293,7 @@ pub async fn and_many(
 
     // Each party computes its assigned cross-terms for every packed element.
     let local: Vec<RingElement<u64>> = lhs.iter().zip(rhs).map(|(a, b)| a & b).collect();
+    let mut pending_input = Some(local);
     let own_role = session.own_role();
     let mut result = vec![
         RssShare {
@@ -304,7 +305,11 @@ pub async fn and_many(
     // Complete one dealer call at a time, in a common order. This reuses the
     // existing API; it does not yet schedule all five dealers in one round.
     for dealer in orbit5_roles() {
-        let dealer_input = (dealer == own_role).then(|| local.clone());
+        let dealer_input = if dealer == own_role {
+            pending_input.take()
+        } else {
+            None
+        };
         let shared =
             dealer_rss5_boolean(session, threshold, dealer, lhs.len(), dealer_input).await?;
         if shared.len() != lhs.len() {
