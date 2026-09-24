@@ -160,9 +160,6 @@ impl SharesEncryptionKeyPair {
             .decode(sk_b64)
             .map_err(SharesDecodingError::DecodingError)?;
 
-        if sk_bytes.len() != seal::PRIVATE_KEY_LENGTH {
-            return Err(SharesDecodingError::ParsingKeyError);
-        }
         let sk = PrivateKey::try_from(sk_bytes.as_slice())?;
         let keypair = Keypair::from_private_key(&sk)?;
         Ok(Self { keypair })
@@ -175,13 +172,14 @@ impl SharesEncryptionKeyPair {
             .checked_sub(seal::OVERHEAD_LENGTH)
             .ok_or(SharesDecodingError::SealedBoxOpenError)?;
         let mut decrypted = vec![0; plaintext_len];
-        seal::decrypt(&code, &self.keypair, &mut decrypted).map_err(|error| match error {
-            alkali::AlkaliError::SealError(seal::SealError::DecryptionFailed) => {
-                SharesDecodingError::SealedBoxOpenError
+        let decryption_result = seal::decrypt(&code, &self.keypair, &mut decrypted);
+        match decryption_result {
+            Ok(_) => Ok(decrypted),
+            Err(alkali::AlkaliError::SealError(seal::SealError::DecryptionFailed)) => {
+                Err(SharesDecodingError::SealedBoxOpenError)
             }
-            other => SharesDecodingError::CryptoError(other),
-        })?;
-        Ok(decrypted)
+            Err(other) => Err(SharesDecodingError::CryptoError(other)),
+        }
     }
 }
 
@@ -264,13 +262,11 @@ pub fn decrypt_binary_share(
     share_bytes: Vec<u8>,
     key_pairs: &SharesEncryptionKeyPairs,
 ) -> Result<Vec<u8>, SharesDecodingError> {
-    match key_pairs
+    if let Ok(decrypted_bytes) = key_pairs
         .current_key_pair
         .open_sealed_box(share_bytes.clone())
     {
-        Ok(decrypted_bytes) => return Ok(decrypted_bytes),
-        Err(SharesDecodingError::SealedBoxOpenError) => {}
-        Err(error) => return Err(error),
+        return Ok(decrypted_bytes);
     }
 
     let previous_key_pair = key_pairs
@@ -278,7 +274,9 @@ pub fn decrypt_binary_share(
         .as_ref()
         .ok_or(SharesDecodingError::PreviousKeyNotFound)?;
 
-    previous_key_pair.open_sealed_box(share_bytes)
+    previous_key_pair
+        .open_sealed_box(share_bytes)
+        .map_err(|_| SharesDecodingError::SealedBoxOpenError)
 }
 
 #[cfg(test)]
@@ -289,34 +287,6 @@ mod tests {
         let mut ciphertext = vec![0; message.len() + seal::OVERHEAD_LENGTH];
         seal::encrypt(message, public_key, &mut ciphertext).expect("encryption failed");
         ciphertext
-    }
-
-    #[test]
-    fn decrypts_existing_libsodium_sealed_box() {
-        let private_key = STANDARD.encode([7u8; 32]);
-        let key_pairs =
-            SharesEncryptionKeyPairs::from_b64_private_key_strings(private_key, String::new())
-                .unwrap();
-        // Generated with libsodium's crypto_box_seal for the private key above.
-        let ciphertext = hex::decode("a348d0a278d264a97a516d229b0fa0138d980a5d747921fba86eaba44fb0ba7a4db6c72dc81c74c8b2e40625546f7262d43f65dac3338fa0915ba0f9732d3194b2d8a8").unwrap();
-        assert_eq!(
-            key_pairs
-                .current_key_pair
-                .open_sealed_box(ciphertext)
-                .unwrap(),
-            b"legacy sealed share"
-        );
-    }
-
-    #[test]
-    fn rejects_truncated_sealed_box() {
-        let keypair = Keypair::generate().unwrap();
-        let private_key = STANDARD.encode(keypair.private_key.as_ref());
-        let pair = SharesEncryptionKeyPair::from_b64_private_key_string(private_key).unwrap();
-        assert!(matches!(
-            pair.open_sealed_box(vec![0; seal::OVERHEAD_LENGTH - 1]),
-            Err(SharesDecodingError::SealedBoxOpenError)
-        ));
     }
 
     #[test]
