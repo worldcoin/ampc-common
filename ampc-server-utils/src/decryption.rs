@@ -1,4 +1,8 @@
-use alkali::asymmetric::seal::{self, Keypair, PrivateKey};
+
+use alkali::asymmetric::seal::{
+    curve25519xsalsa20poly1305::{self as seal, Keypair, PrivateKey},
+    SealError,
+};
 use aws_sdk_secretsmanager::{
     error::SdkError, operation::get_secret_value::GetSecretValueError,
     Client as SecretsManagerClient,
@@ -160,7 +164,8 @@ impl SharesEncryptionKeyPair {
             .decode(sk_b64)
             .map_err(SharesDecodingError::DecodingError)?;
 
-        let sk = PrivateKey::try_from(sk_bytes.as_slice())?;
+        let sk = PrivateKey::try_from(sk_bytes.as_slice())
+            .map_err(|_| SharesDecodingError::ParsingKeyError)?;
         let keypair = Keypair::from_private_key(&sk)?;
         Ok(Self { keypair })
     }
@@ -175,7 +180,7 @@ impl SharesEncryptionKeyPair {
         let decryption_result = seal::decrypt(&code, &self.keypair, &mut decrypted);
         match decryption_result {
             Ok(_) => Ok(decrypted),
-            Err(alkali::AlkaliError::SealError(seal::SealError::DecryptionFailed)) => {
+            Err(alkali::AlkaliError::SealError(SealError::DecryptionFailed)) => {
                 Err(SharesDecodingError::SealedBoxOpenError)
             }
             Err(other) => Err(SharesDecodingError::CryptoError(other)),
@@ -287,6 +292,15 @@ mod tests {
         let mut ciphertext = vec![0; message.len() + seal::OVERHEAD_LENGTH];
         seal::encrypt(message, public_key, &mut ciphertext).expect("encryption failed");
         ciphertext
+    }
+
+    #[test]
+    fn invalid_private_key_length_is_a_parsing_error() {
+        let invalid_key = STANDARD.encode([0u8; seal::PRIVATE_KEY_LENGTH - 1]);
+        assert!(matches!(
+            SharesEncryptionKeyPair::from_b64_private_key_string(invalid_key),
+            Err(SharesDecodingError::ParsingKeyError)
+        ));
     }
 
     #[test]
