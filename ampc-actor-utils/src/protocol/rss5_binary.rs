@@ -81,6 +81,110 @@ pub async fn full_adder_reduce(
     Ok((a, b))
 }
 
+/// Return packed Boolean RSS5 shares of the MSB of A + B modulo 2^16.
+/// Inputs A and B come from `full_adder_reduce`, which preserves the layout from
+/// [`transpose_rss5_u16`](ampc_secret_sharing::shares::vecshare_bittranspose::transpose_rss5_u16).
+/// Plane `j` contains shares of bit `j` across N comparisons: ceil(N / 64)
+/// `RssShare<u64>` values, each component packing that bit from up to 64 comparisons.
+/// Planes are LSB first; B's bit 0 must be zero. The output is one packed MSB plane.
+#[tracing::instrument(level = "trace", target = "mpc::network", skip_all)]
+pub async fn binary_add_2_get_msb(
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    a: &[Vec<RssShare<u64>>; 16],
+    b: &[Vec<RssShare<u64>>; 16],
+) -> Result<Vec<RssShare<u64>>> {
+    let packed_len = a[0].len();
+    ensure!(
+        a.iter().chain(b).all(|plane| plane.len() == packed_len),
+        "PPA input planes must have equal lengths"
+    );
+    if packed_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Bit 0 cannot generate a carry; bit 15 is used only in the final XOR.
+    // p_j = A_j XOR B_j: bit j propagates a carry when exactly one input is 1.
+    // The vectors p and g start at bit 1, so vector index 0 corresponds to bit 1.
+    let mut p: Vec<Vec<RssShare<u64>>> = a[1..15]
+        .iter()
+        .zip(&b[1..15])
+        .map(|(a, b)| transposed_pack_xor(a, b))
+        .collect::<Result<_>>()?;
+    // Each operand pair borrows the two planes to AND for one bit position.
+    let operands: Vec<_> = a[1..15]
+        .iter()
+        .zip(&b[1..15])
+        .map(|(a, b)| (a.as_slice(), b.as_slice()))
+        .collect();
+    // g_j = A_j AND B_j: both bits being 1 generates a carry into bit j + 1.
+    // Compute these planes for bits 1..14 in one batched AND call.
+    let mut g = transposed_pack_and(session, threshold, &operands).await?;
+
+    // Blocks stay ordered from least to most significant: 14 -> 7 -> 4 -> 2 -> 1.
+    while g.len() > 1 {
+        let mut operands = Vec::new();
+        for low in (0..g.len() - 1).step_by(2) {
+            let high = low + 1;
+            // G = g_high XOR (g_low AND p_high).
+            operands.push((g[low].as_slice(), p[high].as_slice()));
+            // The least-significant block never needs to propagate an incoming carry.
+            if low > 0 {
+                operands.push((p[low].as_slice(), p[high].as_slice()));
+            }
+        }
+        // Batch both generation and propagation ANDs for this entire tree level.
+        let mut products = transposed_pack_and(session, threshold, &operands)
+            .await?
+            .into_iter();
+        let mut next_g = Vec::new();
+        let mut next_p = Vec::new();
+        for low in (0..g.len() - 1).step_by(2) {
+            let high = low + 1;
+            let carry = products
+                .next()
+                .ok_or_else(|| eyre::eyre!("missing carry AND"))?;
+            // Finish each generation plane locally using its higher block's g.
+            next_g.push(transposed_pack_xor(&g[high], &carry)?);
+            // Keep an unused placeholder at index 0 so p and g use the same indices.
+            next_p.push(if low == 0 {
+                Vec::new()
+            } else {
+                products
+                    .next()
+                    .ok_or_else(|| eyre::eyre!("missing propagation AND"))?
+            });
+        }
+        // An odd number of blocks leaves the highest block unpaired at this level.
+        if g.len() % 2 == 1 {
+            next_g.push(g.pop().unwrap());
+            next_p.push(p.pop().unwrap());
+        }
+        g = next_g;
+        p = next_p;
+    }
+
+    // g[0] is now the carry from bits 1..14 into the most-significant bit.
+    let msb_p = transposed_pack_xor(&a[15], &b[15])?;
+    transposed_pack_xor(&msb_p, &g[0])
+}
+
+/// XOR two equally sized planes locally, preserving the packed comparison order.
+fn transposed_pack_xor(lhs: &[RssShare<u64>], rhs: &[RssShare<u64>]) -> Result<Vec<RssShare<u64>>> {
+    ensure!(lhs.len() == rhs.len(), "XOR planes must have equal lengths");
+    // The share operator XORs matching components without unpacking their bits.
+    Ok(lhs.iter().zip(rhs).map(|(a, b)| *a ^ *b).collect())
+}
+
+// Pending helper: batch all plane pairs through and_many and preserve their order.
+async fn transposed_pack_and(
+    _session: &mut NetworkSession,
+    _threshold: &mut ThresholdPrfKeys,
+    _operands: &[(&[RssShare<u64>], &[RssShare<u64>])],
+) -> Result<Vec<Vec<RssShare<u64>>>> {
+    eyre::bail!("RSS5 transposed_pack_and is not implemented yet")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
