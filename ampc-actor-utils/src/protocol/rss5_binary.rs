@@ -111,12 +111,14 @@ pub async fn binary_add_2_get_msb(
         .zip(&b[1..15])
         .map(|(a, b)| transposed_pack_xor(a, b))
         .collect::<Result<_>>()?;
+
     // Each operand pair borrows the two planes to AND for one bit position.
     let operands: Vec<_> = a[1..15]
         .iter()
         .zip(&b[1..15])
         .map(|(a, b)| (a.as_slice(), b.as_slice()))
         .collect();
+
     // g_j = A_j AND B_j: both bits being 1 generates a carry into bit j + 1.
     // Compute these planes for bits 1..14 in one batched AND call.
     let mut g = transposed_pack_and(session, threshold, &operands).await?;
@@ -133,12 +135,14 @@ pub async fn binary_add_2_get_msb(
                 operands.push((p[low].as_slice(), p[high].as_slice()));
             }
         }
+
         // Batch both generation and propagation ANDs for this entire tree level.
         let mut products = transposed_pack_and(session, threshold, &operands)
             .await?
             .into_iter();
         let mut next_g = Vec::new();
         let mut next_p = Vec::new();
+
         for low in (0..g.len() - 1).step_by(2) {
             let high = low + 1;
             let carry = products
@@ -176,13 +180,35 @@ fn transposed_pack_xor(lhs: &[RssShare<u64>], rhs: &[RssShare<u64>]) -> Result<V
     Ok(lhs.iter().zip(rhs).map(|(a, b)| *a ^ *b).collect())
 }
 
-// Pending helper: batch all plane pairs through and_many and preserve their order.
+/// AND corresponding planes in one and_many call, preserving their order and lengths.
+#[allow(clippy::type_complexity)]
 async fn transposed_pack_and(
-    _session: &mut NetworkSession,
-    _threshold: &mut ThresholdPrfKeys,
-    _operands: &[(&[RssShare<u64>], &[RssShare<u64>])],
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    operands: &[(&[RssShare<u64>], &[RssShare<u64>])],
 ) -> Result<Vec<Vec<RssShare<u64>>>> {
-    eyre::bail!("RSS5 transposed_pack_and is not implemented yet")
+    for (lhs, rhs) in operands {
+        ensure!(lhs.len() == rhs.len(), "AND planes must have equal lengths");
+    }
+
+    // Concatenate whole shares in the same plane order on both sides; bits stay packed.
+    let lhs: Vec<RssShare<u64>> = operands
+        .iter()
+        .flat_map(|(lhs, _)| lhs.iter().copied())
+        .collect();
+    let rhs: Vec<RssShare<u64>> = operands
+        .iter()
+        .flat_map(|(_, rhs)| rhs.iter().copied())
+        .collect();
+    let products = and_many(session, threshold, &lhs, &rhs).await?;
+    ensure!(products.len() == lhs.len(), "unexpected AND output length");
+
+    // Move each result back into its original plane, including empty planes.
+    let mut products = products.into_iter();
+    Ok(operands
+        .iter()
+        .map(|(lhs, _)| products.by_ref().take(lhs.len()).collect())
+        .collect())
 }
 
 #[cfg(test)]
@@ -194,6 +220,7 @@ mod tests {
         session::SessionHandles,
     };
     use crate::protocol::{
+        dealer_5pc::dealer_rss5_boolean,
         ops::setup_threshold_prf_keys,
         rss5_ops::{dealer_three_party_additive_as_boolean_rss5_batches, FiveToThreeRoles},
         test_utils::rss5_boolean::reconstruct,
@@ -202,6 +229,90 @@ mod tests {
     use ampc_secret_sharing::shares::vecshare_bittranspose::transpose_rss5_u16;
     use rand::{Rng, SeedableRng};
     use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn test_rss5_binary_add_2_get_msb() {
+        const K: usize = 1000000;
+        check_rss5_binary_add_2_get_msb(K).await;
+    }
+
+    async fn check_rss5_binary_add_2_get_msb(k: usize) {
+        let mut rng = AesRng::seed_from_u64(54);
+        // B's lowest bit must be zero, as it is in full_adder_reduce's output.
+        let cases: Vec<Vec<[u16; 2]>> = [0, 1, 64, 65, k]
+            .into_iter()
+            .map(|len| {
+                (0..len)
+                    .map(|_| [rng.gen(), rng.gen::<u16>() & !1u16])
+                    .collect()
+            })
+            .collect();
+        let runtime = LocalRuntime::new(
+            generate_local_identities_orbit5(),
+            (0..5).map(|i| [i; 16]).collect(),
+        )
+        .await
+        .unwrap();
+        let mut jobs = JoinSet::new();
+        for session in runtime.sessions {
+            let cases = cases.clone();
+            jobs.spawn(async move {
+                let mut network = session.network_session;
+                let role = network.own_role();
+                // Keep advancing the same PRF streams across all batch sizes.
+                let mut threshold = setup_threshold_prf_keys(&mut network).await.unwrap();
+                let mut outputs = Vec::new();
+                for values in cases {
+                    let mut planes: [[Vec<RssShare<u64>>; 16]; 2] =
+                        std::array::from_fn(|_| std::array::from_fn(|_| Vec::new()));
+                    // Empty inputs go directly to the PPA; the dealer rejects empty batches.
+                    if !values.is_empty() {
+                        for (operand, planes) in planes.iter_mut().enumerate() {
+                            let dealer = Role::new(operand);
+                            let inputs = (role == dealer).then(|| {
+                                values
+                                    .iter()
+                                    .map(|value| RingElement(value[operand]))
+                                    .collect()
+                            });
+                            let shares = dealer_rss5_boolean(
+                                &mut network,
+                                &mut threshold,
+                                dealer,
+                                values.len(),
+                                inputs,
+                            )
+                            .await
+                            .unwrap();
+                            *planes = transpose_rss5_u16(&shares);
+                        }
+                    }
+                    let msb =
+                        binary_add_2_get_msb(&mut network, &mut threshold, &planes[0], &planes[1])
+                            .await
+                            .unwrap();
+                    assert_eq!(msb.len(), values.len().div_ceil(64));
+                    outputs.push(msb);
+                }
+                (role.index(), outputs)
+            });
+        }
+        let mut results = tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
+            .await
+            .expect("PPA protocol timed out");
+        results.sort_by_key(|(role, _)| *role);
+        for (case, values) in cases.iter().enumerate() {
+            // Reconstruction also checks that the replicated components agree.
+            let packed = reconstruct(std::array::from_fn(|role| results[role].1[case].as_slice()));
+            for comparison in 0..packed.len() * 64 {
+                // Include padding lanes, which should reconstruct to zero.
+                let [a, b] = values.get(comparison).copied().unwrap_or([0; 2]);
+                let expected = u64::from(a.wrapping_add(b) >> 15);
+                let actual = (packed[comparison / 64] >> (comparison % 64)) & 1;
+                assert_eq!(actual, expected, "batch {case}, comparison {comparison}");
+            }
+        }
+    }
 
     #[tokio::test]
     async fn test_rss5_full_adder_reduce() {
