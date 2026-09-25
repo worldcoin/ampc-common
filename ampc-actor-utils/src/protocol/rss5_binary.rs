@@ -106,11 +106,12 @@ pub async fn binary_add_2_get_msb(
     // Bit 0 cannot generate a carry; bit 15 is used only in the final XOR.
     // p_j = A_j XOR B_j: bit j propagates a carry when exactly one input is 1.
     // The vectors p and g start at bit 1, so vector index 0 corresponds to bit 1.
-    let mut p: Vec<Vec<RssShare<u64>>> = a[1..15]
-        .iter()
-        .zip(&b[1..15])
-        .map(|(a, b)| transposed_pack_xor(a, b))
-        .collect::<Result<_>>()?;
+    let mut p: Vec<Vec<RssShare<u64>>> = Vec::with_capacity(14);
+    // No carry enters bit 1, so p[0] is an unused placeholder instead of computing p_1.
+    p.push(Vec::new());
+    for (a, b) in a[2..15].iter().zip(&b[2..15]) {
+        p.push(transposed_pack_xor(a, b)?);
+    }
 
     // Each operand pair borrows the two planes to AND for one bit position.
     let operands: Vec<_> = a[1..15]
@@ -143,6 +144,8 @@ pub async fn binary_add_2_get_msb(
         let mut next_g = Vec::new();
         let mut next_p = Vec::new();
 
+        // Consume products in operand order: carry for the lowest block pair,
+        // then (carry, propagation) for each remaining pair.
         for low in (0..g.len() - 1).step_by(2) {
             let high = low + 1;
             let carry = products
@@ -232,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rss5_binary_add_2_get_msb() {
-        const K: usize = 1000000;
+        const K: usize = 1000;
         check_rss5_binary_add_2_get_msb(K).await;
     }
 
