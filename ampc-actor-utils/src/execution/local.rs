@@ -20,6 +20,7 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinHandle};
 
+/// The fixed identities of the three parties, in role order.
 pub fn generate_local_identities() -> Vec<Identity> {
     vec![
         Identity::from("alice"),
