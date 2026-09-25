@@ -250,6 +250,134 @@ where
     .await
 }
 
+/// Deals all five parties' packed Boolean contribution batches in one round.
+///
+/// Each party supplies its own nonempty `u64` batch, as produced by the local
+/// AND operation. Output batch `i` is this party's RSS5 view of dealer `i`'s
+/// inputs; callers can XOR the five batches to obtain shares of their XOR.
+///
+/// All parties must agree on batch length, element/lane ordering, and call
+/// order, using threshold PRFs already established for this session. PRF
+/// consumption and correction routing exactly match five sequential calls to
+/// [`dealer_rss5_boolean`] on `u64` with dealers 0 through 4. In particular, each
+/// party prepares its held components for every dealer, not just itself.
+///
+/// Both outgoing corrections are enqueued before any receive, so the exchange
+/// has one logical communication round. This relies on sends not waiting for
+/// peer receives, as supported by the local and TCP networking implementations.
+/// After an error or cancellation during the exchange, discard the session and
+/// PRF state rather than retrying with partially advanced streams.
+#[tracing::instrument(level = "trace", target = "mpc::network", skip_all)]
+pub async fn dealer_rss5_boolean_all(
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    local_inputs: Vec<RingElement<u64>>,
+) -> Result<[Vec<RssShare<u64>>; ORBIT5_PARTY_COUNT]> {
+    let batch_len = local_inputs.len();
+    if batch_len == 0 {
+        bail!(EMPTY_BATCH_ERROR);
+    }
+    let own_role = session.own_role();
+    if own_role.index() >= ORBIT5_PARTY_COUNT
+        || session.role_assignments.len() != ORBIT5_PARTY_COUNT
+        || orbit5_roles()
+            .iter()
+            .any(|role| !session.role_assignments.contains_key(role))
+    {
+        bail!("all-party RSS5 dealing requires a session with roles 0 through 4");
+    }
+    if threshold.own_role() != own_role {
+        bail!(
+            "threshold PRF keys belong to {:?}, but the session belongs to {own_role:?}",
+            threshold.own_role()
+        );
+    }
+
+    let routes = orbit5_roles()
+        .into_iter()
+        .map(select_correction_pair_and_recipients)
+        .collect::<Result<Vec<_>>>()?;
+    let mut batches: [Vec<RssShare<u64>>; ORBIT5_PARTY_COUNT] = std::array::from_fn(|_| {
+        vec![
+            RssShare {
+                slots: [RingElement::zero(); RSS5_SLOTS_HELD],
+            };
+            batch_len
+        ]
+    });
+    let mut correction_slots = [None; ORBIT5_PARTY_COUNT];
+
+    // Preserve the sequential dealer's draw order: dealer, slot, then element.
+    // Zero and correction components consume no randomness. Every holder of a
+    // PRF follows this schedule, even when it is not the current dealer.
+    for dealer in orbit5_roles() {
+        let dealer_index = dealer.index();
+        let correction_pair = routes[dealer_index].0;
+        for slot in 0..RSS5_SLOTS_HELD {
+            let (i, j) = slot_pair(own_role.index(), slot);
+            let (i, j) = (Role::new(i), Role::new(j));
+            let pair = PartyPair::new(i, j);
+            if pair == correction_pair {
+                correction_slots[dealer_index] = Some(slot);
+            } else if !pair.contains(dealer) {
+                let rng = threshold.get_mut(i, j).ok_or_else(|| {
+                    eyre!("role {own_role:?} has no threshold PRF key for pair ({i:?}, {j:?})")
+                })?;
+                for share in &mut batches[dealer_index] {
+                    share.slots[slot] = rng.gen::<RingElement<u64>>();
+                }
+            }
+        }
+    }
+
+    // The dealer holds all five masks for its own contribution. Its correction
+    // slot is still zero, so XORing all six slots removes exactly those masks.
+    let own_slot = correction_slots[own_role.index()]
+        .ok_or_else(|| eyre!("dealer {own_role:?} does not hold its correction component"))?;
+    let mut correction = local_inputs;
+    for (value, share) in correction.iter_mut().zip(&mut batches[own_role.index()]) {
+        for mask in &share.slots {
+            *value ^= *mask;
+        }
+        share.slots[own_slot] = *value;
+    }
+
+    // All parties enqueue their own corrections before waiting for a peer.
+    let recipients = routes[own_role.index()].1;
+    for (recipient, payload) in recipients.into_iter().zip([correction.clone(), correction]) {
+        session
+            .send_to(u64::new_network_vec(payload), &recipient)
+            .await
+            .wrap_err_with(|| {
+                format!("dealer {own_role:?} failed to send RSS5 correction to {recipient:?}")
+            })?;
+    }
+
+    for dealer in orbit5_roles() {
+        if dealer == own_role {
+            continue;
+        }
+        if let Some(slot) = correction_slots[dealer.index()] {
+            let received = session.receive_from(&dealer).await.wrap_err_with(|| {
+                format!("{own_role:?} failed to receive RSS5 correction from {dealer:?}")
+            })?;
+            let correction = u64::into_vec(received).wrap_err_with(|| {
+                format!("dealer {dealer:?} sent an invalid RSS5 correction payload")
+            })?;
+            if correction.len() != batch_len {
+                bail!(
+                    "expected {batch_len} RSS5 correction elements from {dealer:?}, got {}",
+                    correction.len()
+                );
+            }
+            for (share, value) in batches[dealer.index()].iter_mut().zip(correction) {
+                share.slots[slot] = value;
+            }
+        }
+    }
+    Ok(batches)
+}
+
 fn validate_reconstruction_roles<T>(shares: &[(Role, T)]) -> Result<()> {
     if shares.len() != ORBIT5_PARTY_COUNT {
         bail!(
@@ -346,6 +474,282 @@ mod tests {
     use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
     use crate::protocol::ops::setup_threshold_prf_keys;
     use tokio::task::JoinSet;
+
+    mod all_party {
+        use super::*;
+        use crate::execution::{
+            player::Identity,
+            session::{NetworkingImpl, SessionId},
+        };
+        use crate::network::mpc::{NetworkValue, Networking};
+        use rand::{rngs::StdRng, SeedableRng};
+        use std::sync::{Arc, Mutex};
+
+        fn fixed_keys(role: Role) -> ThresholdPrfKeys {
+            let seeds = PartyPair::excluding(role)
+                .into_iter()
+                .map(|pair| {
+                    let (i, j) = pair.parties();
+                    let mut seed = [0; 16];
+                    seed[0] = i.index() as u8;
+                    seed[1] = j.index() as u8;
+                    (pair, seed)
+                })
+                .collect();
+            ThresholdPrfKeys::from_seeds(role, seeds).unwrap()
+        }
+
+        fn assert_same_prf_state(actual: &mut ThresholdPrfKeys, expected: &mut ThresholdPrfKeys) {
+            assert_eq!(actual.own_role(), expected.own_role());
+            for pair in PartyPair::excluding(actual.own_role()) {
+                let (i, j) = pair.parties();
+                assert_eq!(
+                    actual.get_mut(i, j).unwrap().gen::<[u64; 4]>(),
+                    expected.get_mut(i, j).unwrap().gen::<[u64; 4]>(),
+                    "PRF streams diverged for {pair:?}"
+                );
+            }
+        }
+
+        struct RecordedNetwork {
+            inner: NetworkingImpl,
+            events: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Networking for RecordedNetwork {
+            async fn send(&mut self, value: NetworkValue, receiver: &Identity) -> Result<()> {
+                self.events.lock().unwrap().push("send");
+                self.inner.send(value, receiver).await
+            }
+
+            async fn receive(&mut self, sender: &Identity) -> Result<NetworkValue> {
+                self.events.lock().unwrap().push("receive");
+                self.inner.receive(sender).await
+            }
+        }
+
+        #[tokio::test]
+        async fn matches_sequential_dealers_and_preserves_prf_state() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let mut rng = StdRng::seed_from_u64(54);
+                let cases: Vec<[Vec<RingElement<u64>>; ORBIT5_PARTY_COUNT]> =
+                    [1, 2, 63, 64, 65, 129]
+                        .into_iter()
+                        .map(|len| std::array::from_fn(|_| (0..len).map(|_| rng.gen()).collect()))
+                        .collect();
+                let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                    .await
+                    .unwrap();
+                let mut jobs = JoinSet::new();
+                for session in runtime.sessions {
+                    let cases = cases.clone();
+                    jobs.spawn(async move {
+                        let mut session = session.network_session;
+                        let role = session.own_role();
+                        let events = Arc::new(Mutex::new(Vec::new()));
+                        session.networking = Box::new(RecordedNetwork {
+                            inner: session.networking,
+                            events: Arc::clone(&events),
+                        });
+                        let mut actual_prf = fixed_keys(role);
+                        let mut reference_prf = fixed_keys(role);
+                        let mut outputs = Vec::new();
+                        for (case, values) in cases.iter().enumerate() {
+                            // Interleave u16 dealing, as in Stage 2, without resetting PRFs.
+                            let dealer = Role::new(case % ORBIT5_PARTY_COUNT);
+                            let input =
+                                || (dealer == role).then(|| vec![RingElement(0xa55a_u16); 3]);
+                            let expected = dealer_rss5_boolean(
+                                &mut session,
+                                &mut reference_prf,
+                                dealer,
+                                3,
+                                input(),
+                            )
+                            .await
+                            .unwrap();
+                            let actual = dealer_rss5_boolean(
+                                &mut session,
+                                &mut actual_prf,
+                                dealer,
+                                3,
+                                input(),
+                            )
+                            .await
+                            .unwrap();
+                            assert_eq!(actual, expected);
+
+                            let batch_len = values[role.index()].len();
+                            let mut expected = Vec::new();
+                            for dealer in orbit5_roles() {
+                                expected.push(
+                                    dealer_rss5_boolean(
+                                        &mut session,
+                                        &mut reference_prf,
+                                        dealer,
+                                        batch_len,
+                                        (dealer == role).then(|| values[role.index()].clone()),
+                                    )
+                                    .await
+                                    .unwrap(),
+                                );
+                            }
+                            events.lock().unwrap().clear();
+                            let actual = dealer_rss5_boolean_all(
+                                &mut session,
+                                &mut actual_prf,
+                                values[role.index()].clone(),
+                            )
+                            .await
+                            .unwrap();
+                            assert_eq!(actual.as_slice(), expected.as_slice());
+                            assert_same_prf_state(&mut actual_prf, &mut reference_prf);
+
+                            // This catches regressions to awaiting a dealer's correction
+                            // before this party has sent both of its own corrections.
+                            let events = events.lock().unwrap();
+                            assert_eq!(&events[..2], &["send", "send"]);
+                            assert!(events[2..].iter().all(|event| *event == "receive"));
+                            outputs.push(actual);
+                        }
+                        (role, outputs)
+                    });
+                }
+                let results = jobs.join_all().await;
+                for (case, values) in cases.iter().enumerate() {
+                    for dealer in orbit5_roles() {
+                        let views: Vec<_> = results
+                            .iter()
+                            .map(|(role, outputs)| (*role, outputs[case][dealer.index()].clone()))
+                            .collect();
+                        assert_eq!(
+                            rss5_reconstruction(&views, ShareType::Boolean).unwrap(),
+                            values[dealer.index()],
+                        );
+                    }
+                }
+            })
+            .await
+            .expect("all-party RSS5 dealing timed out");
+        }
+
+        struct FailingNetwork {
+            fail_send: bool,
+            response: Option<Result<NetworkValue>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Networking for FailingNetwork {
+            async fn send(&mut self, _: NetworkValue, _: &Identity) -> Result<()> {
+                if self.fail_send {
+                    bail!("test send failure");
+                }
+                Ok(())
+            }
+
+            async fn receive(&mut self, _: &Identity) -> Result<NetworkValue> {
+                self.response
+                    .take()
+                    .unwrap_or_else(|| Err(eyre!("unexpected receive")))
+            }
+        }
+
+        fn test_session(role: Role, networking: NetworkingImpl) -> NetworkSession {
+            NetworkSession {
+                own_role: role,
+                session_id: SessionId::from(0),
+                role_assignments: Arc::new(
+                    generate_local_identities_orbit5()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, id)| (Role::new(i), id))
+                        .collect(),
+                ),
+                networking,
+            }
+        }
+
+        #[tokio::test]
+        async fn invalid_inputs_do_not_consume_prfs_or_communicate() {
+            for (len, owner, role, replace_role, expected) in [
+                (0, 0, 0, false, EMPTY_BATCH_ERROR),
+                (1, 1, 0, false, "threshold PRF keys belong to"),
+                (1, 0, 0, true, "requires a session with roles 0 through 4"),
+                (1, 0, 5, false, "requires a session with roles 0 through 4"),
+            ] {
+                let events = Arc::new(Mutex::new(Vec::new()));
+                let mut session = test_session(
+                    Role::new(role),
+                    Box::new(RecordedNetwork {
+                        inner: Box::new(FailingNetwork {
+                            fail_send: true,
+                            response: None,
+                        }),
+                        events: Arc::clone(&events),
+                    }),
+                );
+                if replace_role {
+                    let roles = Arc::make_mut(&mut session.role_assignments);
+                    let identity = roles.remove(&Role::new(4)).unwrap();
+                    roles.insert(Role::new(5), identity);
+                }
+                let mut prf = fixed_keys(Role::new(owner));
+                let mut untouched = fixed_keys(Role::new(owner));
+                let error =
+                    dealer_rss5_boolean_all(&mut session, &mut prf, vec![RingElement(0); len])
+                        .await
+                        .unwrap_err();
+                assert!(
+                    error.to_string().contains(expected),
+                    "unexpected error: {error}"
+                );
+                assert!(events.lock().unwrap().is_empty());
+                assert_same_prf_state(&mut prf, &mut untouched);
+            }
+        }
+
+        #[tokio::test]
+        async fn correction_errors_are_propagated() {
+            for (fail_send, response, expected) in [
+                (true, None, "test send failure"),
+                (
+                    false,
+                    Some(Err(eyre!("test receive timeout"))),
+                    "test receive timeout",
+                ),
+                (
+                    false,
+                    Some(Ok(NetworkValue::PrfKey([0; 16]))),
+                    "invalid RSS5 correction payload",
+                ),
+                (
+                    false,
+                    Some(Ok(u64::new_network_vec(vec![]))),
+                    "expected 1 RSS5 correction elements",
+                ),
+            ] {
+                let role = Role::new(3); // Receives corrections under the existing routing.
+                let mut session = test_session(
+                    role,
+                    Box::new(FailingNetwork {
+                        fail_send,
+                        response,
+                    }),
+                );
+                let error = dealer_rss5_boolean_all(
+                    &mut session,
+                    &mut fixed_keys(role),
+                    vec![RingElement(42)],
+                )
+                .await
+                .unwrap_err();
+                let report = format!("{error:#}");
+                assert!(report.contains(expected), "unexpected error: {report}");
+                assert!(report.contains("RSS5 correction"));
+            }
+        }
+    }
 
     fn local_seeds() -> Vec<[u8; 16]> {
         (0..ORBIT5_PARTY_COUNT)
