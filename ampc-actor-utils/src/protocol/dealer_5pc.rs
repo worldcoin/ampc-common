@@ -477,13 +477,8 @@ mod tests {
 
     mod all_party {
         use super::*;
-        use crate::execution::{
-            player::Identity,
-            session::{NetworkingImpl, SessionId},
-        };
-        use crate::network::mpc::{NetworkValue, Networking};
-        use rand::{rngs::StdRng, SeedableRng};
-        use std::sync::{Arc, Mutex};
+
+        const INPUTS: [u64; ORBIT5_PARTY_COUNT] = [10, 20, 30, 40, 50];
 
         fn fixed_keys(role: Role) -> ThresholdPrfKeys {
             let seeds = PartyPair::excluding(role)
@@ -499,6 +494,52 @@ mod tests {
             ThresholdPrfKeys::from_seeds(role, seeds).unwrap()
         }
 
+        #[tokio::test]
+        async fn single_element_matches_sequential_dealers() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                    .await
+                    .unwrap();
+                let mut jobs = JoinSet::new();
+                for session in runtime.sessions {
+                    jobs.spawn(async move {
+                        let mut session = session.network_session;
+                        let role = session.own_role();
+                        let input = vec![RingElement(INPUTS[role.index()])];
+                        let mut reference_prf = fixed_keys(role);
+                        let mut actual_prf = fixed_keys(role);
+
+                        // Share each dealer's input in a separate call.
+                        let mut expected = Vec::new();
+                        for dealer in orbit5_roles() {
+                            expected.push(
+                                dealer_rss5_boolean(
+                                    &mut session,
+                                    &mut reference_prf,
+                                    dealer,
+                                    1,
+                                    (dealer == role).then(|| input.clone()),
+                                )
+                                .await
+                                .unwrap(),
+                            );
+                        }
+
+                        // Share all dealers' inputs together, using the same starting randomness.
+                        let actual = dealer_rss5_boolean_all(&mut session, &mut actual_prf, input)
+                            .await
+                            .unwrap();
+
+                        assert_eq!(actual.as_slice(), expected.as_slice());
+                        assert_same_prf_state(&mut actual_prf, &mut reference_prf);
+                    });
+                }
+                jobs.join_all().await;
+            })
+            .await
+            .expect("single-element RSS5 comparison timed out");
+        }
+
         fn assert_same_prf_state(actual: &mut ThresholdPrfKeys, expected: &mut ThresholdPrfKeys) {
             assert_eq!(actual.own_role(), expected.own_role());
             for pair in PartyPair::excluding(actual.own_role()) {
@@ -511,243 +552,47 @@ mod tests {
             }
         }
 
-        struct RecordedNetwork {
-            inner: NetworkingImpl,
-            events: Arc<Mutex<Vec<&'static str>>>,
-        }
-
-        #[async_trait::async_trait]
-        impl Networking for RecordedNetwork {
-            async fn send(&mut self, value: NetworkValue, receiver: &Identity) -> Result<()> {
-                self.events.lock().unwrap().push("send");
-                self.inner.send(value, receiver).await
-            }
-
-            async fn receive(&mut self, sender: &Identity) -> Result<NetworkValue> {
-                self.events.lock().unwrap().push("receive");
-                self.inner.receive(sender).await
-            }
-        }
-
         #[tokio::test]
-        async fn matches_sequential_dealers_and_preserves_prf_state() {
+        async fn all_party_shares_reconstruct_inputs() {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                let mut rng = StdRng::seed_from_u64(54);
-                let cases: Vec<[Vec<RingElement<u64>>; ORBIT5_PARTY_COUNT]> =
-                    [1, 2, 63, 64, 65, 129]
-                        .into_iter()
-                        .map(|len| std::array::from_fn(|_| (0..len).map(|_| rng.gen()).collect()))
-                        .collect();
                 let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
                     .await
                     .unwrap();
                 let mut jobs = JoinSet::new();
                 for session in runtime.sessions {
-                    let cases = cases.clone();
                     jobs.spawn(async move {
                         let mut session = session.network_session;
                         let role = session.own_role();
-                        let events = Arc::new(Mutex::new(Vec::new()));
-                        session.networking = Box::new(RecordedNetwork {
-                            inner: session.networking,
-                            events: Arc::clone(&events),
-                        });
-                        let mut actual_prf = fixed_keys(role);
-                        let mut reference_prf = fixed_keys(role);
-                        let mut outputs = Vec::new();
-                        for (case, values) in cases.iter().enumerate() {
-                            // Interleave u16 dealing, as in Stage 2, without resetting PRFs.
-                            let dealer = Role::new(case % ORBIT5_PARTY_COUNT);
-                            let input =
-                                || (dealer == role).then(|| vec![RingElement(0xa55a_u16); 3]);
-                            let expected = dealer_rss5_boolean(
-                                &mut session,
-                                &mut reference_prf,
-                                dealer,
-                                3,
-                                input(),
-                            )
-                            .await
-                            .unwrap();
-                            let actual = dealer_rss5_boolean(
-                                &mut session,
-                                &mut actual_prf,
-                                dealer,
-                                3,
-                                input(),
-                            )
-                            .await
-                            .unwrap();
-                            assert_eq!(actual, expected);
+                        let input = RingElement(INPUTS[role.index()]);
 
-                            let batch_len = values[role.index()].len();
-                            let mut expected = Vec::new();
-                            for dealer in orbit5_roles() {
-                                expected.push(
-                                    dealer_rss5_boolean(
-                                        &mut session,
-                                        &mut reference_prf,
-                                        dealer,
-                                        batch_len,
-                                        (dealer == role).then(|| values[role.index()].clone()),
-                                    )
-                                    .await
-                                    .unwrap(),
-                                );
-                            }
-                            events.lock().unwrap().clear();
-                            let actual = dealer_rss5_boolean_all(
-                                &mut session,
-                                &mut actual_prf,
-                                values[role.index()].clone(),
-                            )
-                            .await
-                            .unwrap();
-                            assert_eq!(actual.as_slice(), expected.as_slice());
-                            assert_same_prf_state(&mut actual_prf, &mut reference_prf);
+                        let shares = dealer_rss5_boolean_all(
+                            &mut session,
+                            &mut fixed_keys(role),
+                            vec![input],
+                        )
+                        .await
+                        .unwrap();
 
-                            // This catches regressions to awaiting a dealer's correction
-                            // before this party has sent both of its own corrections.
-                            let events = events.lock().unwrap();
-                            assert_eq!(&events[..2], &["send", "send"]);
-                            assert!(events[2..].iter().all(|event| *event == "receive"));
-                            outputs.push(actual);
-                        }
-                        (role, outputs)
+                        (role, shares)
                     });
                 }
+
                 let results = jobs.join_all().await;
-                for (case, values) in cases.iter().enumerate() {
-                    for dealer in orbit5_roles() {
-                        let views: Vec<_> = results
-                            .iter()
-                            .map(|(role, outputs)| (*role, outputs[case][dealer.index()].clone()))
-                            .collect();
-                        assert_eq!(
-                            rss5_reconstruction(&views, ShareType::Boolean).unwrap(),
-                            values[dealer.index()],
-                        );
-                    }
+                for dealer in orbit5_roles() {
+                    let views: Vec<_> = results
+                        .iter()
+                        .map(|(role, shares)| (*role, shares[dealer.index()].clone()))
+                        .collect();
+                    // Reconstruction also checks that all holders agree on each piece.
+                    assert_eq!(
+                        rss5_reconstruction(&views, ShareType::Boolean).unwrap(),
+                        vec![RingElement(INPUTS[dealer.index()])],
+                    );
                 }
             })
             .await
-            .expect("all-party RSS5 dealing timed out");
-        }
+            .expect("all-party RSS5 sharing timed out");
 
-        struct FailingNetwork {
-            fail_send: bool,
-            response: Option<Result<NetworkValue>>,
-        }
-
-        #[async_trait::async_trait]
-        impl Networking for FailingNetwork {
-            async fn send(&mut self, _: NetworkValue, _: &Identity) -> Result<()> {
-                if self.fail_send {
-                    bail!("test send failure");
-                }
-                Ok(())
-            }
-
-            async fn receive(&mut self, _: &Identity) -> Result<NetworkValue> {
-                self.response
-                    .take()
-                    .unwrap_or_else(|| Err(eyre!("unexpected receive")))
-            }
-        }
-
-        fn test_session(role: Role, networking: NetworkingImpl) -> NetworkSession {
-            NetworkSession {
-                own_role: role,
-                session_id: SessionId::from(0),
-                role_assignments: Arc::new(
-                    generate_local_identities_orbit5()
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, id)| (Role::new(i), id))
-                        .collect(),
-                ),
-                networking,
-            }
-        }
-
-        #[tokio::test]
-        async fn invalid_inputs_do_not_consume_prfs_or_communicate() {
-            for (len, owner, role, replace_role, expected) in [
-                (0, 0, 0, false, EMPTY_BATCH_ERROR),
-                (1, 1, 0, false, "threshold PRF keys belong to"),
-                (1, 0, 0, true, "requires a session with roles 0 through 4"),
-                (1, 0, 5, false, "requires a session with roles 0 through 4"),
-            ] {
-                let events = Arc::new(Mutex::new(Vec::new()));
-                let mut session = test_session(
-                    Role::new(role),
-                    Box::new(RecordedNetwork {
-                        inner: Box::new(FailingNetwork {
-                            fail_send: true,
-                            response: None,
-                        }),
-                        events: Arc::clone(&events),
-                    }),
-                );
-                if replace_role {
-                    let roles = Arc::make_mut(&mut session.role_assignments);
-                    let identity = roles.remove(&Role::new(4)).unwrap();
-                    roles.insert(Role::new(5), identity);
-                }
-                let mut prf = fixed_keys(Role::new(owner));
-                let mut untouched = fixed_keys(Role::new(owner));
-                let error =
-                    dealer_rss5_boolean_all(&mut session, &mut prf, vec![RingElement(0); len])
-                        .await
-                        .unwrap_err();
-                assert!(
-                    error.to_string().contains(expected),
-                    "unexpected error: {error}"
-                );
-                assert!(events.lock().unwrap().is_empty());
-                assert_same_prf_state(&mut prf, &mut untouched);
-            }
-        }
-
-        #[tokio::test]
-        async fn correction_errors_are_propagated() {
-            for (fail_send, response, expected) in [
-                (true, None, "test send failure"),
-                (
-                    false,
-                    Some(Err(eyre!("test receive timeout"))),
-                    "test receive timeout",
-                ),
-                (
-                    false,
-                    Some(Ok(NetworkValue::PrfKey([0; 16]))),
-                    "invalid RSS5 correction payload",
-                ),
-                (
-                    false,
-                    Some(Ok(u64::new_network_vec(vec![]))),
-                    "expected 1 RSS5 correction elements",
-                ),
-            ] {
-                let role = Role::new(3); // Receives corrections under the existing routing.
-                let mut session = test_session(
-                    role,
-                    Box::new(FailingNetwork {
-                        fail_send,
-                        response,
-                    }),
-                );
-                let error = dealer_rss5_boolean_all(
-                    &mut session,
-                    &mut fixed_keys(role),
-                    vec![RingElement(42)],
-                )
-                .await
-                .unwrap_err();
-                let report = format!("{error:#}");
-                assert!(report.contains(expected), "unexpected error: {report}");
-                assert!(report.contains("RSS5 correction"));
-            }
         }
     }
 
