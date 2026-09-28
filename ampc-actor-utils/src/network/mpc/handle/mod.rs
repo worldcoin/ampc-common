@@ -386,9 +386,12 @@ mod tests {
                 let received_message_from_next =
                     session.networking.receive(&next_id).await.unwrap();
                 assert_eq!(received_message_from_next, message_to_prev);
+                // Keep connections alive while other parties finish receiving.
+                session
             });
         }
-        tasks.join_all().await;
+        let sessions = tasks.join_all().await;
+        drop(sessions);
     }
 
     #[tokio::test(flavor = "multi_thread")]
