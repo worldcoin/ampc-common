@@ -50,8 +50,7 @@ pub async fn full_adder_reduce(
         }
     }
 
-    // Batch all 15 carry planes into one call. Its current dealer implementation
-    // is sequential, so this is not yet a single communication round.
+    // Batch all 15 carry planes into one AND call and one communication round.
     let products = and_many(session, threshold, &and_lhs, &and_rhs).await?;
     ensure!(
         products.len() == and_lhs.len(),
