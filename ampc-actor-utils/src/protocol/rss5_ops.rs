@@ -5,10 +5,11 @@ use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
 use crate::protocol::dealer_5pc::dealer_rss5_boolean;
-use crate::protocol::prf::{PairwisePrfKeys, ThresholdPrfKeys};
+use crate::protocol::prf::{orbit5_roles, PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
-use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT};
+use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
 use eyre::{bail, eyre, Result};
+use num_traits::Zero;
 use rand::Rng;
 use rand_distr::{Distribution, Standard};
 use std::collections::BTreeSet;
@@ -217,13 +218,11 @@ where
     Standard: Distribution<T>,
 {
     roles.validate()?;
-
     if batch_len == 0 {
         bail!("3-party additive-to-boolean RSS5 batch must not be empty");
     }
 
     let own_role = session.own_role();
-
     if threshold.own_role() != own_role {
         bail!(
             "threshold PRF keys belong to {:?}, but the session belongs to {own_role:?}",
@@ -276,6 +275,60 @@ where
         .map_err(|_| eyre!("3-party additive-to-boolean RSS5 expected three dealer batches"))
 }
 
+/// Computes ANDs on batches of Boolean RSS shares, with 64 bits packed per element.
+/// All five parties must use the same batch length and call order with matching
+/// session-specific threshold PRF streams. Empty batches require no communication.
+pub async fn and_many(
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    lhs: &[RssShare<u64>],
+    rhs: &[RssShare<u64>],
+) -> Result<Vec<RssShare<u64>>> {
+    if lhs.len() != rhs.len() {
+        bail!("AND input batches must have equal lengths");
+    }
+    if lhs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Each party computes its assigned cross-terms for every packed element.
+    let local: Vec<RingElement<u64>> = lhs.iter().zip(rhs).map(|(a, b)| a & b).collect();
+    let mut pending_input = Some(local);
+    let own_role = session.own_role();
+    let mut result = vec![
+        RssShare {
+            slots: [RingElement::zero(); RSS5_SLOTS_HELD],
+        };
+        lhs.len()
+    ];
+
+    // Complete one dealer call at a time, in a common order. This reuses the
+    // existing API; it does not yet schedule all five dealers in one round.
+    for dealer in orbit5_roles() {
+        let dealer_input = if dealer == own_role {
+            pending_input.take()
+        } else {
+            None
+        };
+        let shared =
+            dealer_rss5_boolean(session, threshold, dealer, lhs.len(), dealer_input).await?;
+        if shared.len() != lhs.len() {
+            bail!(
+                "Boolean dealer {dealer:?} returned {} AND contributions, expected {}",
+                shared.len(),
+                lhs.len()
+            );
+        }
+
+        // XOR the five sharings to obtain RSS shares of the AND result.
+        for (output, contribution) in result.iter_mut().zip(shared) {
+            *output ^= contribution;
+        }
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +341,82 @@ mod tests {
     use aes_prng::AesRng;
     use rand::SeedableRng;
     use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn test_rss5_and_many() {
+        const K: usize = 10000;
+        check_rss5_and_many(K).await;
+    }
+
+    async fn check_rss5_and_many(k: usize) {
+        use crate::protocol::test_utils::rss5_boolean::{reconstruct, share};
+
+        let mut rng = AesRng::seed_from_u64(52);
+        // Keep small boundary batches as well as K random operand pairs.
+        let cases: Vec<(Vec<u64>, Vec<u64>)> = [0, 1, 64, 65, k]
+            .into_iter()
+            .map(|len| {
+                let lhs = (0..len).map(|_| rng.gen()).collect();
+                let rhs = (0..len).map(|_| rng.gen()).collect();
+                (lhs, rhs)
+            })
+            .collect();
+        let shared: Vec<_> = cases
+            .iter()
+            .map(|(lhs, rhs)| (share(&mut rng, lhs), share(&mut rng, rhs)))
+            .collect();
+        let runtime = LocalRuntime::new(
+            generate_local_identities_orbit5(),
+            (0..5).map(|i| [i; 16]).collect(),
+        )
+        .await
+        .unwrap();
+        let mut jobs = JoinSet::new();
+        for session in runtime.sessions {
+            let shared = shared.clone();
+            jobs.spawn(async move {
+                let mut network = session.network_session;
+                let role = network.own_role().index();
+                let mut threshold = setup_threshold_prf_keys(&mut network).await.unwrap();
+                let mut outputs = Vec::new();
+                for (lhs, rhs) in shared {
+                    let lhs = &lhs[role];
+                    let rhs = &rhs[role];
+                    if !lhs.is_empty() {
+                        assert!(
+                            and_many(&mut network, &mut threshold, lhs, &rhs[..rhs.len() - 1])
+                                .await
+                                .is_err()
+                        );
+                    }
+                    let product = and_many(&mut network, &mut threshold, lhs, rhs)
+                        .await
+                        .unwrap();
+                    // Reuse both the PRF state and the freshly reshared AND output.
+                    let repeated = and_many(&mut network, &mut threshold, &product, lhs)
+                        .await
+                        .unwrap();
+                    outputs.push((product, repeated));
+                }
+                (role, outputs)
+            });
+        }
+        let mut results = tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
+            .await
+            .expect("AND protocol timed out");
+        results.sort_by_key(|(role, _)| *role);
+        for (case, (lhs, rhs)) in cases.iter().enumerate() {
+            let expected: Vec<u64> = lhs.iter().zip(rhs).map(|(x, y)| x & y).collect();
+            let product = reconstruct(std::array::from_fn(|role| {
+                results[role].1[case].0.as_slice()
+            }));
+            let repeated = reconstruct(std::array::from_fn(|role| {
+                results[role].1[case].1.as_slice()
+            }));
+            assert_eq!(product, expected);
+            assert_eq!(repeated, expected);
+        }
+    }
 
     async fn test_reshare_5to3_additive(
         roles: FiveToThreeRoles,
