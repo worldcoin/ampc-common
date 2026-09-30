@@ -6,6 +6,7 @@ pub mod batch_sync;
 pub mod config;
 pub mod decryption;
 pub mod profiling;
+pub mod recovery;
 pub mod server_coordination;
 pub mod shutdown_handler;
 pub mod sqs;

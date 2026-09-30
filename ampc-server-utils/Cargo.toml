@@ -11,6 +11,7 @@ default = []
 profiling = ["dep:pprof"]
 
 [dependencies]
+sha2 = "0.10"
 axum = { workspace = true }
 chrono = { workspace = true }
 eyre = { workspace = true }
