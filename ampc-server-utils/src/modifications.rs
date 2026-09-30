@@ -112,6 +112,8 @@ impl<Id> Modification<Id> {
                         } else {
                             return Err(eyre::eyre!("Message body does not contain node_id"));
                         }
+                    } else {
+                        return Err(eyre::eyre!("Result message body must be a JSON object"));
                     }
                 }
                 Err(_) => {
@@ -171,9 +173,14 @@ pub fn compare_modifications<Id: Ord + Clone + fmt::Debug>(
             }
         } else if any_completed {
             // If any node completed => unify to COMPLETED
-            let first_completed = group_mods
+            let serial_id = group_mods.iter().find_map(|m| m.serial_id);
+            let mut completed = group_mods
                 .iter()
-                .find(|m| m.status == ModificationStatus::Completed.to_string())
+                .filter(|m| m.status == MOD_STATUS_COMPLETED);
+            let first_completed = completed
+                .clone()
+                .find(|m| m.serial_id == serial_id)
+                .or_else(|| completed.next())
                 .expect("At least one completed modification");
             match local_copy {
                 None => {
@@ -188,12 +195,14 @@ pub fn compare_modifications<Id: Ord + Clone + fmt::Debug>(
                 Some(local_m) => {
                     if local_m.status != ModificationStatus::Completed.to_string()
                         || local_m.persisted != any_persisted
+                        || local_m.serial_id != serial_id
                     {
                         // If local is not "completed" or doesn't match the final persisted
                         // We'll roll forward local_m
                         let mut roll_forward = first_completed.clone();
                         roll_forward.status = ModificationStatus::Completed.to_string();
                         roll_forward.persisted = any_persisted;
+                        roll_forward.serial_id = serial_id;
                         tracing::debug!("Planning to update modification: {:?}", id);
                         to_update.push(roll_forward);
                     } else {
@@ -378,5 +387,51 @@ mod tests {
         assert_eq!(local, other);
         assert_ne!(local.result_message_body, other.result_message_body);
         assert!(!format!("{other:?}").contains("node_id"));
+    }
+
+    #[test]
+    fn repairs_completed_local_serial_from_matching_completed_peer() {
+        for persisted in [false, true] {
+            let mut local = modification(1, MOD_STATUS_COMPLETED, persisted);
+            local.serial_id = None;
+            let mut peer = modification(1, MOD_STATUS_COMPLETED, persisted);
+            peer.result_message_body = Some(r#"{"node_id":1,"serial_id":1}"#.into());
+            let (updates, deletes) = compare_modifications(
+                std::slice::from_ref(&local),
+                &[vec![local.clone()], vec![peer.clone()]],
+            )
+            .unwrap();
+            assert_eq!(updates, vec![peer.clone()]);
+            assert_eq!(updates[0].result_message_body, peer.result_message_body);
+            assert!(deletes.is_empty());
+        }
+    }
+
+    #[test]
+    fn retains_agreed_serial_when_completed_record_has_no_serial() {
+        let mut local = modification(1, MOD_STATUS_IN_PROGRESS, false);
+        local.serial_id = None;
+        let mut complete = modification(1, MOD_STATUS_COMPLETED, false);
+        complete.serial_id = None;
+        let assigned = modification(1, MOD_STATUS_IN_PROGRESS, false);
+        let (updates, deletes) = compare_modifications(
+            std::slice::from_ref(&local),
+            &[vec![local.clone()], vec![complete.clone()], vec![assigned]],
+        )
+        .unwrap();
+        assert_eq!(updates[0].serial_id, Some(1));
+        assert_eq!(updates[0].result_message_body, complete.result_message_body);
+        assert!(deletes.is_empty());
+    }
+
+    #[test]
+    fn rejects_nonobject_result_bodies_without_changing_them() {
+        for body in ["null", "[]", r#""message""#, "42", "true"] {
+            let mut modification = modification(1, MOD_STATUS_COMPLETED, true);
+            modification.result_message_body = Some(body.into());
+            let error = modification.update_result_message_node_id(2).unwrap_err();
+            assert!(error.to_string().contains("must be a JSON object"));
+            assert_eq!(modification.result_message_body.as_deref(), Some(body));
+        }
     }
 }
