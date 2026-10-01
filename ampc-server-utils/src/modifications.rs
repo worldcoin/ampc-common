@@ -2,6 +2,8 @@ use eyre::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fmt, fmt::Display, str::FromStr};
 
+pub mod postgres;
+
 pub const MOD_STATUS_IN_PROGRESS: &str = "IN_PROGRESS";
 pub const MOD_STATUS_COMPLETED: &str = "COMPLETED";
 
@@ -130,6 +132,107 @@ impl<Id> Modification<Id> {
 /// Ordered modifications to update and delete, respectively.
 pub type ModificationPlan<Id = i64> = (Vec<Modification<Id>>, Vec<Modification<Id>>);
 
+#[derive(Debug)]
+pub struct RollForwardModification {
+    pub modification: Modification,
+    pub apply_mutation: bool,
+}
+
+#[derive(Debug)]
+pub struct ModificationRecoveryPlan {
+    pub updates: Vec<RollForwardModification>,
+    pub deletes: Vec<Modification>,
+}
+
+/// Refuse recovery when the completed frontiers exceed the retained lookback.
+pub fn ensure_modification_lookback(all: &[Vec<Modification>], max_lookback: usize) -> Result<()> {
+    let completed_max_mod_ids: Vec<Option<i64>> = all
+        .iter()
+        .map(|state| {
+            state
+                .iter()
+                .filter(|m| m.status == MOD_STATUS_COMPLETED)
+                .map(|m| m.id)
+                .max()
+        })
+        .collect();
+    let min_id = completed_max_mod_ids.iter().flatten().copied().min();
+    let max_id = completed_max_mod_ids.iter().flatten().copied().max();
+    if let (Some(min_id), Some(max_id)) = (min_id, max_id) {
+        ensure!(max_id.saturating_sub(min_id) as usize <= max_lookback,
+            "Modification ID difference across nodes is too large: {:?}. Min: {:?}, Max: {:?}. Can not safely handle this case, consider bumping lookback. Crashing!",
+            completed_max_mod_ids, min_id, max_id);
+    }
+    Ok(())
+}
+
+/// Metadata repairs must not replay old shares over later committed mutations.
+pub fn requires_modification_apply(
+    modification: &Modification,
+    local: Option<&Modification>,
+) -> bool {
+    modification.persisted
+        && !local.is_some_and(|m| m.status == MOD_STATUS_COMPLETED && m.persisted)
+}
+
+pub fn recovery_plan(
+    local: &[Modification],
+    all: &[Vec<Modification>],
+    max_lookback: usize,
+) -> Result<ModificationRecoveryPlan> {
+    ensure_modification_lookback(all, max_lookback)?;
+    let (updates, deletes) = compare_modifications(local, all)?;
+    Ok(ModificationRecoveryPlan {
+        updates: updates
+            .into_iter()
+            .map(|modification| {
+                let apply_mutation = requires_modification_apply(
+                    &modification,
+                    local.iter().find(|m| m.id == modification.id),
+                );
+                RollForwardModification {
+                    modification,
+                    apply_mutation,
+                }
+            })
+            .collect(),
+        deletes,
+    })
+}
+
+/// Replay result bodies in the application's existing request-type order.
+pub async fn replay_modification_results<'a, F, Fut>(
+    modifications: &[Modification],
+    request_type_order: &'a [&'a str],
+    mut publish: F,
+) -> Result<()>
+where
+    F: FnMut(&'a str, Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    let mut grouped = BTreeMap::<&str, Vec<String>>::new();
+    for modification in modifications {
+        let Some(body) = &modification.result_message_body else {
+            tracing::error!("Missing modification result message body");
+            continue;
+        };
+        if !request_type_order.contains(&modification.request_type.as_str()) {
+            tracing::error!("Unknown message type: {}", modification.request_type);
+            continue;
+        }
+        grouped
+            .entry(modification.request_type.as_str())
+            .or_default()
+            .push(body.clone());
+    }
+    for request_type in request_type_order {
+        if let Some(bodies) = grouped.remove(request_type) {
+            publish(request_type, bodies).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Compare local modifications against party snapshots, returning (to_update, to_delete).
 /// Updates and deletions are ordered by operation ID. Completed operations missing locally
 /// are skipped because bounded Iris snapshots can contain older operations from lagging peers.
@@ -250,6 +353,96 @@ fn check_modifications_consistency<Id: Eq + fmt::Debug>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn metadata_repair_does_not_reapply_a_completed_mutation() {
+        let local = Modification {
+            id: 1,
+            status: MOD_STATUS_COMPLETED.into(),
+            persisted: true,
+            ..Default::default()
+        };
+        let peer = Modification {
+            serial_id: Some(42),
+            ..local.clone()
+        };
+        let plan = recovery_plan(
+            std::slice::from_ref(&local),
+            &[vec![local.clone()], vec![peer]],
+            10,
+        )
+        .unwrap();
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].modification.serial_id, Some(42));
+        assert!(!plan.updates[0].apply_mutation);
+        assert!(requires_modification_apply(&local, None));
+        assert!(!requires_modification_apply(&Modification::default(), None));
+    }
+
+    #[test]
+    fn completed_frontier_guard_preserves_the_lookback_boundary() {
+        let completed = |id| Modification {
+            id,
+            status: MOD_STATUS_COMPLETED.into(),
+            ..Default::default()
+        };
+        assert!(
+            ensure_modification_lookback(&[vec![completed(1)], vec![completed(11)]], 10).is_ok()
+        );
+        assert!(
+            ensure_modification_lookback(&[vec![completed(1)], vec![completed(12)]], 10).is_err()
+        );
+        assert!(ensure_modification_lookback(&[vec![], vec![completed(12)]], 10).is_ok());
+    }
+
+    #[tokio::test]
+    async fn replay_preserves_type_and_body_order_and_propagates_failure() {
+        let row = |kind: &str, body: Option<&str>| Modification {
+            request_type: kind.into(),
+            result_message_body: body.map(str::to_owned),
+            ..Default::default()
+        };
+        let rows = vec![
+            row("reauth", Some("r")),
+            row("uniqueness", Some("new")),
+            row("uniqueness", Some("old")),
+            row("unknown", Some("ignored")),
+            row("reauth", None),
+        ];
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        replay_modification_results(&rows, &["uniqueness", "reauth"], |kind, bodies| {
+            let sent = sent.clone();
+            async move {
+                sent.lock().unwrap().push((kind.to_owned(), bodies));
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![
+                ("uniqueness".into(), vec!["new".into(), "old".into()]),
+                ("reauth".into(), vec!["r".into()])
+            ]
+        );
+        let mut calls = 0;
+        assert!(
+            replay_modification_results(&rows, &["uniqueness", "reauth"], |_, _| {
+                calls += 1;
+                async { eyre::bail!("publisher unavailable") }
+            })
+            .await
+            .is_err()
+        );
+        assert_eq!(calls, 1);
+    }
 }
 
 #[cfg(test)]
