@@ -242,7 +242,7 @@ mod tests {
     async fn check_rss5_binary_add_2_get_msb(k: usize) {
         let mut rng = AesRng::seed_from_u64(54);
         // B's lowest bit must be zero, as it is in full_adder_reduce's output.
-        let cases: Vec<Vec<[u16; 2]>> = [0, 1, 64, 65, k]
+        let mut cases: Vec<Vec<[u16; 2]>> = [0, 1, 64, 65, k]
             .into_iter()
             .map(|len| {
                 (0..len)
@@ -250,6 +250,8 @@ mod tests {
                     .collect()
             })
             .collect();
+        // Cover overflow, adding zero, and a carry chain that wraps to zero.
+        cases.push(vec![[0xffff, 0xfffe], [0xffff, 0x0000], [0xfffe, 0x0002]]);
         let runtime = LocalRuntime::new(
             generate_local_identities_orbit5(),
             (0..5).map(|i| [i; 16]).collect(),
