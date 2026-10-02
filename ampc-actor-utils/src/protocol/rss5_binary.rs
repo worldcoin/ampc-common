@@ -7,7 +7,11 @@ use ampc_secret_sharing::shares::{
 use eyre::{ensure, Result};
 
 /// Reduce three Boolean-shared 16-bit summands to A and B with the same sum mod 2^16.
-/// Inputs and outputs are 16 bit planes, LSB first, with 64 comparisons per element.
+/// Preprocess each summand's batch with
+/// [`transpose_rss5_u16`]
+/// It produces 16 bit planes, LSB first: plane `j` holds shares of bit `j` across
+/// comparisons, with each u64 component packing up to 64 comparisons.
+/// Both outputs use the same layout.
 /// All parties must agree on the batch layout and threshold PRF call order.
 #[tracing::instrument(level = "trace", target = "mpc::network", skip_all)]
 #[allow(clippy::type_complexity)]
@@ -50,7 +54,8 @@ pub async fn full_adder_reduce(
         }
     }
 
-    // Batch all 15 carry planes into one AND call and one communication round.
+    // Batch all 15 carry planes into one call. Its current dealer implementation
+    // is sequential, so this is not yet a single communication round.
     let products = and_many(session, threshold, &and_lhs, &and_rhs).await?;
     ensure!(
         products.len() == and_lhs.len(),
