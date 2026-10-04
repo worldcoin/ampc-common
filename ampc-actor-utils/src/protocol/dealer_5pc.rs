@@ -250,6 +250,143 @@ where
     .await
 }
 
+/// Deals all five parties' packed Boolean contribution batches in one round.
+///
+/// Each party supplies its own nonempty `u64` batch, as produced by the local
+/// AND operation. Output batch `i` is this party's RSS5 view of dealer `i`'s
+/// inputs; callers can XOR the five batches to obtain shares of their XOR.
+///
+/// All parties must agree on batch length, element/lane ordering, and call
+/// order, using threshold PRFs already established for this session. PRF
+/// consumption and correction routing exactly match five sequential calls to
+/// [`dealer_rss5_boolean`] on `u64` with dealers 0 through 4. In particular, each
+/// party prepares its held components for every dealer, not just itself.
+///
+/// Each party enqueues both outgoing corrections as soon as its own dealer
+/// batch is ready, then prepares any remaining dealer batches before receiving.
+/// The exchange has one logical communication round. This relies on sends not
+/// waiting for peer receives, as supported by the local and TCP implementations.
+/// After an error or cancellation during the exchange, discard the session and
+/// PRF state rather than retrying with partially advanced streams.
+#[tracing::instrument(level = "trace", target = "mpc::network", skip_all)]
+pub async fn dealer_rss5_boolean_all(
+    session: &mut NetworkSession,
+    threshold: &mut ThresholdPrfKeys,
+    mut local_inputs: Vec<RingElement<u64>>,
+) -> Result<[Vec<RssShare<u64>>; ORBIT5_PARTY_COUNT]> {
+    let batch_len = local_inputs.len();
+    if batch_len == 0 {
+        bail!(EMPTY_BATCH_ERROR);
+    }
+    let own_role = session.own_role();
+    if own_role.index() >= ORBIT5_PARTY_COUNT
+        || session.role_assignments.len() != ORBIT5_PARTY_COUNT
+        || orbit5_roles()
+            .iter()
+            .any(|role| !session.role_assignments.contains_key(role))
+    {
+        bail!("all-party RSS5 dealing requires a session with roles 0 through 4");
+    }
+    if threshold.own_role() != own_role {
+        bail!(
+            "threshold PRF keys belong to {:?}, but the session belongs to {own_role:?}",
+            threshold.own_role()
+        );
+    }
+
+    let routes = orbit5_roles()
+        .into_iter()
+        .map(select_correction_pair_and_recipients)
+        .collect::<Result<Vec<_>>>()?;
+    let mut batches: [Vec<RssShare<u64>>; ORBIT5_PARTY_COUNT] = std::array::from_fn(|_| {
+        vec![
+            RssShare {
+                slots: [RingElement::zero(); RSS5_SLOTS_HELD],
+            };
+            batch_len
+        ]
+    });
+    let mut correction_slots = [None; ORBIT5_PARTY_COUNT];
+
+    // Preserve the sequential dealer's draw order: dealer, slot, then element.
+    // Zero and correction components consume no randomness. Every holder of a
+    // PRF follows this schedule, even when it is not the current dealer.
+    for dealer in orbit5_roles() {
+        let dealer_index = dealer.index();
+        let correction_pair = routes[dealer_index].0;
+        for slot in 0..RSS5_SLOTS_HELD {
+            let (i, j) = slot_pair(own_role.index(), slot);
+            let (party_i, party_j) = (Role::new(i), Role::new(j));
+            let pair = PartyPair::new(party_i, party_j);
+            if pair == correction_pair {
+                correction_slots[dealer_index] = Some(slot);
+            } else if !pair.contains(dealer) {
+                let rng = threshold.get_mut(party_i, party_j).ok_or_else(|| {
+                    eyre!(
+                        "role {own_role:?} has no threshold PRF key for pair ({party_i:?}, {party_j:?})"
+                    )
+                })?;
+                for share in &mut batches[dealer_index] {
+                    share.slots[slot] = rng.gen::<RingElement<u64>>();
+                }
+            }
+        }
+
+        if dealer == own_role {
+            // The dealer holds all five masks for its own contribution. Its correction
+            // slot is still zero, so XORing all six slots removes exactly those masks.
+            let own_slot = correction_slots[dealer_index].ok_or_else(|| {
+                eyre!("dealer {own_role:?} does not hold its correction component")
+            })?;
+            let mut correction = std::mem::take(&mut local_inputs);
+            for (value, share) in correction.iter_mut().zip(&mut batches[dealer_index]) {
+                for mask in &share.slots {
+                    *value ^= *mask;
+                }
+                share.slots[own_slot] = *value;
+            }
+
+            // Enqueue both corrections before preparing the remaining dealers' batches.
+            let recipients = routes[dealer_index].1;
+            for (recipient, payload) in recipients.into_iter().zip([correction.clone(), correction])
+            {
+                session
+                    .send_to(u64::new_network_vec(payload), &recipient)
+                    .await
+                    .wrap_err_with(|| {
+                        format!(
+                            "dealer {own_role:?} failed to send RSS5 correction to {recipient:?}"
+                        )
+                    })?;
+            }
+        }
+    }
+
+    for dealer in orbit5_roles() {
+        if dealer == own_role {
+            continue;
+        }
+        if let Some(slot) = correction_slots[dealer.index()] {
+            let received = session.receive_from(&dealer).await.wrap_err_with(|| {
+                format!("{own_role:?} failed to receive RSS5 correction from {dealer:?}")
+            })?;
+            let correction = u64::into_vec(received).wrap_err_with(|| {
+                format!("dealer {dealer:?} sent an invalid RSS5 correction payload")
+            })?;
+            if correction.len() != batch_len {
+                bail!(
+                    "expected {batch_len} RSS5 correction elements from {dealer:?}, got {}",
+                    correction.len()
+                );
+            }
+            for (share, value) in batches[dealer.index()].iter_mut().zip(correction) {
+                share.slots[slot] = value;
+            }
+        }
+    }
+    Ok(batches)
+}
+
 fn validate_reconstruction_roles<T>(shares: &[(Role, T)]) -> Result<()> {
     if shares.len() != ORBIT5_PARTY_COUNT {
         bail!(
@@ -346,6 +483,155 @@ mod tests {
     use crate::execution::local::{generate_local_identities_orbit5, LocalRuntime};
     use crate::protocol::ops::setup_threshold_prf_keys;
     use tokio::task::JoinSet;
+
+    mod all_party {
+        use super::*;
+
+        const INPUTS: [u64; ORBIT5_PARTY_COUNT] = [
+            0,
+            u64::MAX,
+            1_u64 << 63,
+            0xAAAA_AAAA_AAAA_AAAA,
+            0x5555_5555_5555_5555,
+        ];
+        const BATCH_LENGTHS: [usize; 2] = [1, 5];
+
+        fn input_batch(role: Role, batch_len: usize) -> Vec<RingElement<u64>> {
+            (0..batch_len)
+                .map(|index| RingElement(INPUTS[(role.index() + index) % INPUTS.len()]))
+                .collect()
+        }
+
+        fn fixed_keys(role: Role) -> ThresholdPrfKeys {
+            let seeds = PartyPair::excluding(role)
+                .into_iter()
+                .map(|pair| {
+                    let (i, j) = pair.parties();
+                    let mut seed = [0; 16];
+                    seed[0] = i.index() as u8;
+                    seed[1] = j.index() as u8;
+                    (pair, seed)
+                })
+                .collect();
+            ThresholdPrfKeys::from_seeds(role, seeds).unwrap()
+        }
+
+        #[tokio::test]
+        async fn single_element_and_batch_match_sequential_dealers() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                    .await
+                    .unwrap();
+                let mut jobs = JoinSet::new();
+                for session in runtime.sessions {
+                    jobs.spawn(async move {
+                        let mut session = session.network_session;
+                        let role = session.own_role();
+                        let mut reference_prf = fixed_keys(role);
+                        let mut actual_prf = fixed_keys(role);
+
+                        for batch_len in BATCH_LENGTHS {
+                            let input = input_batch(role, batch_len);
+
+                            // Share each dealer's input in a separate call.
+                            let mut expected = Vec::new();
+                            for dealer in orbit5_roles() {
+                                expected.push(
+                                    dealer_rss5_boolean(
+                                        &mut session,
+                                        &mut reference_prf,
+                                        dealer,
+                                        batch_len,
+                                        (dealer == role).then(|| input.clone()),
+                                    )
+                                    .await
+                                    .unwrap(),
+                                );
+                            }
+
+                            // Share all dealers' inputs together, using the same starting randomness.
+                            let actual =
+                                dealer_rss5_boolean_all(&mut session, &mut actual_prf, input)
+                                    .await
+                                    .unwrap();
+
+                            assert_eq!(
+                                actual.as_slice(),
+                                expected.as_slice(),
+                                "batch length {batch_len}"
+                            );
+                            assert_same_prf_state(&mut actual_prf, &mut reference_prf);
+                        }
+                    });
+                }
+                jobs.join_all().await;
+            })
+            .await
+            .expect("single-element and batch RSS5 comparison timed out");
+        }
+
+        fn assert_same_prf_state(actual: &mut ThresholdPrfKeys, expected: &mut ThresholdPrfKeys) {
+            assert_eq!(actual.own_role(), expected.own_role());
+            for pair in PartyPair::excluding(actual.own_role()) {
+                let (i, j) = pair.parties();
+                assert_eq!(
+                    actual.get_mut(i, j).unwrap().gen::<[u64; 4]>(),
+                    expected.get_mut(i, j).unwrap().gen::<[u64; 4]>(),
+                    "PRF streams diverged for {pair:?}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn all_party_shares_reconstruct_inputs() {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                let runtime = LocalRuntime::new(generate_local_identities_orbit5(), local_seeds())
+                    .await
+                    .unwrap();
+                let mut jobs = JoinSet::new();
+                for session in runtime.sessions {
+                    jobs.spawn(async move {
+                        let mut session = session.network_session;
+                        let role = session.own_role();
+                        let mut threshold = fixed_keys(role);
+                        let mut batches = Vec::new();
+                        for batch_len in BATCH_LENGTHS {
+                            let shares = dealer_rss5_boolean_all(
+                                &mut session,
+                                &mut threshold,
+                                input_batch(role, batch_len),
+                            )
+                            .await
+                            .unwrap();
+                            batches.push(shares);
+                        }
+
+                        (role, batches)
+                    });
+                }
+
+                let results = jobs.join_all().await;
+                for (batch_index, batch_len) in BATCH_LENGTHS.into_iter().enumerate() {
+                    for dealer in orbit5_roles() {
+                        let views: Vec<_> = results
+                            .iter()
+                            .map(|(role, batches)| {
+                                (*role, batches[batch_index][dealer.index()].clone())
+                            })
+                            .collect();
+                        // Reconstruction also checks that all holders agree on each piece.
+                        assert_eq!(
+                            rss5_reconstruction(&views, ShareType::Boolean).unwrap(),
+                            input_batch(dealer, batch_len),
+                            "batch length {batch_len}, dealer {dealer:?}"
+                        );
+                    }
+                }
+            })
+            .await
+            .expect("all-party RSS5 sharing timed out");
+        }
+    }
 
     fn local_seeds() -> Vec<[u8; 16]> {
         (0..ORBIT5_PARTY_COUNT)
