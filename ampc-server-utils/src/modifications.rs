@@ -33,12 +33,61 @@ impl FromStr for ModificationStatus {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModificationInputReference {
+    S3(String),
+    Inline(String),
+}
+
+impl Serialize for ModificationInputReference {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::S3(reference) => serializer.serialize_str(reference),
+            Self::Inline(reference) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("inline", reference)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModificationInputReference {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged, deny_unknown_fields)]
+        enum Reference {
+            S3(String),
+            Inline { inline: String },
+        }
+        match Reference::deserialize(deserializer)? {
+            Reference::S3(reference) => Ok(Self::S3(reference)),
+            Reference::Inline { inline } => Ok(Self::Inline(inline)),
+        }
+    }
+}
+
+/// Party-local input. Only its public reference belongs in peer snapshots.
+pub enum ModificationInput {
+    S3(String),
+    Inline { reference: String, bytes: Vec<u8> },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ModificationInputStorage {
+    S3,
+    Inline,
+}
+
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Modification<Id = i64> {
     pub id: Id,
     pub serial_id: Option<i64>,
     pub request_type: String,
-    pub s3_url: Option<String>,
+    // Preserve Iris's existing snapshot wire format across rolling upgrades.
+    #[serde(rename = "s3_url")]
+    pub input: Option<ModificationInputReference>,
     pub status: String,
     pub persisted: bool,
     pub result_message_body: Option<String>,
@@ -49,7 +98,7 @@ impl<Id: PartialEq> PartialEq for Modification<Id> {
         self.id == other.id
             && self.serial_id == other.serial_id
             && self.request_type == other.request_type
-            && self.s3_url == other.s3_url
+            && self.input == other.input
             && self.status == other.status
             && self.persisted == other.persisted
         // result_message_body is ignored since it differs across nodes
@@ -69,7 +118,7 @@ impl<Id: fmt::Debug> fmt::Debug for Modification<Id> {
             .field("id", &self.id)
             .field("serial_id", &self.serial_id)
             .field("request_type", &self.request_type)
-            .field("s3_url", &self.s3_url)
+            .field("input", &self.input)
             .field("status", &self.status)
             .field("persisted", &self.persisted)
             .field("result_message_body", &result_message_summary)
@@ -334,7 +383,7 @@ fn check_modifications_consistency<Id: Eq + fmt::Debug>(
             first.id
         );
         ensure!(
-            first.s3_url == m.s3_url,
+            first.input == m.input,
             "Inconsistent input references for ID {:?}",
             first.id
         );
@@ -454,7 +503,7 @@ mod tests {
             id,
             serial_id: Some(id),
             request_type: "reauth".into(),
-            s3_url: Some(format!("input/{id}")),
+            input: Some(ModificationInputReference::S3(format!("input/{id}"))),
             status: status.into(),
             persisted,
             result_message_body: Some(r#"{"node_id":0}"#.into()),
@@ -528,7 +577,7 @@ mod tests {
     fn rejects_inconsistent_inputs_and_unknown_status() {
         let local = modification(1, MOD_STATUS_IN_PROGRESS, false);
         let mut other = local.clone();
-        other.s3_url = Some("another-input".into());
+        other.input = Some(ModificationInputReference::S3("another-input".into()));
         assert!(compare_modifications(
             std::slice::from_ref(&local),
             &[vec![local.clone()], vec![other]]
@@ -580,6 +629,51 @@ mod tests {
         assert_eq!(local, other);
         assert_ne!(local.result_message_body, other.result_message_body);
         assert!(!format!("{other:?}").contains("node_id"));
+    }
+
+    #[test]
+    fn preserves_no_input_wire_format_and_round_trips_inline_references() {
+        let mut row = modification(1, MOD_STATUS_IN_PROGRESS, false);
+        row.input = None;
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["s3_url"], serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<Modification>(json).unwrap(), row);
+
+        row.input = Some(ModificationInputReference::Inline(
+            "public-request-id".into(),
+        ));
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(
+            json["s3_url"],
+            serde_json::json!({"inline": "public-request-id"})
+        );
+        assert_eq!(json.as_object().unwrap().len(), 7);
+        assert_eq!(serde_json::from_value::<Modification>(json).unwrap(), row);
+    }
+
+    #[test]
+    fn rejects_malformed_inline_references_and_unexpected_payloads() {
+        for json in [
+            serde_json::json!({"inline": 42}),
+            serde_json::json!({"inline": "id", "bytes": [1, 2, 3]}),
+            serde_json::json!({"s3": "url"}),
+            serde_json::json!({}),
+            serde_json::json!(["id"]),
+        ] {
+            assert!(serde_json::from_value::<ModificationInputReference>(json).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_different_input_sources_with_the_same_reference() {
+        let local = modification(1, MOD_STATUS_IN_PROGRESS, false);
+        let mut other = local.clone();
+        other.input = Some(ModificationInputReference::Inline("input/1".into()));
+        assert!(compare_modifications(
+            std::slice::from_ref(&local),
+            &[vec![local.clone()], vec![other]]
+        )
+        .is_err());
     }
 
     #[test]
