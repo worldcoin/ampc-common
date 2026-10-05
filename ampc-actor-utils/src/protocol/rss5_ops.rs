@@ -4,7 +4,7 @@
 use crate::execution::player::Role;
 use crate::execution::session::{NetworkSession, SessionHandles};
 use crate::network::mpc::NetworkInt;
-use crate::protocol::dealer_5pc::dealer_rss5_boolean;
+use crate::protocol::dealer_5pc::{dealer_rss5_boolean, dealer_rss5_boolean_all};
 use crate::protocol::prf::{orbit5_roles, PairwisePrfKeys, ThresholdPrfKeys};
 use ampc_secret_sharing::shares::ring_impl::RingElement;
 use ampc_secret_sharing::shares::rss5::{RssShare, ORBIT5_PARTY_COUNT, RSS5_SLOTS_HELD};
@@ -276,6 +276,7 @@ where
 }
 
 /// Computes ANDs on batches of Boolean RSS shares, with 64 bits packed per element.
+/// Reshares all five parties' local contributions in one communication round.
 /// All five parties must use the same batch length and call order with matching
 /// session-specific threshold PRF streams. Empty batches require no communication.
 pub async fn and_many(
@@ -293,8 +294,9 @@ pub async fn and_many(
 
     // Each party computes its assigned cross-terms for every packed element.
     let local: Vec<RingElement<u64>> = lhs.iter().zip(rhs).map(|(a, b)| a & b).collect();
-    let mut pending_input = Some(local);
-    let own_role = session.own_role();
+
+    // Move our contribution into the all-party dealer and reshare all five together.
+    let shared_batches = dealer_rss5_boolean_all(session, threshold, local).await?;
     let mut result = vec![
         RssShare {
             slots: [RingElement::zero(); RSS5_SLOTS_HELD],
@@ -302,16 +304,7 @@ pub async fn and_many(
         lhs.len()
     ];
 
-    // Complete one dealer call at a time, in a common order. This reuses the
-    // existing API; it does not yet schedule all five dealers in one round.
-    for dealer in orbit5_roles() {
-        let dealer_input = if dealer == own_role {
-            pending_input.take()
-        } else {
-            None
-        };
-        let shared =
-            dealer_rss5_boolean(session, threshold, dealer, lhs.len(), dealer_input).await?;
+    for (dealer, shared) in orbit5_roles().into_iter().zip(shared_batches) {
         if shared.len() != lhs.len() {
             bail!(
                 "Boolean dealer {dealer:?} returned {} AND contributions, expected {}",
@@ -344,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rss5_and_many() {
-        const K: usize = 10000;
+        const K: usize = 1000000;
         check_rss5_and_many(K).await;
     }
 
