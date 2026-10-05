@@ -15,6 +15,57 @@ use rand_distr::{Distribution, Standard};
 use std::collections::BTreeSet;
 use tracing::instrument;
 
+/// Open Boolean RSS5 shares to all five parties using XOR reconstruction.
+/// Slots 0 and 1 across the five holders cover each of the ten excluded pairs
+/// exactly once (the five cyclic adjacent pairs and the five diagonal pairs).
+/// Each party broadcasts their XOR as one additive Boolean contribution.
+/// This is a passive opening: it does not verify replicated-share consistency.
+/// All parties must supply the same batch length and call order.
+#[instrument(level = "trace", target = "mpc::network", skip_all)]
+pub async fn open<T: NetworkInt>(
+    session: &mut NetworkSession,
+    shares: &[RssShare<T>],
+) -> Result<Vec<T>> {
+    let roles = orbit5_roles();
+    eyre::ensure!(
+        session.role_assignments.len() == ORBIT5_PARTY_COUNT
+            && roles
+                .iter()
+                .all(|role| session.role_assignments.contains_key(role))
+            && roles.contains(&session.own_role()),
+        "Boolean RSS5 opening requires the five ORBIT5 roles"
+    );
+    if shares.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut opened: Vec<_> = shares
+        .iter()
+        .map(|share| share.slots[0] ^ share.slots[1])
+        .collect();
+    let others: Vec<_> = roles
+        .into_iter()
+        .filter(|role| *role != session.own_role())
+        .collect();
+    for role in &others {
+        session
+            .send_to(T::new_network_vec(opened.clone()), role)
+            .await?;
+    }
+    for role in &others {
+        let contribution = T::into_vec(session.receive_from(role).await?)?;
+        eyre::ensure!(
+            contribution.len() == shares.len(),
+            "Boolean RSS5 opening: expected {} elements from {role:?}, got {}",
+            shares.len(),
+            contribution.len()
+        );
+        for (value, piece) in opened.iter_mut().zip(contribution) {
+            *value ^= piece;
+        }
+    }
+    Ok(opened.into_iter().map(|value| value.0).collect())
+}
+
 /// Role assignment for one round of 5-of-5 -> 3-of-3 additive resharing.
 ///
 /// `senders[0]` masks its share for `receivers[0]` and `receivers[2]`, then
@@ -334,6 +385,48 @@ mod tests {
     use aes_prng::AesRng;
     use rand::SeedableRng;
     use tokio::task::JoinSet;
+
+    #[tokio::test]
+    async fn test_rss5_open() {
+        use crate::protocol::test_utils::rss5_boolean::share;
+
+        let mut rng = AesRng::seed_from_u64(55);
+        let cases: Vec<Vec<u64>> = vec![
+            vec![],
+            vec![0],
+            vec![u64::MAX],
+            (0..65).map(|_| rng.gen()).collect(),
+        ];
+        let shared: Vec<_> = cases.iter().map(|values| share(&mut rng, values)).collect();
+        let runtime = LocalRuntime::new(
+            generate_local_identities_orbit5(),
+            (0..5).map(|i| [i; 16]).collect(),
+        )
+        .await
+        .unwrap();
+        let mut jobs = JoinSet::new();
+        for session in runtime.sessions {
+            let cases = cases.clone();
+            let shared = shared.clone();
+            jobs.spawn(async move {
+                let mut network = session.network_session;
+                let party = network.own_role().index();
+                for (values, shares) in cases.iter().zip(&shared) {
+                    assert_eq!(open(&mut network, &shares[party]).await.unwrap(), *values);
+                }
+                // Every party must reject inconsistent peer batch lengths, rather
+                // than silently truncating XOR reconstruction through zip().
+                let len = if party == 0 { 1 } else { 2 };
+                let error = open(&mut network, &shared[3][party][..len])
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("Boolean RSS5 opening: expected"));
+            });
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
+            .await
+            .expect("RSS5 opening timed out");
+    }
 
     #[tokio::test]
     async fn test_rss5_and_many() {
