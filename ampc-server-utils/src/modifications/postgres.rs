@@ -40,10 +40,11 @@ pub async fn insert_modification<'e, E: sqlx::PgExecutor<'e>>(
     serial_id: Option<i64>,
     request_type: &str,
     input: Option<&ModificationInput>,
+    storage: ModificationInputStorage,
 ) -> Result<Modification> {
-    let (inserted, storage) = match input {
-        Some(ModificationInput::Inline { reference, bytes }) => {
-            let row = sqlx::query_as::<_, StoredModification>(
+    let inserted = match (storage, input) {
+        (ModificationInputStorage::Inline, Some(ModificationInput::Inline { reference, bytes })) => {
+            sqlx::query_as::<_, StoredModification>(
                 r#"
         INSERT INTO modifications (serial_id, request_type, input_reference, request, status, persisted)
         VALUES ($1, $2, $3, $4, $5, FALSE)
@@ -56,15 +57,14 @@ pub async fn insert_modification<'e, E: sqlx::PgExecutor<'e>>(
             .bind(bytes)
             .bind(MOD_STATUS_IN_PROGRESS)
             .fetch_one(executor)
-            .await?;
-            (row, ModificationInputStorage::Inline)
+            .await?
         }
-        Some(ModificationInput::S3(_)) | None => {
+        (ModificationInputStorage::S3, Some(ModificationInput::S3(_)) | None) => {
             let reference = match input {
                 Some(ModificationInput::S3(reference)) => Some(reference.as_str()),
                 _ => None,
             };
-            let row = sqlx::query_as::<_, StoredModification>(
+            sqlx::query_as::<_, StoredModification>(
                 r#"
         INSERT INTO modifications (serial_id, request_type, s3_url, status, persisted)
         VALUES ($1, $2, $3, $4, FALSE)
@@ -83,9 +83,12 @@ pub async fn insert_modification<'e, E: sqlx::PgExecutor<'e>>(
             .bind(reference)
             .bind(MOD_STATUS_IN_PROGRESS)
             .fetch_one(executor)
-            .await?;
-            (row, ModificationInputStorage::S3)
+            .await?
         }
+        (ModificationInputStorage::Inline, None) => {
+            eyre::bail!("Inline modification storage requires an input")
+        }
+        _ => eyre::bail!("Modification input source does not match {storage:?} storage"),
     };
 
     tracing::debug!(
@@ -144,12 +147,13 @@ pub async fn last_modifications(
 pub async fn load_modification_input<'e, E: sqlx::PgExecutor<'e>>(
     executor: E,
     modification: &Modification,
+    storage: ModificationInputStorage,
 ) -> Result<ModificationInput> {
-    match modification.input.as_ref() {
-        Some(ModificationInputReference::S3(reference)) => {
+    match (storage, modification.input.as_ref()) {
+        (ModificationInputStorage::S3, Some(ModificationInputReference::S3(reference))) => {
             Ok(ModificationInput::S3(reference.clone()))
         }
-        Some(ModificationInputReference::Inline(reference)) => {
+        (ModificationInputStorage::Inline, Some(ModificationInputReference::Inline(reference))) => {
             let bytes: Option<Vec<u8>> = sqlx::query_scalar(
                 "SELECT request FROM modifications WHERE id=$1 AND input_reference=$2",
             )
@@ -167,8 +171,12 @@ pub async fn load_modification_input<'e, E: sqlx::PgExecutor<'e>>(
                 })?,
             })
         }
-        None => eyre::bail!(
+        (_, None) => eyre::bail!(
             "Missing input reference for modification {}",
+            modification.id
+        ),
+        _ => eyre::bail!(
+            "Modification {} input source does not match {storage:?} storage",
             modification.id
         ),
     }
@@ -273,6 +281,60 @@ mod tests {
     use sqlx::{Connection, Executor};
 
     #[tokio::test]
+    async fn rejects_invalid_input_sources_before_accessing_postgres() -> Result<()> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://postgres:postgres@localhost:5432/postgres")?;
+        pool.close().await;
+        let cases = [
+            (ModificationInputStorage::Inline, None),
+            (
+                ModificationInputStorage::Inline,
+                Some(ModificationInput::S3("public-request-id".into())),
+            ),
+            (
+                ModificationInputStorage::S3,
+                Some(ModificationInput::Inline {
+                    reference: "public-request-id".into(),
+                    bytes: b"private-shares".to_vec(),
+                }),
+            ),
+        ];
+        for (storage, input) in cases {
+            let error = insert_modification(&pool, None, "uniqueness", input.as_ref(), storage)
+                .await
+                .unwrap_err();
+            let expected = if input.is_none() {
+                "Inline modification storage requires an input"
+            } else {
+                "input source does not match"
+            };
+            assert!(error.to_string().contains(expected));
+
+            let modification = Modification {
+                id: 42,
+                input: input.map(|input| match input {
+                    ModificationInput::S3(reference) => ModificationInputReference::S3(reference),
+                    ModificationInput::Inline { reference, .. } => {
+                        ModificationInputReference::Inline(reference)
+                    }
+                }),
+                ..Default::default()
+            };
+            let error = load_modification_input(&pool, &modification, storage)
+                .await
+                .err()
+                .expect("invalid source must be rejected");
+            let expected = if modification.input.is_none() {
+                "Missing input reference"
+            } else {
+                "input source does not match"
+            };
+            assert!(error.to_string().contains(expected));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires DATABASE_URL pointing to PostgreSQL"]
     async fn s3_crud_preserves_the_existing_schema() -> Result<()> {
         shared_crud(ModificationInputStorage::S3).await
@@ -303,13 +365,14 @@ mod tests {
             },
         };
         let mut tx = conn.begin().await?;
-        let mut row = insert_modification(&mut *tx, None, "uniqueness", Some(&input)).await?;
+        let mut row =
+            insert_modification(&mut *tx, None, "uniqueness", Some(&input), storage).await?;
         tx.commit().await?;
         drop(conn);
         let snapshot = last_modifications(&pool, 10, storage).await?;
         assert_eq!(snapshot, vec![row.clone()]);
         assert!(!serde_json::to_string(&snapshot)?.contains("private-shares"));
-        let loaded = load_modification_input(&pool, &row).await?;
+        let loaded = load_modification_input(&pool, &row, storage).await?;
         match loaded {
             ModificationInput::S3(reference) => assert_eq!(reference, "public-request-id"),
             ModificationInput::Inline { reference, bytes } => {
@@ -319,15 +382,19 @@ mod tests {
                 mismatched.input = Some(ModificationInputReference::Inline(
                     "another-request-id".into(),
                 ));
-                assert!(load_modification_input(&pool, &mismatched).await.is_err());
+                assert!(load_modification_input(&pool, &mismatched, storage)
+                    .await
+                    .is_err());
                 mismatched.input = row.input.clone();
                 mismatched.id += 1;
-                assert!(load_modification_input(&pool, &mismatched).await.is_err());
+                assert!(load_modification_input(&pool, &mismatched, storage)
+                    .await
+                    .is_err());
                 sqlx::query("UPDATE modifications SET request=NULL WHERE id=$1")
                     .bind(row.id)
                     .execute(&pool)
                     .await?;
-                assert!(load_modification_input(&pool, &row).await.is_err());
+                assert!(load_modification_input(&pool, &row, storage).await.is_err());
                 sqlx::query("UPDATE modifications SET request=$1 WHERE id=$2")
                     .bind(bytes)
                     .bind(row.id)
@@ -337,9 +404,11 @@ mod tests {
         }
         let mut missing = row.clone();
         missing.input = None;
-        assert!(load_modification_input(&pool, &missing).await.is_err());
+        assert!(load_modification_input(&pool, &missing, storage)
+            .await
+            .is_err());
         let mut tx = pool.begin().await?;
-        insert_modification(&mut *tx, None, "uniqueness", Some(&input)).await?;
+        insert_modification(&mut *tx, None, "uniqueness", Some(&input), storage).await?;
         tx.rollback().await?;
         assert_eq!(last_modifications(&pool, 10, storage).await?.len(), 1);
         row.mark_completed(true, r#"{"node_id":0}"#, Some(42));
@@ -369,13 +438,14 @@ mod tests {
         delete_modifications(&mut tx, &[row]).await?;
         tx.commit().await?;
         assert!(last_modifications(&pool, 10, storage).await?.is_empty());
-        insert_modification(&pool, None, "uniqueness", Some(&input)).await?;
+        insert_modification(&pool, None, "uniqueness", Some(&input), storage).await?;
         let mut conn = pool.acquire().await?;
         clear_modifications_table(&mut conn).await?;
         drop(conn);
         assert!(last_modifications(&pool, 10, storage).await?.is_empty());
         if matches!(storage, ModificationInputStorage::S3) {
-            let deletion = insert_modification(&pool, Some(42), "identity_deletion", None).await?;
+            let deletion =
+                insert_modification(&pool, Some(42), "identity_deletion", None, storage).await?;
             assert_eq!(deletion.input, None);
             assert_eq!(
                 last_modifications(&pool, 10, storage).await?,
