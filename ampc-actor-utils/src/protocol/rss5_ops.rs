@@ -21,6 +21,7 @@ use tracing::instrument;
 /// Each party broadcasts their XOR as one additive Boolean contribution.
 /// This is a passive opening: it does not verify replicated-share consistency.
 /// All parties must supply the same batch length and call order.
+/// Empty batches still exchange messages so empty/nonempty mismatches are rejected.
 #[instrument(level = "trace", target = "mpc::network", skip_all)]
 pub async fn open<T: NetworkInt>(
     session: &mut NetworkSession,
@@ -35,9 +36,6 @@ pub async fn open<T: NetworkInt>(
             && roles.contains(&session.own_role()),
         "Boolean RSS5 opening requires the five ORBIT5 roles"
     );
-    if shares.is_empty() {
-        return Ok(Vec::new());
-    }
     let mut opened: Vec<_> = shares
         .iter()
         .map(|share| share.slots[0] ^ share.slots[1])
@@ -426,6 +424,39 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
             .await
             .expect("RSS5 opening timed out");
+    }
+
+    #[tokio::test]
+    async fn test_rss5_open_rejects_empty_nonempty_mismatch() {
+        for empty_party in 0..ORBIT5_PARTY_COUNT {
+            // A mismatch can leave unread messages, so use fresh sessions each time.
+            let runtime = LocalRuntime::new(
+                generate_local_identities_orbit5(),
+                (0..5).map(|i| [i; 16]).collect(),
+            )
+            .await
+            .unwrap();
+            let mut jobs = JoinSet::new();
+            for session in runtime.sessions {
+                jobs.spawn(async move {
+                    let mut network = session.network_session;
+                    let len = usize::from(network.own_role().index() != empty_party);
+                    let shares = vec![
+                        RssShare {
+                            slots: [RingElement(0u64); RSS5_SLOTS_HELD],
+                        };
+                        len
+                    ];
+                    let error = open(&mut network, &shares).await.unwrap_err();
+                    assert!(error
+                        .to_string()
+                        .contains(&format!("Boolean RSS5 opening: expected {len} elements")));
+                });
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(30), jobs.join_all())
+                .await
+                .expect("RSS5 opening batch mismatch was not detected promptly");
+        }
     }
 
     #[tokio::test]
