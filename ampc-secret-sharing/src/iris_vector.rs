@@ -36,6 +36,24 @@ impl Default for IrisSecretSharedVector {
 }
 
 impl IrisSecretSharedVector {
+    /// Preprocess a query share for a five-party inner product. Multiplying two
+    /// degree-2 Shamir sharings gives degree 4, so all five evaluation points
+    /// contribute. The resulting local dot products sum to the plaintext dot
+    /// product modulo 2^16. `party_index` is zero-based.
+    pub fn multiply_lagrange_coeffs_5_parties(&mut self, party_index: usize) -> eyre::Result<()> {
+        let coefficients = ShamirGaloisRingShare::orbit5_deg_4_lagrange_polys_at_zero();
+        let coefficient = coefficients
+            .get(party_index)
+            .ok_or_else(|| eyre::eyre!("Invalid ORBIT5 party index {party_index}"))?;
+        for chunk in self.0.chunks_exact_mut(4) {
+            let element = GaloisRingElement::<basis::Monomial>::from_coefs(
+                chunk.try_into().expect("four-element chunk"),
+            );
+            chunk.copy_from_slice(&(element * *coefficient).to_basis_B().coefs);
+        }
+        Ok(())
+    }
+
     pub fn from_protobuf_share(pb_share: Vec<u32>) -> eyre::Result<Self> {
         let mut arr = [0u16; IRIS_VECTOR_SIZE];
         if pb_share.len() != IRIS_VECTOR_SIZE {
@@ -514,6 +532,31 @@ mod tests {
             .collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_5pc_inner_product_preprocessing() {
+        let mut rng = StdRng::seed_from_u64(56);
+        let mut pairs = vec![
+            (IrisVector::new([7; 512]), IrisVector::new([7; 512])),
+            (IrisVector::new([7; 512]), IrisVector::new([-7; 512])),
+        ];
+        pairs.extend((0..10).map(|_| (IrisVector::random(&mut rng), IrisVector::random(&mut rng))));
+        for (left, right) in pairs {
+            let mut left_shares = left.secret_share_5_parties(&mut rng).unwrap();
+            let right_shares = right.secret_share_5_parties(&mut rng).unwrap();
+            let mut actual = 0u16;
+            for (party, (left, right)) in left_shares.iter_mut().zip(&right_shares).enumerate() {
+                left.multiply_lagrange_coeffs_5_parties(party).unwrap();
+                for (a, b) in left.0.iter().zip(right.0) {
+                    actual = actual.wrapping_add(a.wrapping_mul(b));
+                }
+            }
+            assert_eq!(actual, left.dot(&right) as u16);
+        }
+        assert!(IrisSecretSharedVector::default()
+            .multiply_lagrange_coeffs_5_parties(5)
+            .is_err());
     }
 
     #[test]
