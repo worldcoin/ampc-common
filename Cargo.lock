@@ -159,6 +159,7 @@ dependencies = [
  "futures-util",
  "itertools 0.14.0",
  "rand",
+ "reqwest",
  "serde",
  "serde_json",
  "siphasher",

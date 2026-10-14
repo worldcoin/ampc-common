@@ -27,4 +27,5 @@ pub use crate::anon_stats::iris_2d::{
 pub use crate::server::config::{AnonStatsServerConfig, Opt};
 pub use crate::server::coordination::{start_coordination_server, CoordinationHandles};
 pub use crate::server::health::{spawn_healthcheck_server_with_state, HealthServerState};
+pub use crate::server::lifecycle;
 pub use crate::server::sync::{sync_on_id_hash, sync_on_job_sizes};
