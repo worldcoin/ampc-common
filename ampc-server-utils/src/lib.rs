@@ -5,6 +5,7 @@
 pub mod batch_sync;
 pub mod config;
 pub mod decryption;
+pub mod gallery_sync;
 pub mod modifications;
 pub mod profiling;
 pub mod server_coordination;
