@@ -1071,14 +1071,29 @@ mod tests {
         }
     }
 
-    async fn heartbeat_peer(replies: Vec<HeartbeatReply>) -> HeartbeatPeer {
+    fn probe_body(uuid: &str) -> String {
+        serde_json::to_string(&ReadyProbeResponse {
+            image_name: String::new(),
+            uuid: uuid.to_owned(),
+            shutting_down: false,
+            verified_peers: HashSet::new(),
+            is_ready: true,
+        })
+        .unwrap()
+    }
+
+    fn response_headers(length: usize) -> String {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n")
+    }
+
+    async fn heartbeat_peer(replies: Vec<HeartbeatReply>) -> Arc<HeartbeatPeer> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port().to_string();
         let requests = Arc::new(AtomicUsize::new(0));
-        let count = requests.clone();
         let body_started = Arc::new(AtomicBool::new(false));
-        let body_flag = body_started.clone();
+        let (count, body_flag) = (requests.clone(), body_started.clone());
         let task = tokio::spawn(async move {
+            // Dropping the listener task also aborts every open fixture connection.
             let mut connections = tokio::task::JoinSet::new();
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
@@ -1098,128 +1113,154 @@ mod tests {
                         }
                         HeartbeatReply::StalledBody => {
                             socket
-                                .write_all(concat!(
-                                    "HTTP/1.1 200 OK\r\n",
-                                    "Content-Type: application/json\r\n",
-                                    "Content-Length: 4096\r\n\r\n{"
-                                ).as_bytes())
+                                .write_all(response_headers(4096).as_bytes())
                                 .await
                                 .unwrap();
+                            socket.write_all(b"{").await.unwrap();
                             body_flag.store(true, Ordering::SeqCst);
                             std::future::pending::<()>().await;
                             return;
                         }
                         HeartbeatReply::SlowHeadersAndBody => {
-                            let body = serde_json::to_string(&ReadyProbeResponse {
-                                image_name: String::new(),
-                                uuid: "peer-1".to_owned(),
-                                shutting_down: false,
-                                verified_peers: HashSet::new(),
-                                is_ready: true,
-                            })
-                            .unwrap();
+                            let body = probe_body("peer-1");
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            let headers = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-                                body.len()
-                            );
-                            socket.write_all(headers.as_bytes()).await.unwrap();
+                            socket
+                                .write_all(response_headers(body.len()).as_bytes())
+                                .await
+                                .unwrap();
                             body_flag.store(true, Ordering::SeqCst);
                             tokio::time::sleep(Duration::from_millis(100)).await;
-                            // The client should have cancelled its single 150ms deadline.
+                            // A single 150ms deadline has already disconnected this client.
                             let _ = socket.write_all(body.as_bytes()).await;
                             return;
                         }
                         HeartbeatReply::Invalid => "invalid json".to_owned(),
-                        HeartbeatReply::Valid(uuid) => serde_json::to_string(&ReadyProbeResponse {
-                            image_name: String::new(),
-                            uuid: uuid.to_owned(),
-                            shutting_down: false,
-                            verified_peers: HashSet::new(),
-                            is_ready: true,
-                        })
-                        .unwrap(),
+                        HeartbeatReply::Valid(uuid) => probe_body(uuid),
                     };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(), body
-                    );
+                    let response = response_headers(body.len()) + &body;
                     socket.write_all(response.as_bytes()).await.unwrap();
                 });
             }
         });
-        HeartbeatPeer {
+        Arc::new(HeartbeatPeer {
             port,
             requests,
             body_started,
             task,
-        }
+        })
     }
 
-    fn heartbeat_config(peers: [&HeartbeatPeer; 2]) -> ServerCoordinationConfig {
-        let mut config: ServerCoordinationConfig =
-            serde_json::from_str(r#"{"party_id":0}"#).unwrap();
-        config.node_hostnames = vec!["127.0.0.1".to_owned(); 3];
-        config.healthcheck_ports =
-            vec!["0".to_owned(), peers[0].port.clone(), peers[1].port.clone()];
-        config.http_query_timeout_ms = 1_000;
-        config.heartbeat_interval_secs = 0;
-        config.heartbeat_initial_retries = 0;
-        config
-    }
-
-    async fn wait_for_requests(peer: &HeartbeatPeer, count: usize) {
+    async fn wait_for_request(peer: &HeartbeatPeer, body: bool) {
         tokio::time::timeout(Duration::from_secs(2), async {
-            while peer.requests.load(Ordering::SeqCst) < count {
-                tokio::time::sleep(Duration::from_millis(1)).await;
+            while peer.requests.load(Ordering::SeqCst) == 0
+                || (body && !peer.body_started.load(Ordering::SeqCst))
+            {
+                tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("heartbeat request did not arrive");
+        .expect("peer request did not reach the expected phase");
+    }
+
+    struct HeartbeatTest {
+        peer: Arc<HeartbeatPeer>,
+        other: Arc<HeartbeatPeer>,
+        config: ServerCoordinationConfig,
+        shutdown: Arc<ShutdownHandler>,
+        monitor: TaskMonitor,
+    }
+
+    impl HeartbeatTest {
+        async fn new(replies: Vec<HeartbeatReply>) -> Self {
+            let peer = heartbeat_peer(replies).await;
+            let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
+            let mut config: ServerCoordinationConfig =
+                serde_json::from_str(r#"{"party_id":0}"#).unwrap();
+            config.node_hostnames = vec!["127.0.0.1".to_owned(); 3];
+            config.healthcheck_ports = vec!["0".to_owned(), peer.port.clone(), other.port.clone()];
+            config.http_query_timeout_ms = 1_000;
+            config.heartbeat_interval_secs = 0;
+            config.heartbeat_initial_retries = 0;
+            Self {
+                peer,
+                other,
+                config,
+                shutdown: Arc::new(ShutdownHandler::new(10)),
+                monitor: TaskMonitor::new(),
+            }
+        }
+
+        async fn init(&mut self) -> Result<()> {
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                init_heartbeat_task(
+                    &self.config,
+                    &mut self.monitor,
+                    &self.shutdown,
+                    set(&["peer-1", "peer-2"]),
+                ),
+            )
+            .await
+            .expect("heartbeat initialization exceeded its test deadline")
+        }
+
+        async fn expect_initial_failure(&mut self) {
+            assert!(self.init().await.is_err());
+            let task = tokio::time::timeout(Duration::from_secs(1), self.monitor.tasks.join_next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                task.unwrap_err().is_panic(),
+                "initial failures must retain fail-fast policy"
+            );
+        }
+
+        async fn cleanup(&mut self) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert!(!self
+                .shutdown
+                .get_network_cancellation_token()
+                .is_cancelled());
+            self.monitor.check_tasks();
+            self.monitor.abort_and_wait_for_finish().await;
+        }
+
+        fn assert_requests(&self, expected: [usize; 2]) {
+            assert_eq!(
+                [
+                    self.peer.requests.load(Ordering::SeqCst),
+                    self.other.requests.load(Ordering::SeqCst)
+                ],
+                expected
+            );
+        }
     }
 
     #[tokio::test]
     async fn heartbeat_shutdown_cancels_inflight_headers_and_body_without_finishing_task() {
         for reply in [HeartbeatReply::NoHeaders, HeartbeatReply::StalledBody] {
-            let wait_for_body = matches!(reply, HeartbeatReply::StalledBody);
-            let stalled = heartbeat_peer(vec![reply]).await;
-            let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-            let mut config = heartbeat_config([&stalled, &other]);
-            config.http_query_timeout_ms = 60_000;
-            let shutdown = Arc::new(ShutdownHandler::new(10));
-            let mut monitor = TaskMonitor::new();
-            let mut init = Box::pin(init_heartbeat_task(
-                &config,
-                &mut monitor,
-                &shutdown,
-                set(&["peer-1", "peer-2"]),
-            ));
+            let body = matches!(reply, HeartbeatReply::StalledBody);
+            let mut test = HeartbeatTest::new(vec![reply]).await;
+            test.config.http_query_timeout_ms = 60_000;
+            let peer = test.peer.clone();
+            let shutdown = test.shutdown.clone();
+            let mut init = Box::pin(test.init());
             tokio::select! {
                 _ = async {
-                    wait_for_requests(&stalled, 1).await;
-                    if wait_for_body {
-                        tokio::time::timeout(Duration::from_secs(2), async {
-                            while !stalled.body_started.load(Ordering::SeqCst) {
-                                tokio::task::yield_now().await;
-                            }
-                        }).await.expect("stalled peer did not send headers");
-                        tokio::time::sleep(Duration::from_millis(10)).await;
-                    }
+                    wait_for_request(&peer, body).await;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 } => {},
                 result = &mut init => panic!("unexpected heartbeat init completion: {result:?}"),
             }
             shutdown.trigger_manual_shutdown();
-            let result = tokio::time::timeout(Duration::from_millis(200), &mut init).await;
-            drop(init);
-            assert!(result
-                .expect("shutdown must cancel heartbeat init")
+            assert!(tokio::time::timeout(Duration::from_millis(200), &mut init)
+                .await
+                .unwrap()
                 .is_err());
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            assert_eq!(stalled.requests.load(Ordering::SeqCst), 1);
-            assert_eq!(other.requests.load(Ordering::SeqCst), 0);
-            assert!(!shutdown.get_network_cancellation_token().is_cancelled());
-            monitor.check_tasks();
-            monitor.abort_and_wait_for_finish().await;
+            drop(init);
+            test.cleanup().await;
+            test.assert_requests([1, 0]);
         }
     }
 
@@ -1230,83 +1271,36 @@ mod tests {
             HeartbeatReply::StalledBody,
             HeartbeatReply::SlowHeadersAndBody,
         ] {
-            let expects_body = !matches!(reply, HeartbeatReply::NoHeaders);
-            let peer = heartbeat_peer(vec![reply]).await;
-            let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-            let mut config = heartbeat_config([&peer, &other]);
-            config.http_query_timeout_ms = 150;
-            let shutdown = Arc::new(ShutdownHandler::new(10));
-            let mut monitor = TaskMonitor::new();
-            let result = tokio::time::timeout(
-                Duration::from_secs(1),
-                init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-            )
-            .await;
-            assert!(result
-                .expect("configured deadline must bound initialization")
-                .is_err());
-            let task = monitor.tasks.join_next().await.unwrap();
-            assert!(
-                task.unwrap_err().is_panic(),
-                "initial retry exhaustion must retain fail-fast policy"
-            );
-            assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
-            assert_eq!(other.requests.load(Ordering::SeqCst), 0);
-            assert_eq!(peer.body_started.load(Ordering::SeqCst), expects_body);
-            assert!(!shutdown.is_shutting_down());
+            let body = !matches!(reply, HeartbeatReply::NoHeaders);
+            let mut test = HeartbeatTest::new(vec![reply]).await;
+            test.config.http_query_timeout_ms = 150;
+            test.expect_initial_failure().await;
+            test.assert_requests([1, 0]);
+            assert_eq!(test.peer.body_started.load(Ordering::SeqCst), body);
+            assert!(!test.shutdown.is_shutting_down());
         }
     }
 
     #[tokio::test]
     async fn heartbeat_invalid_json_uses_initial_retry_allowance() {
-        let peer = heartbeat_peer(vec![
+        let mut test = HeartbeatTest::new(vec![
             HeartbeatReply::Invalid,
             HeartbeatReply::Valid("peer-1"),
         ])
         .await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let mut config = heartbeat_config([&peer, &other]);
-        config.heartbeat_initial_retries = 1;
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        let mut monitor = TaskMonitor::new();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        shutdown.trigger_manual_shutdown();
-        tokio::task::yield_now().await;
-        assert!(peer.requests.load(Ordering::SeqCst) >= 2);
-        monitor.check_tasks();
-        monitor.abort_and_wait_for_finish().await;
+        test.config.heartbeat_initial_retries = 1;
+        test.init().await.unwrap();
+        test.shutdown.trigger_manual_shutdown();
+        test.cleanup().await;
+        assert!(test.peer.requests.load(Ordering::SeqCst) >= 2);
     }
 
     #[tokio::test]
     async fn heartbeat_initial_retry_count_is_bounded() {
-        let peer = heartbeat_peer(vec![HeartbeatReply::Invalid]).await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let mut config = heartbeat_config([&peer, &other]);
-        config.heartbeat_initial_retries = 2;
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        let mut monitor = TaskMonitor::new();
-        assert!(tokio::time::timeout(
-            Duration::from_secs(1),
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"]))
-        )
-        .await
-        .unwrap()
-        .is_err());
-        assert!(monitor
-            .tasks
-            .join_next()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .is_panic());
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 3);
-        assert_eq!(other.requests.load(Ordering::SeqCst), 2);
+        let mut test = HeartbeatTest::new(vec![HeartbeatReply::Invalid]).await;
+        test.config.heartbeat_initial_retries = 2;
+        test.expect_initial_failure().await;
+        test.assert_requests([3, 2]);
     }
 
     #[tokio::test]
@@ -1325,172 +1319,73 @@ mod tests {
                 ]);
             }
             replies.push(HeartbeatReply::Invalid);
-            let expected_requests = replies.len();
-            let peer = heartbeat_peer(replies).await;
-            let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-            let config = heartbeat_config([&peer, &other]);
-            let shutdown = Arc::new(ShutdownHandler::new(10));
-            let mut monitor = TaskMonitor::new();
-            tokio::time::timeout(
-                Duration::from_secs(1),
-                init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            tokio::time::timeout(Duration::from_secs(1), shutdown.wait_for_shutdown())
+            let expected = replies.len();
+            let mut test = HeartbeatTest::new(replies).await;
+            test.init().await.unwrap();
+            tokio::time::timeout(Duration::from_secs(1), test.shutdown.wait_for_shutdown())
                 .await
                 .unwrap();
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            assert_eq!(peer.requests.load(Ordering::SeqCst), expected_requests);
-            assert_eq!(
-                other.requests.load(Ordering::SeqCst),
-                expected_requests - 1,
-                "no next-peer request after threshold triggers shutdown"
-            );
-            assert!(!shutdown.get_network_cancellation_token().is_cancelled());
-            monitor.check_tasks();
-            monitor.abort_and_wait_for_finish().await;
+            test.cleanup().await;
+            test.assert_requests([expected, expected - 1]);
         }
     }
 
     #[tokio::test]
     async fn heartbeat_shutdown_during_interval_preserves_monitor_contract() {
-        let peer = heartbeat_peer(vec![HeartbeatReply::Valid("peer-1")]).await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let mut config = heartbeat_config([&peer, &other]);
-        config.heartbeat_interval_secs = 60;
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        let mut monitor = TaskMonitor::new();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        shutdown.trigger_manual_shutdown();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 1);
-        assert_eq!(other.requests.load(Ordering::SeqCst), 1);
-        assert!(!shutdown.get_network_cancellation_token().is_cancelled());
-        monitor.check_tasks();
-        monitor.abort_and_wait_for_finish().await;
+        let mut test = HeartbeatTest::new(vec![HeartbeatReply::Valid("peer-1")]).await;
+        test.config.heartbeat_interval_secs = 60;
+        test.init().await.unwrap();
+        test.shutdown.trigger_manual_shutdown();
+        test.cleanup().await;
+        test.assert_requests([1, 1]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn heartbeat_concurrent_initialization_and_shutdown_preserve_monitor_contract() {
         for _ in 0..50 {
-            let peer = heartbeat_peer(vec![HeartbeatReply::Valid("peer-1")]).await;
-            let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-            let mut config = heartbeat_config([&peer, &other]);
-            config.heartbeat_interval_secs = 60;
-            let shutdown = Arc::new(ShutdownHandler::new(10));
-            let cancellation = shutdown.clone();
-            let requests = other.requests.clone();
-            let mut cancel = tokio::spawn(async move {
-                tokio::time::timeout(Duration::from_secs(2), async {
-                    while requests.load(Ordering::SeqCst) == 0 {
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .expect("second peer request did not arrive before cancellation guard expired");
-                cancellation.trigger_manual_shutdown();
+            let mut test = HeartbeatTest::new(vec![HeartbeatReply::Valid("peer-1")]).await;
+            test.config.heartbeat_interval_secs = 60;
+            let (peer, shutdown) = (test.other.clone(), test.shutdown.clone());
+            let cancel = tokio::spawn(async move {
+                wait_for_request(&peer, false).await;
+                shutdown.trigger_manual_shutdown();
             });
-            let mut monitor = TaskMonitor::new();
-            // Either initialization wins or cancellation returns an explicit error.
-            // Neither outcome may panic the monitored heartbeat task.
-            let _ = tokio::time::timeout(
-                Duration::from_secs(1),
-                init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-            )
-            .await
-            .expect("initialization/shutdown race must remain bounded");
-            match tokio::time::timeout(Duration::from_secs(2), &mut cancel).await {
-                Ok(result) => result.expect("cancellation task failed"),
-                Err(_) => {
-                    cancel.abort();
-                    assert!(cancel.await.unwrap_err().is_cancelled());
-                    panic!("cancellation task did not finish within its deadline");
-                }
-            }
-            tokio::task::yield_now().await;
-            monitor.check_tasks();
-            monitor.abort_and_wait_for_finish().await;
+            // Initialization or cancellation may win; neither may finish the monitored task.
+            let _ = test.init().await;
+            cancel.await.unwrap(); // Its only wait is bounded inside wait_for_request.
+            test.cleanup().await;
         }
     }
 
     #[tokio::test]
     async fn heartbeat_shutdown_before_initialization_sends_no_requests() {
-        let peer = heartbeat_peer(vec![HeartbeatReply::Valid("peer-1")]).await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let config = heartbeat_config([&peer, &other]);
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        shutdown.trigger_manual_shutdown();
-        let mut monitor = TaskMonitor::new();
-        assert!(
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"]))
-                .await
-                .is_err()
-        );
-        tokio::task::yield_now().await;
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 0);
-        assert_eq!(other.requests.load(Ordering::SeqCst), 0);
-        monitor.check_tasks();
-        monitor.abort_and_wait_for_finish().await;
+        let mut test = HeartbeatTest::new(vec![HeartbeatReply::Valid("peer-1")]).await;
+        test.shutdown.trigger_manual_shutdown();
+        assert!(test.init().await.is_err());
+        test.cleanup().await;
+        test.assert_requests([0, 0]);
     }
 
     #[tokio::test]
     async fn heartbeat_unverified_initial_uuid_remains_fatal() {
-        let peer = heartbeat_peer(vec![HeartbeatReply::Valid("unknown")]).await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let config = heartbeat_config([&peer, &other]);
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        let mut monitor = TaskMonitor::new();
-        assert!(tokio::time::timeout(
-            Duration::from_secs(1),
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"]))
-        )
-        .await
-        .unwrap()
-        .is_err());
-        assert!(monitor
-            .tasks
-            .join_next()
-            .await
-            .unwrap()
-            .unwrap_err()
-            .is_panic());
-        assert_eq!(other.requests.load(Ordering::SeqCst), 0);
+        let mut test = HeartbeatTest::new(vec![HeartbeatReply::Valid("unknown")]).await;
+        test.expect_initial_failure().await;
+        test.assert_requests([1, 0]);
     }
 
     #[tokio::test]
     async fn heartbeat_uuid_restart_still_triggers_shutdown() {
-        let peer = heartbeat_peer(vec![
+        let mut test = HeartbeatTest::new(vec![
             HeartbeatReply::Valid("peer-1"),
             HeartbeatReply::Valid("restarted"),
         ])
         .await;
-        let other = heartbeat_peer(vec![HeartbeatReply::Valid("peer-2")]).await;
-        let config = heartbeat_config([&peer, &other]);
-        let shutdown = Arc::new(ShutdownHandler::new(10));
-        let mut monitor = TaskMonitor::new();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            init_heartbeat_task(&config, &mut monitor, &shutdown, set(&["peer-1", "peer-2"])),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        tokio::time::timeout(Duration::from_secs(1), shutdown.wait_for_shutdown())
+        test.init().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), test.shutdown.wait_for_shutdown())
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(peer.requests.load(Ordering::SeqCst), 2);
-        assert_eq!(other.requests.load(Ordering::SeqCst), 1);
-        monitor.check_tasks();
-        monitor.abort_and_wait_for_finish().await;
+        test.cleanup().await;
+        test.assert_requests([2, 1]);
     }
 
     fn set(values: &[&str]) -> HashSet<String> {
