@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, Mutex};
+use tokio_util::task::AbortOnDropHandle;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReadyProbeResponse {
@@ -847,7 +848,7 @@ pub async fn try_get_endpoint_other_nodes(
                 sleep(retry_duration).await;
             }
         });
-        handles.push(handle);
+        handles.push(AbortOnDropHandle::new(handle));
         rxs.push(rx);
     }
 
