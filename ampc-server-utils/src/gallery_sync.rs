@@ -1,4 +1,4 @@
-//! Public gallery metadata, exchanged freshly after recovery and after loading.
+//! Public gallery metadata, exchanged once after recovery and before loading.
 use crate::{config::ServerCoordinationConfig, server_coordination::try_get_endpoint_other_nodes};
 use axum::{http::StatusCode, routing::get, Json, Router};
 use eyre::{ensure, Result, WrapErr};
@@ -36,61 +36,35 @@ pub fn ensure_gallery_unchanged(before: &GalleryState, after: &GalleryState) -> 
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum GalleryPhase {
-    Recovered,
-    Loaded,
-}
-impl GalleryPhase {
-    fn index(self) -> usize {
-        match self {
-            Self::Recovered => 0,
-            Self::Loaded => 1,
-        }
-    }
-    fn endpoint(self) -> &'static str {
-        match self {
-            Self::Recovered => "gallery-sync/recovered",
-            Self::Loaded => "gallery-sync/loaded",
-        }
-    }
-}
-
-/// Each startup phase retains its own snapshot so faster peers cannot overwrite an earlier phase.
+/// Publishes the post-recovery snapshot for the single cross-node gallery check.
 #[derive(Clone, Default)]
-pub struct GallerySync(Arc<RwLock<[Option<GalleryState>; 2]>>);
+pub struct GallerySync(Arc<RwLock<Option<GalleryState>>>);
 
 impl GallerySync {
     /// Merge these routes into the coordination server before startup barriers.
     pub fn routes(&self) -> Router {
-        let mut routes = Router::new();
-        for phase in [GalleryPhase::Recovered, GalleryPhase::Loaded] {
-            let shared = self.clone();
-            routes = routes.route(
-                &format!("/{}", phase.endpoint()),
-                get(move || {
-                    let state =
-                        shared.0.read().expect("gallery lock poisoned")[phase.index()].clone();
-                    async move { state.map(Json).ok_or(StatusCode::SERVICE_UNAVAILABLE) }
-                }),
-            );
-        }
-        routes
+        let shared = self.clone();
+        Router::new().route(
+            "/gallery-sync",
+            get(move || {
+                let state = shared.0.read().expect("gallery lock poisoned").clone();
+                async move { state.map(Json).ok_or(StatusCode::SERVICE_UNAVAILABLE) }
+            }),
+        )
     }
 
-    /// Publish this phase's fresh local snapshot and wait for the same phase on every peer.
+    /// Publish fresh post-recovery metadata and wait for every peer's snapshot.
     pub async fn check(
         &self,
         config: &ServerCoordinationConfig,
-        phase: GalleryPhase,
         local: GalleryState,
     ) -> Result<()> {
-        self.0.write().expect("gallery lock poisoned")[phase.index()] = Some(local.clone());
+        *self.0.write().expect("gallery lock poisoned") = Some(local.clone());
         let responses = tokio::time::timeout(
             std::time::Duration::from_secs(config.startup_sync_timeout_secs),
             async {
                 loop {
-                    let responses = try_get_endpoint_other_nodes(config, phase.endpoint()).await?;
+                    let responses = try_get_endpoint_other_nodes(config, "gallery-sync").await?;
                     if responses
                         .iter()
                         .all(|(status, _)| *status != StatusCode::SERVICE_UNAVAILABLE)
@@ -107,7 +81,7 @@ impl GallerySync {
         .await
         .wrap_err_with(|| {
             format!(
-                "Timed out gathering {phase:?} gallery state for party {}",
+                "Timed out gathering post-recovery gallery state for party {}",
                 config.party_id
             )
         })??;
@@ -116,10 +90,10 @@ impl GallerySync {
         for (party, (status, body)) in parties.zip(responses) {
             ensure!(
                 status.is_success(),
-                "Party {party} returned {status} for {phase:?} gallery state"
+                "Party {party} returned {status} for post-recovery gallery state"
             );
             let peer: GalleryState = serde_json::from_slice(&body)
-                .wrap_err_with(|| format!("Invalid {phase:?} gallery state from party {party}"))?;
+                .wrap_err_with(|| format!("Invalid gallery state from party {party}"))?;
             ensure_gallery_consistency(&local, [(party, &peer)])?;
         }
         Ok(())
@@ -167,63 +141,53 @@ mod tests {
             assert!(ensure_gallery_unchanged(&local, &peer).is_err());
         }
     }
-    #[test]
-    fn phases_do_not_overwrite_each_other() {
-        let sync = GallerySync::default();
-        sync.0.write().unwrap()[0] = Some(state());
-        let mut loaded = state();
-        loaded.db_len += 1;
-        sync.0.write().unwrap()[1] = Some(loaded);
-        assert_eq!(sync.0.read().unwrap()[0], Some(state()));
-    }
-
     #[tokio::test]
-    async fn exchanges_fresh_phases_and_reports_conflicting_party() {
-        let syncs = [
-            GallerySync::default(),
-            GallerySync::default(),
-            GallerySync::default(),
-        ];
-        let mut servers = Vec::new();
-        let mut ports = Vec::new();
-        for sync in &syncs {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            ports.push(listener.local_addr().unwrap().port().to_string());
-            let routes = sync.routes();
-            servers.push(tokio::spawn(async move {
-                axum::serve(listener, routes).await.unwrap()
-            }));
-        }
-        let configs: Vec<ServerCoordinationConfig> = (0..3).map(|party| serde_json::from_value(serde_json::json!({
+    async fn exchanges_post_recovery_state_and_reports_conflicting_party() {
+        for mismatch in [false, true] {
+            let syncs = [
+                GallerySync::default(),
+                GallerySync::default(),
+                GallerySync::default(),
+            ];
+            let mut servers = Vec::new();
+            let mut ports = Vec::new();
+            for sync in &syncs {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                ports.push(listener.local_addr().unwrap().port().to_string());
+                let routes = sync.routes();
+                servers.push(tokio::spawn(async move {
+                    axum::serve(listener, routes).await.unwrap()
+                }));
+            }
+            let configs: Vec<ServerCoordinationConfig> = (0..3).map(|party| serde_json::from_value(serde_json::json!({
                 "party_id": party, "node_hostnames": "[\"127.0.0.1\", \"127.0.0.1\", \"127.0.0.1\"]",
                 "healthcheck_ports": serde_json::to_string(&ports).unwrap(), "http_query_retry_delay_ms": 1, "startup_sync_timeout_secs": 5
         })).unwrap()).collect();
-        let (a, b, c) = tokio::join!(
-            syncs[0].check(&configs[0], GalleryPhase::Recovered, state()),
-            syncs[1].check(&configs[1], GalleryPhase::Recovered, state()),
-            syncs[2].check(&configs[2], GalleryPhase::Recovered, state()),
-        );
-        a.unwrap();
-        b.unwrap();
-        c.unwrap();
-        let mut changed = state();
-        changed.serial_ids_digest[0] += 1;
-        let delayed = async {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            syncs[2]
-                .check(&configs[2], GalleryPhase::Loaded, changed)
-                .await
-        };
-        let (a, b, c) = tokio::join!(
-            syncs[0].check(&configs[0], GalleryPhase::Loaded, state()),
-            syncs[1].check(&configs[1], GalleryPhase::Loaded, state()),
-            delayed,
-        );
-        assert!(a.unwrap_err().to_string().contains("party 2"));
-        assert!(b.unwrap_err().to_string().contains("party 2"));
-        assert!(c.is_err());
-        for server in servers {
-            server.abort();
+            let mut changed = state();
+            if mismatch {
+                changed.serial_ids_digest[0] += 1;
+            }
+            let delayed = async {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                syncs[2].check(&configs[2], changed).await
+            };
+            let (a, b, c) = tokio::join!(
+                syncs[0].check(&configs[0], state()),
+                syncs[1].check(&configs[1], state()),
+                delayed,
+            );
+            if mismatch {
+                assert!(a.unwrap_err().to_string().contains("party 2"));
+                assert!(b.unwrap_err().to_string().contains("party 2"));
+                assert!(c.is_err());
+            } else {
+                a.unwrap();
+                b.unwrap();
+                c.unwrap();
+            }
+            for server in servers {
+                server.abort();
+            }
         }
     }
 }
