@@ -106,7 +106,7 @@ impl JobTracker {
 
         jobs.results.insert(worker_id, response);
 
-        if jobs.pending.is_empty() {
+        if jobs.pending.is_empty() && jobs.registered.is_empty() {
             drop(entry);
             self.complete_job(job_id);
         }
@@ -233,6 +233,34 @@ mod tests {
         assert!(matches!(&results[&0], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![10])));
         assert!(matches!(&results[&1], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![20])));
         assert!(matches!(&results[&2], Ok(Payload::Bytes(b)) if b == &Bytes::from(vec![30])));
+    }
+
+    #[test]
+    fn test_response_before_all_workers_are_sent() {
+        let tracker = JobTracker::new();
+        let (tx, mut rx) = oneshot::channel();
+        tracker.register_job(0, JobType::Broadcast { num_workers: 3 }, tx);
+
+        for worker_id in 0..3 {
+            tracker.set_to_pending(0, worker_id).unwrap();
+            tracker
+                .record_response(WorkerRsp {
+                    job_id: 0,
+                    worker_id,
+                    payload: Ok(Bytes::new().into()),
+                })
+                .unwrap();
+            if worker_id < 2 {
+                assert!(matches!(
+                    rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                assert_eq!(tracker.pending_count(), 1);
+            }
+        }
+
+        assert_eq!(rx.try_recv().unwrap().unwrap().len(), 3);
+        assert_eq!(tracker.pending_count(), 0);
     }
 
     #[test]
