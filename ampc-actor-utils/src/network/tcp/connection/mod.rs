@@ -140,10 +140,10 @@ impl<T: NetworkConnection> Connector<T> {
         let mut rng: StdRng =
             StdRng::from_rng(&mut rand::thread_rng()).expect("Failed to seed RNG");
 
-        const RETRY_SECS: u64 = 2;
+        const RETRY_MS: u64 = 2000;
+        const JITTER_MS: u64 = 3000;
 
-        sleep(Duration::from_millis(rng.gen_range(0..=3000))).await;
-
+        sleep(Duration::from_millis(rng.gen_range(0..=JITTER_MS))).await;
         loop {
             let err = match self.connect().await {
                 Ok(stream) => return Ok(stream),
@@ -170,7 +170,10 @@ impl<T: NetworkConnection> Connector<T> {
                 ConnectError::IoError(_)
                 | ConnectError::Other(_)
                 | ConnectError::HandshakeError(_) => {
-                    sleep(Duration::from_secs(RETRY_SECS)).await;
+                    sleep(Duration::from_millis(
+                        RETRY_MS + rng.gen_range(0..=JITTER_MS),
+                    ))
+                    .await;
                 }
             }
         }

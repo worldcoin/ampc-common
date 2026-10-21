@@ -104,7 +104,7 @@ impl From<Bytes> for FakeIrises {
 }
 
 const NUM_WORKERS: usize = 3;
-const JOB_TIMEOUT: Duration = Duration::from_secs(10);
+const JOB_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Bind `n` listeners simultaneously so the OS assigns `n` distinct free ports,
 /// then return those ports.  Holding all listeners alive until all ports are
