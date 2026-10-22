@@ -184,16 +184,12 @@ pub type ModificationPlan<Id = i64> = (Vec<Modification<Id>>, Vec<Modification<I
 #[derive(Debug)]
 pub struct RollForwardModification {
     pub modification: Modification,
-    /// Apply the persisted gallery mutation, including physical row deletion.
-    /// False for result-only updates and metadata repairs of committed mutations.
     pub apply_mutation: bool,
 }
 
 #[derive(Debug)]
 pub struct ModificationRecoveryPlan {
-    /// Replay in this order (ascending modification ID), not by request type or serial ID.
     pub updates: Vec<RollForwardModification>,
-    /// Abandoned modification records to discard, not gallery rows to delete.
     pub deletes: Vec<Modification>,
 }
 
@@ -228,12 +224,7 @@ pub fn requires_modification_apply(
         && !local.is_some_and(|m| m.status == MOD_STATUS_COMPLETED && m.persisted)
 }
 
-/// Plan recovery for inserts, updates, and physical row deletions in operation order.
-///
-/// The caller applies mutations and modification metadata in one transaction.
-/// Recovered inserts must use the agreed serial ID and advance the allocator just
-/// like live inserts. Deletions must not lower it or derive it from remaining rows.
-/// The planner is storage-agnostic; it does not write gallery rows or allocator state.
+/// Plan mutations in modification-ID order; callers apply them and metadata atomically.
 pub fn recovery_plan(
     local: &[Modification],
     all: &[Vec<Modification>],
@@ -434,9 +425,6 @@ mod recovery_tests {
 
     #[test]
     fn mixed_row_mutations_recover_in_modification_order_across_nodes() {
-        // Serial 7 is deleted after serial 8 is inserted. Serial 8 is then expired
-        // before the next enrollment: replay must neither regroup by kind nor sort
-        // by serial ID, and must retain each enrollment's original allocation.
         let history = [
             operation(10, 7, "uniqueness"),
             operation(11, 7, "reauth"),
@@ -452,7 +440,7 @@ mod recovery_tests {
                 history
                     .iter()
                     .enumerate()
-                    .rev() // SQL snapshots arrive newest first.
+                    .rev()
                     .map(|(index, row)| {
                         let mut row = row.clone();
                         if index >= completed {
@@ -484,7 +472,6 @@ mod recovery_tests {
             assert!(plan.deletes.is_empty());
         }
 
-        // Once committed, a fresh snapshot must not replay inserts into deleted rows.
         let recovered = history.to_vec();
         let plan = recovery_plan(
             &recovered,
