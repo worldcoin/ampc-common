@@ -184,12 +184,16 @@ pub type ModificationPlan<Id = i64> = (Vec<Modification<Id>>, Vec<Modification<I
 #[derive(Debug)]
 pub struct RollForwardModification {
     pub modification: Modification,
+    /// Apply the persisted gallery mutation, including physical row deletion.
+    /// False for result-only updates and metadata repairs of committed mutations.
     pub apply_mutation: bool,
 }
 
 #[derive(Debug)]
 pub struct ModificationRecoveryPlan {
+    /// Replay in this order (ascending modification ID), not by request type or serial ID.
     pub updates: Vec<RollForwardModification>,
+    /// Abandoned modification records to discard, not gallery rows to delete.
     pub deletes: Vec<Modification>,
 }
 
@@ -224,6 +228,12 @@ pub fn requires_modification_apply(
         && !local.is_some_and(|m| m.status == MOD_STATUS_COMPLETED && m.persisted)
 }
 
+/// Plan recovery for inserts, updates, and physical row deletions in operation order.
+///
+/// The caller applies mutations and modification metadata in one transaction.
+/// Recovered inserts must use the agreed serial ID and advance the allocator just
+/// like live inserts. Deletions must not lower it or derive it from remaining rows.
+/// The planner is storage-agnostic; it does not write gallery rows or allocator state.
 pub fn recovery_plan(
     local: &[Modification],
     all: &[Vec<Modification>],
@@ -408,6 +418,153 @@ fn check_modifications_consistency<Id: Eq + fmt::Debug>(
 mod recovery_tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    fn operation(id: i64, serial_id: i64, request_type: &str) -> Modification {
+        Modification {
+            id,
+            serial_id: Some(serial_id),
+            request_type: request_type.into(),
+            input: (request_type == "uniqueness" || request_type == "reauth")
+                .then(|| ModificationInputReference::Inline(format!("request-{id}"))),
+            status: MOD_STATUS_COMPLETED.into(),
+            persisted: true,
+            result_message_body: Some(r#"{"node_id":0}"#.into()),
+        }
+    }
+
+    #[test]
+    fn mixed_row_mutations_recover_in_modification_order_across_nodes() {
+        // Serial 7 is deleted after serial 8 is inserted. Serial 8 is then expired
+        // before the next enrollment: replay must neither regroup by kind nor sort
+        // by serial ID, and must retain each enrollment's original allocation.
+        let history = [
+            operation(10, 7, "uniqueness"),
+            operation(11, 7, "reauth"),
+            operation(12, 8, "uniqueness"),
+            operation(13, 7, "identity_deletion"),
+            operation(14, 8, "expiration"),
+            operation(15, 9, "uniqueness"),
+        ];
+        let completed_counts = [0, 3, history.len()];
+        let snapshots: Vec<Vec<Modification>> = completed_counts
+            .iter()
+            .map(|&completed| {
+                history
+                    .iter()
+                    .enumerate()
+                    .rev() // SQL snapshots arrive newest first.
+                    .map(|(index, row)| {
+                        let mut row = row.clone();
+                        if index >= completed {
+                            row.status = MOD_STATUS_IN_PROGRESS.into();
+                            row.persisted = false;
+                            row.result_message_body = None;
+                            if row.request_type == "uniqueness" {
+                                row.serial_id = None;
+                            }
+                        }
+                        row
+                    })
+                    .collect()
+            })
+            .collect();
+
+        for (party, local) in snapshots.iter().enumerate() {
+            let plan = recovery_plan(local, &snapshots, 10).unwrap();
+            let expected = &history[completed_counts[party]..];
+            assert_eq!(
+                plan.updates
+                    .iter()
+                    .map(|update| &update.modification)
+                    .collect::<Vec<_>>(),
+                expected.iter().collect::<Vec<_>>(),
+                "party {party} must replay the agreed operations in ID order"
+            );
+            assert!(plan.updates.iter().all(|update| update.apply_mutation));
+            assert!(plan.deletes.is_empty());
+        }
+
+        // Once committed, a fresh snapshot must not replay inserts into deleted rows.
+        let recovered = history.to_vec();
+        let plan = recovery_plan(
+            &recovered,
+            &[recovered.clone(), recovered.clone(), recovered.clone()],
+            10,
+        )
+        .unwrap();
+        assert!(plan.updates.is_empty());
+        assert!(plan.deletes.is_empty());
+    }
+
+    #[test]
+    fn metadata_repair_does_not_resurrect_a_later_deleted_row() {
+        for request_type in ["identity_deletion", "expiration"] {
+            let inserted = operation(1, 42, "uniqueness");
+            let deleted = operation(2, 42, request_type);
+            let mut missing_serial = inserted.clone();
+            missing_serial.serial_id = None;
+            let local = vec![deleted.clone(), missing_serial];
+            let peer = vec![deleted, inserted.clone()];
+            let plan = recovery_plan(&local, &[local.clone(), peer], 10).unwrap();
+
+            assert_eq!(plan.updates.len(), 1);
+            assert_eq!(plan.updates[0].modification, inserted);
+            assert!(!plan.updates[0].apply_mutation);
+            assert!(plan.deletes.is_empty());
+        }
+    }
+
+    #[test]
+    fn unsuccessful_and_abandoned_deletions_do_not_delete_gallery_rows() {
+        for request_type in ["identity_deletion", "expiration"] {
+            let completed = Modification {
+                persisted: false,
+                ..operation(2, 42, request_type)
+            };
+            let pending = Modification {
+                status: MOD_STATUS_IN_PROGRESS.into(),
+                result_message_body: None,
+                ..completed.clone()
+            };
+            let plan = recovery_plan(
+                std::slice::from_ref(&pending),
+                &[vec![pending.clone()], vec![completed.clone()]],
+                10,
+            )
+            .unwrap();
+            assert_eq!(plan.updates.len(), 1);
+            assert_eq!(plan.updates[0].modification, completed);
+            assert!(!plan.updates[0].apply_mutation);
+            assert!(plan.deletes.is_empty());
+
+            let plan = recovery_plan(
+                std::slice::from_ref(&pending),
+                &[vec![pending.clone()], vec![pending.clone()]],
+                10,
+            )
+            .unwrap();
+            assert!(plan.updates.is_empty());
+            assert_eq!(plan.deletes, vec![pending]);
+        }
+    }
+
+    #[test]
+    fn deletion_targets_must_agree_across_nodes() {
+        for request_type in ["identity_deletion", "expiration"] {
+            let local = operation(1, 42, request_type);
+            let peer = Modification {
+                serial_id: Some(43),
+                ..local.clone()
+            };
+            let error = recovery_plan(
+                std::slice::from_ref(&local),
+                &[vec![local.clone()], vec![peer]],
+                10,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("Inconsistent serial IDs"));
+        }
+    }
 
     #[test]
     fn metadata_repair_does_not_reapply_a_completed_mutation() {
