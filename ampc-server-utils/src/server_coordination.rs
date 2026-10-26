@@ -12,7 +12,6 @@ use axum::routing::get;
 use axum::Router;
 use eyre::{bail, ensure, Error, Result, WrapErr};
 use futures::future::try_join_all;
-use itertools::Itertools as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -148,6 +147,11 @@ pub async fn start_coordination_server_with_extra_routes<T>(
 where
     T: Serialize + DeserializeOwned + Clone + Send + 'static,
 {
+    // Keep the existing infallible startup API: invalid configuration fails before
+    // any background task or listener is started, like an invalid own port does.
+    config
+        .validate()
+        .expect("Invalid server coordination configuration");
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
@@ -524,6 +528,15 @@ pub async fn init_heartbeat_task(
     shutdown_handler: &Arc<ShutdownHandler>,
     verified_peers: HashSet<String>,
 ) -> Result<()> {
+    config.validate()?;
+    let node_count = config.node_hostnames.len();
+    if node_count == 1 {
+        return Ok(());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(config.http_query_timeout_ms))
+        .build()
+        .wrap_err("Failed to build heartbeat HTTP client")?;
     let (heartbeat_tx, heartbeat_rx) = oneshot::channel();
     let mut heartbeat_tx = Some(heartbeat_tx);
 
@@ -543,17 +556,19 @@ pub async fn init_heartbeat_task(
     // heartbeat was armed — is caught immediately instead of being silently adopted
     // as the baseline.
     let _heartbeat = task_monitor.spawn(async move {
-        let next_node = &all_health_addresses[(party_id + 1) % 3];
-        let prev_node = &all_health_addresses[(party_id + 2) % 3];
-        let mut last_response = [String::default(), String::default()];
-        let mut connected = [false, false];
-        let mut retries = [0, 0];
-        let mut consecutive_failures = [0, 0];
+        // Preserve the cyclic polling order used by the three-party heartbeat.
+        let peer_addresses: Vec<_> = (1..node_count)
+            .map(|offset| &all_health_addresses[(party_id + offset) % node_count])
+            .collect();
+        let mut last_response = vec![String::default(); peer_addresses.len()];
+        let mut connected = vec![false; peer_addresses.len()];
+        let mut retries = vec![0; peer_addresses.len()];
+        let mut consecutive_failures = vec![0; peer_addresses.len()];
         const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
         loop {
-            for (i, host) in [next_node, prev_node].iter().enumerate() {
-                let res = reqwest::get(host.as_str()).await;
+            for (i, host) in peer_addresses.iter().enumerate() {
+                let res = client.get(host.as_str()).send().await;
                 if res.is_err() || !res.as_ref().unwrap().status().is_success() {
                     tracing::warn!(
                         "Node {} did not respond with success, response: {:?}",
@@ -720,6 +735,7 @@ pub async fn wait_for_others_ready(
     config: &ServerCoordinationConfig,
     verified_peers: HashSet<String>,
 ) -> Result<()> {
+    config.validate()?;
     tracing::info!("⚓️ ANCHOR: Waiting for other servers to be ready");
 
     let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
@@ -775,17 +791,19 @@ pub async fn try_get_endpoint_other_nodes(
 ) -> Result<Vec<(StatusCode, Vec<u8>)>> {
     use tokio::time::{sleep, timeout};
 
-    const NODE_COUNT: usize = 3;
+    config.validate()?;
+    let node_count = config.node_hostnames.len();
     let full_urls =
         get_check_addresses(&config.node_hostnames, &config.healthcheck_ports, endpoint);
-    let node_urls = (1..NODE_COUNT)
-        .map(|j| (config.party_id + j) % NODE_COUNT)
-        .map(|i| (i, full_urls[i].to_owned()))
-        .sorted_by(|a, b| Ord::cmp(&a.0, &b.0))
+    // Startup state consumers expect responses in ascending party-ID order.
+    let node_urls = full_urls
+        .into_iter()
+        .enumerate()
+        .filter(|(party_id, _)| *party_id != config.party_id)
         .map(|(_i, full_url)| full_url);
 
-    let mut handles = Vec::with_capacity(NODE_COUNT - 1);
-    let mut rxs = Vec::with_capacity(NODE_COUNT - 1);
+    let mut handles = Vec::with_capacity(node_count - 1);
+    let mut rxs = Vec::with_capacity(node_count - 1);
 
     let retry_duration = Duration::from_millis(config.http_query_retry_delay_ms);
     let request_timeout = Duration::from_millis(config.http_query_timeout_ms);
@@ -886,6 +904,7 @@ pub async fn wait_until_startup_visibility_is_complete(
     verified_peers: &Arc<Mutex<HashSet<String>>>,
     my_uuid: &str,
 ) -> Result<()> {
+    config.validate()?;
     tracing::info!("Waiting for full peer visibility during startup");
 
     let started = Instant::now();
@@ -993,6 +1012,370 @@ fn missing_startup_visibility(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
+    use tokio::time::timeout;
+
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    struct TestPeer {
+        response: Arc<Mutex<ReadyProbeResponse>>,
+        health_requests: Arc<AtomicUsize>,
+        stall_health: Arc<AtomicBool>,
+        server: JoinHandle<()>,
+    }
+
+    impl Drop for TestPeer {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    async fn test_cluster(node_count: usize) -> (ServerCoordinationConfig, Vec<TestPeer>) {
+        let mut config: ServerCoordinationConfig = serde_json::from_str("{}").unwrap();
+        config.node_hostnames = vec!["127.0.0.1".to_owned(); node_count];
+        config.healthcheck_ports.clear();
+        config.http_query_retry_delay_ms = 10;
+        config.http_query_timeout_ms = 100;
+        config.startup_sync_timeout_secs = 1;
+        config.heartbeat_initial_retries = 0;
+        config.heartbeat_interval_secs = 0;
+        let mut peers = Vec::new();
+        for party_id in 0..node_count {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            config
+                .healthcheck_ports
+                .push(listener.local_addr().unwrap().port().to_string());
+            let response = Arc::new(Mutex::new(ReadyProbeResponse {
+                image_name: config.image_name.clone(),
+                uuid: format!("node-{party_id}"),
+                shutting_down: false,
+                verified_peers: (0..node_count)
+                    .filter(|&id| id != party_id)
+                    .map(|id| format!("node-{id}"))
+                    .collect(),
+                is_ready: false,
+            }));
+            let health_requests = Arc::new(AtomicUsize::new(0));
+            let stall_health = Arc::new(AtomicBool::new(false));
+            let app = Router::new()
+                .route(
+                    "/startup-sync",
+                    get(move || async move { axum::Json(party_id) }),
+                )
+                .route(
+                    "/health",
+                    get({
+                        let response = Arc::clone(&response);
+                        let requests = Arc::clone(&health_requests);
+                        let stall_health = Arc::clone(&stall_health);
+                        move || {
+                            let response = Arc::clone(&response);
+                            let requests = Arc::clone(&requests);
+                            let stall_health = Arc::clone(&stall_health);
+                            async move {
+                                requests.fetch_add(1, Ordering::SeqCst);
+                                if stall_health.load(Ordering::SeqCst) {
+                                    std::future::pending::<()>().await;
+                                }
+                                axum::Json(response.lock().await.clone())
+                            }
+                        }
+                    }),
+                );
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            peers.push(TestPeer {
+                response,
+                health_requests,
+                stall_health,
+                server,
+            });
+        }
+        (config, peers)
+    }
+
+    fn verified_peer_ids(node_count: usize, party_id: usize) -> HashSet<String> {
+        (0..node_count)
+            .filter(|&id| id != party_id)
+            .map(|id| format!("node-{id}"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn startup_and_readiness_visit_every_other_party() -> Result<()> {
+        for node_count in [3, 5] {
+            let (mut config, peers) = test_cluster(node_count).await;
+            for party_id in 0..node_count {
+                config.party_id = party_id;
+                let states =
+                    timeout(TEST_TIMEOUT, get_others_sync_state::<usize>(&config)).await??;
+                assert_eq!(
+                    states,
+                    (0..node_count)
+                        .filter(|&id| id != party_id)
+                        .collect::<Vec<_>>()
+                );
+
+                let own_requests = peers[party_id].health_requests.load(Ordering::SeqCst);
+                let verified = Arc::new(Mutex::new(HashSet::new()));
+                timeout(
+                    TEST_TIMEOUT,
+                    wait_for_startup_barriers(&config, &verified, &format!("node-{party_id}")),
+                )
+                .await??;
+                assert_eq!(
+                    *verified.lock().await,
+                    verified_peer_ids(node_count, party_id)
+                );
+                for peer in &peers {
+                    peer.response.lock().await.is_ready = true;
+                }
+                timeout(
+                    TEST_TIMEOUT,
+                    wait_for_others_ready(&config, verified_peer_ids(node_count, party_id)),
+                )
+                .await??;
+                assert_eq!(
+                    peers[party_id].health_requests.load(Ordering::SeqCst),
+                    own_requests
+                );
+                for peer in &peers {
+                    peer.response.lock().await.is_ready = false;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn readiness_waits_for_the_last_party() -> Result<()> {
+        for node_count in [3, 5] {
+            let (config, peers) = test_cluster(node_count).await;
+            for peer in &peers[..node_count - 1] {
+                peer.response.lock().await.is_ready = true;
+            }
+            let last_peer = &peers[node_count - 1];
+            let waiting = tokio::spawn(async move {
+                wait_for_others_ready(&config, verified_peer_ids(node_count, 0)).await
+            });
+            timeout(TEST_TIMEOUT, async {
+                while last_peer.health_requests.load(Ordering::SeqCst) < 2 {
+                    assert!(!waiting.is_finished(), "readiness skipped an unready peer");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+            assert!(!waiting.is_finished());
+            last_peer.response.lock().await.is_ready = true;
+            timeout(TEST_TIMEOUT, waiting).await???;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_times_out_for_an_unavailable_peer() -> Result<()> {
+        for node_count in [3, 5] {
+            let (config, mut peers) = test_cluster(node_count).await;
+            let last_peer = &mut peers[node_count - 1];
+            last_peer.server.abort();
+            assert!((&mut last_peer.server).await.unwrap_err().is_cancelled());
+            let error = timeout(
+                TEST_TIMEOUT,
+                try_get_endpoint_other_nodes(&config, "health"),
+            )
+            .await?
+            .unwrap_err();
+            assert!(error.to_string().contains("Startup sync timed out"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn readiness_and_initial_heartbeat_reject_a_restarted_peer() -> Result<()> {
+        for node_count in [3, 5] {
+            let (config, peers) = test_cluster(node_count).await;
+            peers[node_count - 1].response.lock().await.uuid = "restarted-node".to_owned();
+            let error = timeout(
+                TEST_TIMEOUT,
+                wait_for_others_ready(&config, verified_peer_ids(node_count, 0)),
+            )
+            .await?
+            .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("not seen during startup handshake"));
+
+            let mut monitor = TaskMonitor::new();
+            let shutdown = Arc::new(ShutdownHandler::new(1));
+            assert!(timeout(
+                TEST_TIMEOUT,
+                init_heartbeat_task(
+                    &config,
+                    &mut monitor,
+                    &shutdown,
+                    verified_peer_ids(node_count, 0)
+                )
+            )
+            .await?
+            .is_err());
+            // The existing first-contact identity check panics the monitored task.
+            let error = timeout(TEST_TIMEOUT, monitor.join_next())
+                .await?
+                .unwrap()
+                .unwrap_err();
+            assert!(error.is_panic());
+            let panic = error.into_panic();
+            let message = panic
+                .downcast_ref::<String>()
+                .expect("formatted panic message");
+            assert!(message.contains("not seen during startup handshake"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn heartbeat_monitors_every_peer_and_shuts_down_after_a_restart() -> Result<()> {
+        for node_count in [3, 5] {
+            for party_id in 0..node_count {
+                let (mut config, peers) = test_cluster(node_count).await;
+                config.party_id = party_id;
+                let mut monitor = TaskMonitor::new();
+                let shutdown = Arc::new(ShutdownHandler::new(1));
+                timeout(
+                    TEST_TIMEOUT,
+                    init_heartbeat_task(
+                        &config,
+                        &mut monitor,
+                        &shutdown,
+                        verified_peer_ids(node_count, party_id),
+                    ),
+                )
+                .await??;
+                for (id, peer) in peers.iter().enumerate() {
+                    assert_eq!(
+                        peer.health_requests.load(Ordering::SeqCst) > 0,
+                        id != party_id
+                    );
+                }
+                // Change the final peer in cyclic order, including node 4 for party 0.
+                let last_peer = (party_id + node_count - 1) % node_count;
+                peers[last_peer].response.lock().await.uuid = "restarted-node".to_owned();
+                timeout(TEST_TIMEOUT, shutdown.wait_for_shutdown()).await?;
+                monitor.abort_and_wait_for_finish().await;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn heartbeat_shuts_down_when_a_peer_stops_responding() -> Result<()> {
+        for node_count in [3, 5] {
+            let (config, peers) = test_cluster(node_count).await;
+            let mut monitor = TaskMonitor::new();
+            let shutdown = Arc::new(ShutdownHandler::new(1));
+            timeout(
+                TEST_TIMEOUT,
+                init_heartbeat_task(
+                    &config,
+                    &mut monitor,
+                    &shutdown,
+                    verified_peer_ids(node_count, 0),
+                ),
+            )
+            .await??;
+            let last_peer = &peers[node_count - 1];
+            last_peer.stall_health.store(true, Ordering::SeqCst);
+            timeout(TEST_TIMEOUT, shutdown.wait_for_shutdown()).await?;
+            assert!(last_peer.health_requests.load(Ordering::SeqCst) >= 4);
+            monitor.abort_and_wait_for_finish().await;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn malformed_configuration_fails_before_polling_or_spawning() -> Result<()> {
+        let default: ServerCoordinationConfig = serde_json::from_str("{}")?;
+        let mut empty = default.clone();
+        empty.node_hostnames.clear();
+        empty.healthcheck_ports.clear();
+        let mut mismatched = default.clone();
+        mismatched.healthcheck_ports.pop();
+        let mut invalid_id = default.clone();
+        invalid_id.party_id = default.node_hostnames.len();
+        let mut huge_id = default;
+        huge_id.party_id = usize::MAX;
+        for (config, expected) in [
+            (empty, "must not be empty"),
+            (mismatched, "matching lengths"),
+            (invalid_id, "out of bounds"),
+            (huge_id, "out of bounds"),
+        ] {
+            assert!(config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains(expected));
+            let mut monitor = TaskMonitor::new();
+            let shutdown = Arc::new(ShutdownHandler::new(1));
+            let error = timeout(
+                TEST_TIMEOUT,
+                init_heartbeat_task(&config, &mut monitor, &shutdown, HashSet::new()),
+            )
+            .await?
+            .unwrap_err();
+            assert!(error.to_string().contains(expected));
+            assert!(monitor.is_empty());
+            let error = timeout(
+                TEST_TIMEOUT,
+                try_get_endpoint_other_nodes(&config, "health"),
+            )
+            .await?
+            .unwrap_err();
+            assert!(error.to_string().contains(expected));
+            let error = timeout(TEST_TIMEOUT, wait_for_others_ready(&config, HashSet::new()))
+                .await?
+                .unwrap_err();
+            assert!(error.to_string().contains(expected));
+            let error = timeout(
+                TEST_TIMEOUT,
+                wait_until_startup_visibility_is_complete(
+                    &config,
+                    &Arc::new(Mutex::new(HashSet::new())),
+                    "own-node",
+                ),
+            )
+            .await?
+            .unwrap_err();
+            assert!(error.to_string().contains(expected));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "Invalid server coordination configuration")]
+    async fn listener_rejects_malformed_configuration_before_starting() {
+        let mut config: ServerCoordinationConfig = serde_json::from_str("{}").unwrap();
+        config.node_hostnames.clear();
+        let mut monitor = TaskMonitor::new();
+        start_coordination_server(
+            &config,
+            &mut monitor,
+            &Arc::new(ShutdownHandler::new(1)),
+            &(),
+            None,
+        )
+        .await;
+    }
+
+    #[test]
+    fn three_party_defaults_are_preserved() {
+        let config: ServerCoordinationConfig = serde_json::from_str("{}").unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.party_id, 0);
+        assert_eq!(config.node_hostnames, vec!["localhost"; 3]);
+        assert_eq!(config.healthcheck_ports, vec!["3000"; 3]);
+    }
 
     fn set(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| value.to_string()).collect()
