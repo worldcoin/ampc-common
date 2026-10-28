@@ -22,7 +22,7 @@ struct KeyManagerCli {
     command: Commands,
 
     #[arg(
-        short, long, env, value_parser = clap::builder::PossibleValuesParser::new(& ["0", "1", "2"])
+        short, long, env, value_parser = clap::builder::PossibleValuesParser::new(& ["0", "1", "2", "3", "4"])
     )]
     node_id: String,
 
@@ -325,6 +325,30 @@ fn generate_key_pairs(seed: Seed) -> (PublicKey, SecretKey) {
 mod test {
     use super::*;
     use sodiumoxide::crypto::sealedbox;
+
+    #[test]
+    fn test_node_ids_support_three_and_five_parties() {
+        for node in ["0", "1", "2", "3", "4"] {
+            KeyManagerCli::try_parse_from([
+                "key-manager",
+                "--node-id",
+                node,
+                "rotate",
+                "--dry-run",
+                "true",
+            ])
+            .expect("valid party ID");
+        }
+        assert!(KeyManagerCli::try_parse_from([
+            "key-manager",
+            "--node-id",
+            "5",
+            "rotate",
+            "--dry-run",
+            "true",
+        ])
+        .is_err());
+    }
 
     pub fn get_public_key(user_pub_key: &str) -> PublicKey {
         let user_pubkey = STANDARD.decode(user_pub_key.as_bytes()).unwrap();
