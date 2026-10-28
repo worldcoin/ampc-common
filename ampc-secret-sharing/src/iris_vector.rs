@@ -6,6 +6,7 @@
 //! iris embedding vectors (512 elements).
 
 use crate::galois::degree4::{basis, GaloisRingElement, ShamirGaloisRingShare};
+use crate::id::PartyID;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eyre::bail;
 use rand::{CryptoRng, Rng};
@@ -359,6 +360,75 @@ impl IrisSecretSharedVector {
         self.0.to_vec()
     }
 
+    /// Reshare this original three-party vector's weighted contribution for ORBIT5
+    /// database migration.
+    ///
+    /// `source_party` identifies the operator holding this original share.
+    /// Returned array indices 0 through 4 correspond to recipient share IDs 1
+    /// through 5. The input must contain unprocessed monomial-basis share
+    /// coefficients. Each recipient must combine one contribution from each
+    /// original operator to obtain its new share of the original vector.
+    ///
+    /// Use independently seeded cryptographic randomness at each operator.
+    /// Advance the RNG across elements, eyes, rows, and calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vector size is not divisible by four or the
+    /// element-level conversion fails.
+    pub fn reshare_for_orbit5_db_migration<R: CryptoRng + Rng>(
+        &self,
+        source_party: PartyID,
+        rng: &mut R,
+    ) -> eyre::Result<[IrisSecretSharedVector; 5]> {
+        #[allow(clippy::manual_is_multiple_of)]
+        if IRIS_VECTOR_SIZE % 4 != 0 {
+            bail!(
+                "Vector size must be divisible by 4, got {}",
+                IRIS_VECTOR_SIZE
+            );
+        }
+
+        let source_id = usize::from(source_party) + 1;
+        let mut outgoing: [IrisSecretSharedVector; 5] =
+            std::array::from_fn(|_| IrisSecretSharedVector::default());
+
+        for (element_index, chunk) in self.0.chunks_exact(4).enumerate() {
+            let original = ShamirGaloisRingShare {
+                id: source_id,
+                y: GaloisRingElement::<basis::Monomial>::from_coefs([
+                    chunk[0], chunk[1], chunk[2], chunk[3],
+                ]),
+            };
+
+            let contributions = original.reshare_for_orbit5(rng)?;
+            let offset = element_index * 4;
+
+            for (output, contribution) in outgoing.iter_mut().zip(contributions) {
+                output.0[offset..offset + 4].copy_from_slice(&contribution.y.coefs);
+            }
+        }
+
+        Ok(outgoing)
+    }
+
+    /// Combine three incoming ORBIT5 database-migration contributions into this
+    /// recipient's new share.
+    ///
+    /// The caller must provide exactly one contribution from each original
+    /// operator, all for the same recipient, vector, and migration attempt.
+    /// The vector values contain no provenance metadata, so this method cannot
+    /// validate those conditions. Addition preserves the monomial basis.
+    pub fn combine_orbit5_db_migration_contributions(
+        contributions: [&IrisSecretSharedVector; 3],
+    ) -> IrisSecretSharedVector {
+        let [a, b, c] = contributions;
+
+        IrisSecretSharedVector(std::array::from_fn(|index| {
+            a.0[index].wrapping_add(b.0[index]).wrapping_add(c.0[index])
+        }))
+    }
+
     /// Base64-encode the share as standard base64 (with padding). The byte layout
     /// is the little-endian representation of the underlying `[u16; IRIS_VECTOR_SIZE]`,
     /// producing `IRIS_VECTOR_SIZE * 2` bytes (1024 for the current 512-element layout).
@@ -557,6 +627,60 @@ mod tests {
         assert!(IrisSecretSharedVector::default()
             .multiply_lagrange_coeffs_5_parties(5)
             .is_err());
+    }
+
+    #[test]
+    fn orbit5_db_migration_preserves_vector() {
+        let mut rng = StdRng::seed_from_u64(200);
+        let original = IrisVector::new(std::array::from_fn(|index| ((index * 7) % 16) as i8 - 8));
+        let original_shares = original.secret_share(&mut rng).unwrap();
+
+        let outgoing: [[IrisSecretSharedVector; 5]; 3] = std::array::from_fn(|source| {
+            let mut dealer_rng = StdRng::from_rng(&mut rng).unwrap();
+            original_shares[source]
+                .reshare_for_orbit5_db_migration(
+                    PartyID::try_from(source).unwrap(),
+                    &mut dealer_rng,
+                )
+                .unwrap()
+        });
+        let migrated: [IrisSecretSharedVector; 5] = std::array::from_fn(|recipient| {
+            IrisSecretSharedVector::combine_orbit5_db_migration_contributions([
+                &outgoing[0][recipient],
+                &outgoing[1][recipient],
+                &outgoing[2][recipient],
+            ])
+        });
+
+        // Reconstruct using A, D, and E to include both new operators.
+        let recipients = [0, 3, 4];
+        let points = recipients.map(|recipient| {
+            GaloisRingElement::<basis::Monomial>::EXCEPTIONAL_SEQUENCE[recipient + 1]
+        });
+        let weights: [GaloisRingElement<basis::Monomial>; 3] = std::array::from_fn(|i| {
+            let mut weight = GaloisRingElement::ONE;
+            for (j, point) in points.iter().enumerate() {
+                if i != j {
+                    weight = weight * (-*point) * (points[i] - *point).inverse();
+                }
+            }
+            weight
+        });
+
+        let mut reconstructed = [0u16; IRIS_VECTOR_SIZE];
+        for offset in (0..IRIS_VECTOR_SIZE).step_by(4) {
+            let mut element = GaloisRingElement::<basis::Monomial>::ZERO;
+            for (recipient, weight) in recipients.iter().zip(weights) {
+                let share = GaloisRingElement::<basis::Monomial>::from_coefs(std::array::from_fn(
+                    |coefficient| migrated[*recipient].0[offset + coefficient],
+                ));
+                element = element + share * weight;
+            }
+            reconstructed[offset..offset + 4].copy_from_slice(&element.to_basis_A().coefs);
+        }
+
+        // Compare all 16 bits, including the encoding of negative iris values.
+        assert_eq!(reconstructed, original.0.map(|value| value as u16));
     }
 
     #[test]

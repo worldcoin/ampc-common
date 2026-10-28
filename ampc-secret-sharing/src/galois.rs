@@ -2,7 +2,7 @@ pub mod degree4 {
     use crate::id::PartyID;
     use basis::{Basis, Monomial};
     use rand::{CryptoRng, Rng};
-    use std::marker::PhantomData;
+    use std::{marker::PhantomData, sync::LazyLock};
 
     pub mod basis {
         pub trait Basis {}
@@ -343,6 +343,37 @@ pub mod degree4 {
     }
 
     impl ShamirGaloisRingShare {
+        /// Reshare this original three-party share's weighted contribution for ORBIT5.
+        ///
+        /// The input must be an original, unprocessed share in the monomial basis,
+        /// with its correct original share ID. Outputs are ordered by recipient
+        /// share IDs 1 through 5. Each recipient must add the contribution shares
+        /// from all three original operators to obtain its new 3-of-5 share.
+        ///
+        /// Use independently seeded cryptographic randomness at each operator.
+        /// Advance the RNG across calls; do not reset or reuse its state.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the original share ID is outside 1..=3. This method
+        /// cannot verify that the input belongs to a consistent original sharing.
+        pub fn reshare_for_orbit5<R: CryptoRng + Rng>(
+            &self,
+            rng: &mut R,
+        ) -> eyre::Result<[Self; 5]> {
+            eyre::ensure!(
+                (1..=3).contains(&self.id),
+                "Expected original share ID in 1..=3, got {}",
+                self.id
+            );
+
+            static WEIGHTS: LazyLock<[GaloisRingElement<Monomial>; 3]> =
+                LazyLock::new(ShamirGaloisRingShare::deg_2_lagrange_polys_at_zero);
+
+            let contribution = self.y * WEIGHTS[self.id - 1];
+            Ok(Self::encode_5_mat(&contribution.coefs, rng))
+        }
+
         pub fn encode_3<R: CryptoRng + Rng>(
             input: &GaloisRingElement<Monomial>,
             rng: &mut R,
