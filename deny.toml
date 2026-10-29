@@ -5,7 +5,6 @@ all-features = true
 [advisories]
 version = 2
 ignore = [
-    { id = "RUSTSEC-2021-0137", reason = "we will switch to alkali eventually" },
     { id = "RUSTSEC-2024-0436", reason = "deep subdependency from several aws and sqlx crates" },
     # bincode maintainers consider 1.3.3 complete; used for serialization in ampc-anon-stats
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is considered complete by maintainers" },
@@ -23,6 +22,14 @@ ignore = [
     # no untrusted XML is parsed via the vulnerable Attributes/NsReader read paths.
     { id = "RUSTSEC-2026-0194", reason = "quick-xml XML-parse DoS; unreachable via pprof flamegraph SVG generation, and unbumpable (pprof pins inferno ^0.11 -> quick-xml ^0.26; patched >= 0.41.0)" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader namespace-alloc DoS; unreachable via pprof flamegraph SVG generation, and unbumpable (pprof pins inferno ^0.11 -> quick-xml ^0.26; patched >= 0.41.0)" },
+    # ZIP is a build dependency of alkali -> libsodium-sys-stable, not a runtime input parser.
+    # Its extraction path is only used for precompiled Windows MSVC archives, after verifying
+    # their Minisign signature against libsodium's embedded public key. Linux builds use tar.
+    # All three are fixed in zip >= 9; even libsodium-sys-stable 1.24.3 still requires zip ^8.6.
+    # Remove these exceptions when upstream supports the patched major version.
+    { id = "RUSTSEC-2026-0367", reason = "ZIP permission-bit preservation: build-only, signature-verified libsodium MSVC archives; no untrusted ZIP extraction or Linux ZIP path. Upstream libsodium cannot yet use patched zip >=9" },
+    { id = "RUSTSEC-2026-0368", reason = "ZIP symlink escape: build-only libsodium MSVC extraction verifies archive signatures before extraction; not used for runtime input or Linux builds. Remove once upstream supports zip >=9" },
+    { id = "RUSTSEC-2026-0369", reason = "ZIP permission changes through symlinks: only signature-verified libsodium MSVC build archives are extracted, never runtime input; Linux builds do not use ZIP. Upstream still requires zip <9" },
 ]
 
 [sources]

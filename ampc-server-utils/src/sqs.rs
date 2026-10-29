@@ -79,9 +79,8 @@ pub async fn get_next_sns_seq_num(
             }
             Err(err) => {
                 tracing::error!(
-                    "Found corrupt message in queue while parsing SNS message from body. The error is: '{}'. The SQS message body is '{:?}'",
-                    err,
-                    sqs_message.body()
+                    "Found corrupt message in queue while parsing SNS message from body. The error is: '{}'",
+                    err
                 );
                 Err(err)
                     .context("Found corrupt message in queue while parsing SNS message from body")
@@ -179,11 +178,7 @@ pub async fn delete_messages_until_sequence_num(
             .map_err(|e| eyre!("sequence number is not a number: {}", e))?;
 
             if sequence_num < target_sequence_num {
-                tracing::warn!(
-                    "Deleting message with sequence number: {}, body: {:?}",
-                    sequence_num,
-                    msg.body
-                );
+                tracing::warn!("Deleting message with sequence number: {}", sequence_num);
                 sqs_client
                     .delete_message()
                     .queue_url(queue_url)

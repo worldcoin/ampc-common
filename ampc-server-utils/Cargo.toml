@@ -17,17 +17,18 @@ eyre = { workspace = true }
 reqwest = { workspace = true }
 aws-sdk-sqs = { workspace = true }
 aws-sdk-secretsmanager = { workspace = true }
+sqlx = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 itertools = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
-sodiumoxide = { workspace = true }
+alkali = { workspace = true }
 zeroize = "1.8.1"
 thiserror = { workspace = true }
 metrics = "0.24.0"

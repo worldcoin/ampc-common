@@ -68,7 +68,7 @@ pub struct ServerCoordinationConfig {
     #[serde(default = "default_http_query_retry_delay_ms")]
     pub http_query_retry_delay_ms: u64,
 
-    /// Per-attempt HTTP query timeout in milliseconds (covers connect + request)
+    /// HTTP query timeout in milliseconds; heartbeats include response-body reads.
     #[serde(default = "default_http_query_timeout_ms")]
     pub http_query_timeout_ms: u64,
 

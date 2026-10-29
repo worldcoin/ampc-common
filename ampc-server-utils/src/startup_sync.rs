@@ -1,12 +1,13 @@
 use eyre::{ensure, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-// TODO: add modifications
+use crate::modifications::Modification;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartupSyncState<C: CommonConfig> {
     pub db_len: u64,
     pub next_sns_sequence_num: Option<u128>,
     pub common_config: C,
+    pub modifications: Vec<Modification>,
 }
 
 /// Trait that defines the requirements for a common config that can be synchronized across nodes.
@@ -29,10 +30,11 @@ impl<C: CommonConfig> Serialize for StartupSyncState<C> {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("StartupSyncState", 3)?;
+        let mut state = serializer.serialize_struct("StartupSyncState", 4)?;
         state.serialize_field("db_len", &self.db_len)?;
         state.serialize_field("next_sns_sequence_num", &self.next_sns_sequence_num)?;
         state.serialize_field("common_config", &self.common_config)?;
+        state.serialize_field("modifications", &self.modifications)?;
         state.end()
     }
 }
@@ -47,6 +49,8 @@ impl<'de, C: CommonConfig> Deserialize<'de> for StartupSyncState<C> {
             db_len: u64,
             next_sns_sequence_num: Option<u128>,
             common_config: C,
+            #[serde(default)]
+            modifications: Vec<Modification>,
         }
 
         let helper = StartupSyncStateHelper::<C>::deserialize(deserializer)?;
@@ -54,6 +58,7 @@ impl<'de, C: CommonConfig> Deserialize<'de> for StartupSyncState<C> {
             db_len: helper.db_len,
             next_sns_sequence_num: helper.next_sns_sequence_num,
             common_config: helper.common_config,
+            modifications: helper.modifications,
         })
     }
 }
@@ -122,6 +127,29 @@ mod tests {
     use crate::startup_sync::{DefaultCommonConfig, StartupSyncResult, StartupSyncState};
 
     #[test]
+    fn startup_metadata_roundtrips_and_accepts_the_previous_wire_shape() {
+        let old =
+            r#"{"db_len":0,"next_sns_sequence_num":null,"common_config":{"environment":"test"}}"#;
+        let mut state: StartupSyncState<DefaultCommonConfig> = serde_json::from_str(old).unwrap();
+        assert!(state.modifications.is_empty());
+        state
+            .modifications
+            .push(crate::modifications::Modification {
+                id: 1,
+                result_message_body: Some(r#"{"node_id":0}"#.into()),
+                ..Default::default()
+            });
+        let encoded = serde_json::to_string(&state).unwrap();
+        let decoded: StartupSyncState<DefaultCommonConfig> =
+            serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            decoded.modifications[0].result_message_body,
+            state.modifications[0].result_message_body
+        );
+        assert_eq!(decoded, state);
+    }
+
+    #[test]
     fn test_max_sns_sequence_num() {
         let common_config = DefaultCommonConfig {
             environment: "test".to_string(),
@@ -133,16 +161,19 @@ mod tests {
                 db_len: 10,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 20,
                 next_sns_sequence_num: Some(200),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 30,
                 next_sns_sequence_num: Some(150),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
         ];
 
@@ -154,6 +185,7 @@ mod tests {
             db_len: 10,
             next_sns_sequence_num: None,
             common_config: common_config.clone(),
+            modifications: Vec::new(),
         };
         let all_states = vec![
             state_with_none_sequence_num.clone(),
@@ -179,16 +211,19 @@ mod tests {
                 db_len: 10,
                 next_sns_sequence_num: None, // NodeX - advanced but empty queue
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 20,
                 next_sns_sequence_num: Some(123), // Other nodes still have messages
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 30,
                 next_sns_sequence_num: Some(123),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
         ];
 
@@ -209,16 +244,19 @@ mod tests {
                 db_len: 10,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 20,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 30,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config.clone(),
+                modifications: Vec::new(),
             },
         ];
 
@@ -241,11 +279,13 @@ mod tests {
                 db_len: 10,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config1,
+                modifications: Vec::new(),
             },
             StartupSyncState {
                 db_len: 20,
                 next_sns_sequence_num: Some(100),
                 common_config: common_config2,
+                modifications: Vec::new(),
             },
         ];
 
