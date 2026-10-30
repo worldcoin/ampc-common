@@ -18,7 +18,7 @@ reviews:
       instructions: "Check shared API and wire-format compatibility with callers at their pinned revisions. For actor/network changes, trace party ordering, cancellation, bounded resource use and error propagation. For anonymous-statistics schema changes, check migration history, rolling-version startup and rollback, including SQLx migration validation by older binaries."
     - path: key-manager/**
       instructions: "Check key ownership, rotation overlap, malformed input and secret exposure. Require concrete evidence before suggesting cryptographic changes."
-    - path: "{deploy/**,.github/workflows/**,Dockerfile*}"
+    - path: "{deploy/**,.github/workflows/**,**/Dockerfile*}"
       instructions: "Check stage/production targeting, permissions and secret handling, dependency/image revisions, rollout compatibility, startup/readiness behavior and rollback. Flag only risks supported by the actual configuration and deployment path."
 chat: 
   art: false
