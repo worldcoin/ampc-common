@@ -69,6 +69,23 @@ impl NetworkSession {
         let prev_identity = self.prev_identity()?;
         self.receive(&prev_identity).await
     }
+
+    /// Send `value` to an arbitrary party identified by `role`. Unlike
+    /// `send_next`/`send_prev`, this works regardless of ring adjacency and
+    /// is the preferred API for protocols with more than 3 parties.
+    pub async fn send_to(&mut self, value: NetworkValue, role: &Role) -> Result<()> {
+        let identity = self.identity(role)?.clone();
+        self.send(value, &identity).await
+    }
+
+    /// Receive a value from an arbitrary party identified by `role`. Unlike
+    /// `receive_next`/`receive_prev`, this works regardless of ring
+    /// adjacency and is the preferred API for protocols with more than 3
+    /// parties.
+    pub async fn receive_from(&mut self, role: &Role) -> Result<NetworkValue> {
+        let identity = self.identity(role)?.clone();
+        self.receive(&identity).await
+    }
 }
 
 // Helper methods for sending and receiving VecRingElement<T>.
