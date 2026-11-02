@@ -234,6 +234,94 @@ impl IrisVector {
         Ok(shares)
     }
 
+    /// Generate Shamir secret shares of this iris embedding vector for the
+    /// ORBIT5 (5-party) configuration: one share per party, each containing
+    /// 512 u16 values.
+    ///
+    /// The ORBIT5 counterpart of [`secret_share`](Self::secret_share): the
+    /// vector is processed in chunks of 4, each converted to a
+    /// [GaloisRingElement] and shared with a degree-2 polynomial evaluated at
+    /// 5 points, so any 3 of the 5 shares reconstruct the secret.
+    pub fn secret_share_5_parties<R: CryptoRng + Rng>(
+        &self,
+        rng: &mut R,
+    ) -> eyre::Result<[IrisSecretSharedVector; 5]> {
+        #[allow(clippy::manual_is_multiple_of)]
+        if IRIS_VECTOR_SIZE % 4 != 0 {
+            bail!(
+                "Vector size must be divisible by 4, got {}",
+                IRIS_VECTOR_SIZE
+            );
+        }
+
+        let mut shares = [
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+            IrisSecretSharedVector::default(),
+        ];
+
+        for i in (0..IRIS_VECTOR_SIZE).step_by(4) {
+            let element = GaloisRingElement::<basis::A>::from_coefs([
+                self.0[i] as u16,
+                self.0[i + 1] as u16,
+                self.0[i + 2] as u16,
+                self.0[i + 3] as u16,
+            ]);
+            let element = element.to_monomial();
+            let share = ShamirGaloisRingShare::encode_5_mat(&element.coefs, rng);
+            for j in 0..5 {
+                shares[j].0[i] = share[j].y.coefs[0];
+                shares[j].0[i + 1] = share[j].y.coefs[1];
+                shares[j].0[i + 2] = share[j].y.coefs[2];
+                shares[j].0[i + 3] = share[j].y.coefs[3];
+            }
+        }
+
+        Ok(shares)
+    }
+
+    /// Reconstruct an iris embedding from all five raw ORBIT5 shares, in the
+    /// original party order returned by [`secret_share_5_parties`](Self::secret_share_5_parties).
+    /// Each chunk is interpolated at zero and converted back from the monomial
+    /// basis to the embedding's basis A.
+    ///
+    /// This is local reconstruction for a caller that already holds every share.
+    /// Shares must belong to the same embedding and must not have been
+    /// preprocessed for comparison. This does not authenticate shares or detect
+    /// every inconsistent sharing.
+    ///
+    /// # Errors
+    /// Returns an error if a reconstructed coefficient is outside the signed
+    /// `i8` range, rather than truncating it.
+    pub fn reconstruct_5_parties(shares: &[IrisSecretSharedVector; 5]) -> eyre::Result<Self> {
+        let coefficients = ShamirGaloisRingShare::orbit5_deg_4_lagrange_polys_at_zero();
+        let mut result = [0i8; IRIS_VECTOR_SIZE];
+        for (chunk_index, chunk) in result.chunks_exact_mut(4).enumerate() {
+            let start = chunk_index * 4;
+            let mut element = GaloisRingElement::<basis::Monomial>::ZERO;
+            for (share, coefficient) in shares.iter().zip(&coefficients) {
+                let share_element = GaloisRingElement::from_coefs([
+                    share.0[start],
+                    share.0[start + 1],
+                    share.0[start + 2],
+                    share.0[start + 3],
+                ]);
+                element = element + share_element * *coefficient;
+            }
+            for (offset, coefficient) in element.to_basis_A().coefs.into_iter().enumerate() {
+                chunk[offset] = i8::try_from(coefficient as i16).map_err(|_| {
+                    eyre::eyre!(
+                        "Reconstructed coefficient at index {} is outside the i8 range",
+                        start + offset
+                    )
+                })?;
+            }
+        }
+        Ok(Self(result))
+    }
+
     /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
     /// Mainly useful for tests, dev tooling, and PCP fixture generation.
     pub fn to_base64(&self) -> String {
@@ -383,7 +471,7 @@ mod tests {
     use crate::PartyID;
     use crate::ShamirGaloisRingShare;
     use base64::Engine as _;
-    use rand::thread_rng;
+    use rand::{rngs::StdRng, thread_rng, SeedableRng};
 
     #[test]
     fn test_random_normalized() {
@@ -462,6 +550,71 @@ mod tests {
             .collect();
 
         assert_eq!(original.0.to_vec(), reconstructed_i8);
+    }
+
+    #[test]
+    fn test_5pc_embedding_round_trip() {
+        let mut rng = StdRng::seed_from_u64(5);
+        let mut inputs = vec![
+            IrisVector::new([0; IRIS_VECTOR_SIZE]),
+            IrisVector::new([-8; IRIS_VECTOR_SIZE]),
+            IrisVector::new([7; IRIS_VECTOR_SIZE]),
+            // Preserve the entire i8 input range, including sign extension to u16.
+            IrisVector::new(std::array::from_fn(|i| i as u8 as i8)),
+        ];
+        for _ in 0..10 {
+            inputs.push(IrisVector::random(&mut rng));
+            inputs.push(IrisVector::random_normalized(&mut rng));
+        }
+        for original in inputs {
+            let shares = original.secret_share_5_parties(&mut rng).unwrap();
+            let reconstructed = IrisVector::reconstruct_5_parties(&shares).unwrap();
+            assert_eq!(reconstructed.0, original.0);
+
+            let decoded = shares
+                .map(|share| IrisSecretSharedVector::from_base64(&share.to_base64()).unwrap());
+            assert_eq!(
+                IrisVector::reconstruct_5_parties(&decoded).unwrap().0,
+                original.0
+            );
+        }
+    }
+
+    #[test]
+    fn test_5pc_embedding_sharing_uses_fresh_randomness() {
+        let mut rng = StdRng::seed_from_u64(6);
+        let original = IrisVector::random(&mut rng);
+        let first = original.secret_share_5_parties(&mut rng).unwrap();
+        let second = original.secret_share_5_parties(&mut rng).unwrap();
+        for (a, b) in first.iter().zip(&second) {
+            assert_ne!(a.0, b.0);
+        }
+        assert_eq!(
+            IrisVector::reconstruct_5_parties(&first).unwrap().0,
+            original.0
+        );
+        assert_eq!(
+            IrisVector::reconstruct_5_parties(&second).unwrap().0,
+            original.0
+        );
+    }
+
+    #[test]
+    fn test_5pc_embedding_reconstruction_rejects_out_of_range_coefficients() {
+        for invalid in [128u16, (-129i16) as u16] {
+            // A constant polynomial with an out-of-range plaintext coefficient.
+            let element =
+                GaloisRingElement::<basis::A>::from_coefs([invalid, 0, 0, 0]).to_monomial();
+            let shares = std::array::from_fn(|_| {
+                let mut share = IrisSecretSharedVector::default();
+                share.0[..4].copy_from_slice(&element.coefs);
+                share
+            });
+            let error = IrisVector::reconstruct_5_parties(&shares).err().unwrap();
+            assert!(error
+                .to_string()
+                .contains("index 0 is outside the i8 range"));
+        }
     }
 
     #[test]
