@@ -488,20 +488,8 @@ pub mod degree4 {
         /// Computes all five Lagrange polynomials of degree 4 at zero.
         /// This can be used in production to turn the 5-of-5 Shamir secret shares of a
         /// product into 5-of-5 additive shares.
-        pub fn orbit5_deg_4_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 5] {
-            let mut res = [GaloisRingElement::ONE; 5];
-            for i in 1..=5 {
-                for j in 1..=5 {
-                    if j != i {
-                        res[i - 1] = res[i - 1] * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
-                        res[i - 1] = res[i - 1]
-                            * (GaloisRingElement::EXCEPTIONAL_SEQUENCE[i]
-                                - GaloisRingElement::EXCEPTIONAL_SEQUENCE[j])
-                                .inverse();
-                    }
-                }
-            }
-            res
+        pub fn deg_4_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 5] {
+            Self::deg_k_lagrange_polys_at_zero::<5>()
         }
 
         pub fn deg_1_lagrange_poly_at_v(
@@ -525,9 +513,26 @@ pub mod degree4 {
         }
 
         pub fn deg_2_lagrange_polys_at_zero() -> [GaloisRingElement<Monomial>; 3] {
-            let mut res = [GaloisRingElement::ONE; 3];
-            for i in 1..=3 {
-                for j in 1..=3 {
+            Self::deg_k_lagrange_polys_at_zero::<3>()
+        }
+
+        /// Compute Lagrange coefficients at zero for degree `k = N - 1`, using
+        /// the first `N` nonzero points of the exceptional sequence. Coefficient
+        /// `i - 1` corresponds to the point at index `i` (one-based share IDs).
+        ///
+        /// The const parameter is the number of points, rather than the degree,
+        /// so the return type has a fixed array length supported by stable Rust.
+        ///
+        /// # Panics
+        /// Panics unless `1 <= N <= 15`; the sequence has 15 nonzero points.
+        pub fn deg_k_lagrange_polys_at_zero<const N: usize>() -> [GaloisRingElement<Monomial>; N] {
+            assert!(
+                0 < N && N < GaloisRingElement::EXCEPTIONAL_SEQUENCE.len(),
+                "Lagrange interpolation requires between 1 and 15 nonzero evaluation points"
+            );
+            let mut res = [GaloisRingElement::ONE; N];
+            for i in 1..=N {
+                for j in 1..=N {
                     if j != i {
                         res[i - 1] = res[i - 1] * (-GaloisRingElement::EXCEPTIONAL_SEQUENCE[j]);
                         res[i - 1] = res[i - 1]
@@ -554,7 +559,7 @@ pub mod degree4 {
         pub fn reconstruct_deg_4_shares(
             shares: &[ShamirGaloisRingShare; 5],
         ) -> GaloisRingElement<Monomial> {
-            let lagrange_polys_at_zero = Self::orbit5_deg_4_lagrange_polys_at_zero();
+            let lagrange_polys_at_zero = Self::deg_4_lagrange_polys_at_zero();
             shares
                 .iter()
                 .map(|s| s.y * lagrange_polys_at_zero[s.id - 1])
@@ -649,6 +654,58 @@ pub mod degree4 {
             let expected = input1 * input2;
 
             assert_eq!(reconstructed, expected);
+        }
+
+        #[test]
+        fn deg_k_lagrange_coefficients_reconstruct_every_supported_degree() {
+            fn check<const N: usize>() {
+                let coefficients = ShamirGaloisRingShare::deg_k_lagrange_polys_at_zero::<N>();
+                // Reconstruct each monomial Z^d at zero. By linearity, these
+                // identities cover every polynomial of degree at most N - 1.
+                for degree in 0..N {
+                    let actual = coefficients.iter().enumerate().fold(
+                        GaloisRingElement::ZERO,
+                        |sum, (index, coefficient)| {
+                            let point = GaloisRingElement::EXCEPTIONAL_SEQUENCE[index + 1];
+                            sum + *coefficient * point.pow(degree as u32)
+                        },
+                    );
+                    let expected = if degree == 0 {
+                        GaloisRingElement::ONE
+                    } else {
+                        GaloisRingElement::ZERO
+                    };
+                    assert_eq!(actual, expected, "{N} points, monomial degree {degree}");
+                }
+            }
+
+            check::<1>();
+            check::<2>();
+            check::<3>();
+            check::<4>();
+            check::<5>();
+            check::<6>();
+            check::<7>();
+            check::<8>();
+            check::<9>();
+            check::<10>();
+            check::<11>();
+            check::<12>();
+            check::<13>();
+            check::<14>();
+            check::<15>();
+        }
+
+        #[test]
+        #[should_panic(expected = "between 1 and 15 nonzero evaluation points")]
+        fn deg_k_lagrange_coefficients_reject_zero_points() {
+            ShamirGaloisRingShare::deg_k_lagrange_polys_at_zero::<0>();
+        }
+
+        #[test]
+        #[should_panic(expected = "between 1 and 15 nonzero evaluation points")]
+        fn deg_k_lagrange_coefficients_reject_too_many_points() {
+            ShamirGaloisRingShare::deg_k_lagrange_polys_at_zero::<16>();
         }
 
         #[test]

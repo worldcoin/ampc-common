@@ -282,46 +282,6 @@ impl IrisVector {
         Ok(shares)
     }
 
-    /// Reconstruct an iris embedding from all five raw ORBIT5 shares, in the
-    /// original party order returned by [`secret_share_5_parties`](Self::secret_share_5_parties).
-    /// Each chunk is interpolated at zero and converted back from the monomial
-    /// basis to the embedding's basis A.
-    ///
-    /// This is local reconstruction for a caller that already holds every share.
-    /// Shares must belong to the same embedding and must not have been
-    /// preprocessed for comparison. This does not authenticate shares or detect
-    /// every inconsistent sharing.
-    ///
-    /// # Errors
-    /// Returns an error if a reconstructed coefficient is outside the signed
-    /// `i8` range, rather than truncating it.
-    pub fn reconstruct_5_parties(shares: &[IrisSecretSharedVector; 5]) -> eyre::Result<Self> {
-        let coefficients = ShamirGaloisRingShare::orbit5_deg_4_lagrange_polys_at_zero();
-        let mut result = [0i8; IRIS_VECTOR_SIZE];
-        for (chunk_index, chunk) in result.chunks_exact_mut(4).enumerate() {
-            let start = chunk_index * 4;
-            let mut element = GaloisRingElement::<basis::Monomial>::ZERO;
-            for (share, coefficient) in shares.iter().zip(&coefficients) {
-                let share_element = GaloisRingElement::from_coefs([
-                    share.0[start],
-                    share.0[start + 1],
-                    share.0[start + 2],
-                    share.0[start + 3],
-                ]);
-                element = element + share_element * *coefficient;
-            }
-            for (offset, coefficient) in element.to_basis_A().coefs.into_iter().enumerate() {
-                chunk[offset] = i8::try_from(coefficient as i16).map_err(|_| {
-                    eyre::eyre!(
-                        "Reconstructed coefficient at index {} is outside the i8 range",
-                        start + offset
-                    )
-                })?;
-            }
-        }
-        Ok(Self(result))
-    }
-
     /// Base64-encode the plaintext `i8` vector as standard base64 (with padding).
     /// Mainly useful for tests, dev tooling, and PCP fixture generation.
     pub fn to_base64(&self) -> String {
@@ -473,6 +433,46 @@ mod tests {
     use base64::Engine as _;
     use rand::{rngs::StdRng, thread_rng, SeedableRng};
 
+    /// Reconstruct an iris embedding from all five raw ORBIT5 shares, in the
+    /// original party order returned by [`IrisVector::secret_share_5_parties`].
+    /// Each chunk is interpolated at zero and converted back from the monomial
+    /// basis to the embedding's basis A.
+    ///
+    /// This is local reconstruction for a caller that already holds every share.
+    /// Shares must belong to the same embedding and must not have been
+    /// preprocessed for comparison. This does not authenticate shares or detect
+    /// every inconsistent sharing.
+    ///
+    /// # Errors
+    /// Returns an error if a reconstructed coefficient is outside the signed
+    /// `i8` range, rather than truncating it.
+    fn reconstruct_5_parties(shares: &[IrisSecretSharedVector; 5]) -> eyre::Result<IrisVector> {
+        let coefficients = ShamirGaloisRingShare::deg_4_lagrange_polys_at_zero();
+        let mut result = [0i8; IRIS_VECTOR_SIZE];
+        for (chunk_index, chunk) in result.chunks_exact_mut(4).enumerate() {
+            let start = chunk_index * 4;
+            let mut element = GaloisRingElement::<basis::Monomial>::ZERO;
+            for (share, coefficient) in shares.iter().zip(&coefficients) {
+                let share_element = GaloisRingElement::from_coefs([
+                    share.0[start],
+                    share.0[start + 1],
+                    share.0[start + 2],
+                    share.0[start + 3],
+                ]);
+                element = element + share_element * *coefficient;
+            }
+            for (offset, coefficient) in element.to_basis_A().coefs.into_iter().enumerate() {
+                chunk[offset] = i8::try_from(coefficient as i16).map_err(|_| {
+                    eyre::eyre!(
+                        "Reconstructed coefficient at index {} is outside the i8 range",
+                        start + offset
+                    )
+                })?;
+            }
+        }
+        Ok(IrisVector(result))
+    }
+
     #[test]
     fn test_random_normalized() {
         for _ in 0..1000 {
@@ -568,15 +568,12 @@ mod tests {
         }
         for original in inputs {
             let shares = original.secret_share_5_parties(&mut rng).unwrap();
-            let reconstructed = IrisVector::reconstruct_5_parties(&shares).unwrap();
+            let reconstructed = reconstruct_5_parties(&shares).unwrap();
             assert_eq!(reconstructed.0, original.0);
 
             let decoded = shares
                 .map(|share| IrisSecretSharedVector::from_base64(&share.to_base64()).unwrap());
-            assert_eq!(
-                IrisVector::reconstruct_5_parties(&decoded).unwrap().0,
-                original.0
-            );
+            assert_eq!(reconstruct_5_parties(&decoded).unwrap().0, original.0);
         }
     }
 
@@ -589,14 +586,8 @@ mod tests {
         for (a, b) in first.iter().zip(&second) {
             assert_ne!(a.0, b.0);
         }
-        assert_eq!(
-            IrisVector::reconstruct_5_parties(&first).unwrap().0,
-            original.0
-        );
-        assert_eq!(
-            IrisVector::reconstruct_5_parties(&second).unwrap().0,
-            original.0
-        );
+        assert_eq!(reconstruct_5_parties(&first).unwrap().0, original.0);
+        assert_eq!(reconstruct_5_parties(&second).unwrap().0, original.0);
     }
 
     #[test]
@@ -610,7 +601,7 @@ mod tests {
                 share.0[..4].copy_from_slice(&element.coefs);
                 share
             });
-            let error = IrisVector::reconstruct_5_parties(&shares).err().unwrap();
+            let error = reconstruct_5_parties(&shares).err().unwrap();
             assert!(error
                 .to_string()
                 .contains("index 0 is outside the i8 range"));
