@@ -10,6 +10,10 @@ ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is considered complete by maintainers" },
     # rand 0.8.5 unsoundness only affects custom loggers using rand::rng() during reseed
     { id = "RUSTSEC-2026-0097", reason = "transitive dep from sqlx/nalgebra/statrs; we don't use custom loggers calling rand::rng()" },
+    # Locked aws-sdk-s3 1.127.0 requires lru ^0.16.3; the fix requires >= 0.18.2.
+    # Its CacheKey(String) cannot panic on drop, so the vulnerable pop() path is unreachable.
+    # CI's cargo-deny 0.18.6 checks this transitive unsound advisory; newer defaults may skip it.
+    { id = "RUSTSEC-2026-0253", reason = "aws-sdk-s3 transitive dependency; panic-during-key-drop path is unreachable for its CacheKey(String). Remove when upstream supports patched lru >=0.18.2" },
     # quick-xml 0.26.0 XML-parse DoS (RUSTSEC-2026-0194 quadratic attribute check, RUSTSEC-2026-0195
     # NsReader namespace-alloc). Both patched only in quick-xml >= 0.41.0. Bump is infeasible: quick-xml
     # is reached solely via pprof 0.15 -> inferno ^0.11 (flamegraph feature in ampc-server-utils), and
