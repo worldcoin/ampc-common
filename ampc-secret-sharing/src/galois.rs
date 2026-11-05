@@ -525,7 +525,7 @@ pub mod degree4 {
         ///
         /// # Panics
         /// Panics unless `1 <= N <= 15`; the sequence has 15 nonzero points.
-        pub fn deg_k_lagrange_polys_at_zero<const N: usize>() -> [GaloisRingElement<Monomial>; N] {
+        fn deg_k_lagrange_polys_at_zero<const N: usize>() -> [GaloisRingElement<Monomial>; N] {
             assert!(
                 0 < N && N < GaloisRingElement::EXCEPTIONAL_SEQUENCE.len(),
                 "Lagrange interpolation requires between 1 and 15 nonzero evaluation points"
