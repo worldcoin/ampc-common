@@ -149,6 +149,33 @@ pub async fn start_coordination_server_with_extra_routes<T>(
 where
     T: Serialize + DeserializeOwned + Clone + Send + 'static,
 {
+    start_coordination_server_with_extra_routes_and_uuid(
+        config,
+        task_monitor,
+        shutdown_handler,
+        my_state,
+        batch_sync_shared_state,
+        extra_routes,
+        uuid::Uuid::new_v4(),
+    )
+    .await
+}
+
+/// Start coordination with the process identity established before startup effects.
+/// The caller must generate a fresh UUID for each process; persisted ownership
+/// checks and peer coordination must identify the same process.
+pub async fn start_coordination_server_with_extra_routes_and_uuid<T>(
+    config: &ServerCoordinationConfig,
+    task_monitor: &mut TaskMonitor,
+    shutdown_handler: &Arc<ShutdownHandler>,
+    my_state: &T,
+    batch_sync_shared_state: Option<Arc<Mutex<BatchSyncSharedState>>>,
+    extra_routes: Option<Router>,
+    process_id: uuid::Uuid,
+) -> (Arc<AtomicBool>, Arc<Mutex<HashSet<String>>>, String)
+where
+    T: Serialize + DeserializeOwned + Clone + Send + 'static,
+{
     tracing::info!("⚓️ ANCHOR: Starting Healthcheck, Readiness and Sync server");
 
     let is_ready_flag = Arc::new(AtomicBool::new(false));
@@ -159,7 +186,7 @@ where
         .get_own_healthcheck_port()
         .expect("Failed to get healthcheck port for this server");
 
-    let uuid = uuid::Uuid::new_v4().to_string();
+    let uuid = process_id.to_string();
     let _health_check_abort = task_monitor.spawn({
         let uuid = uuid.clone();
         let is_ready_flag = Arc::clone(&is_ready_flag);
@@ -1049,6 +1076,62 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn coordination_reports_the_preestablished_process_identity() -> Result<()> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        let mut config: ServerCoordinationConfig = serde_json::from_str(r#"{"party_id":0}"#)?;
+        config.healthcheck_ports = vec![port.to_string()];
+        let process_id = uuid::Uuid::new_v4();
+        let mut monitor = TaskMonitor::new();
+        let (ready, _, reported) = start_coordination_server_with_extra_routes_and_uuid(
+            &config,
+            &mut monitor,
+            &Arc::new(ShutdownHandler::new(0)),
+            &serde_json::json!({}),
+            None,
+            None,
+            process_id,
+        )
+        .await;
+        assert_eq!(reported, process_id.to_string());
+        assert!(!ready.load(Ordering::SeqCst));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(1))
+            .build()?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match client
+                    .get(format!("http://127.0.0.1:{port}/health"))
+                    .send()
+                    .await
+                {
+                    Ok(response) => {
+                        let probe: ReadyProbeResponse = response.error_for_status()?.json().await?;
+                        assert_eq!(probe.uuid, process_id.to_string());
+                        assert!(!probe.is_ready);
+                        return Ok::<(), eyre::Report>(());
+                    }
+                    Err(error) if error.is_connect() => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        })
+        .await??;
+        monitor.tasks.abort_all();
+        while let Some(result) = monitor.tasks.join_next().await {
+            match result {
+                Ok(result) => result?,
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
 
     #[derive(Clone)]
     enum HeartbeatReply {
