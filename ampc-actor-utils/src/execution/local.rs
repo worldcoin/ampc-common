@@ -20,11 +20,25 @@ use std::{
 };
 use tokio::{sync::Mutex, task::JoinHandle};
 
+/// The fixed identities of the three parties, in role order.
 pub fn generate_local_identities() -> Vec<Identity> {
     vec![
         Identity::from("alice"),
         Identity::from("bob"),
         Identity::from("charlie"),
+    ]
+}
+
+/// The fixed identities of the five ORBIT5 parties, in role order. Used both
+/// in tests and to derive a consistent per-index self-identity across
+/// parties in production (see `build_network_handle`).
+pub fn generate_local_identities_orbit5() -> Vec<Identity> {
+    vec![
+        Identity::from("alice"),
+        Identity::from("bob"),
+        Identity::from("charlie"),
+        Identity::from("dave"),
+        Identity::from("erin"),
     ]
 }
 

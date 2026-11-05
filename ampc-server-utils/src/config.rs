@@ -1,6 +1,6 @@
 //! Configuration for AMPC coordination server
 
-use eyre::Result;
+use eyre::{ensure, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -34,7 +34,7 @@ pub struct MetricsConfig {
 /// Configuration for server coordination
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerCoordinationConfig {
-    /// Party/node ID (0, 1, or 2)
+    /// Zero-based party/node ID, indexing node_hostnames and healthcheck_ports.
     #[serde(default)]
     pub party_id: usize,
 
@@ -122,6 +122,27 @@ where
 }
 
 impl ServerCoordinationConfig {
+    /// Validate the configured membership before starting listeners or polling peers.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.node_hostnames.is_empty(),
+            "node_hostnames must not be empty"
+        );
+        ensure!(
+            self.node_hostnames.len() == self.healthcheck_ports.len(),
+            "node_hostnames and healthcheck_ports must have matching lengths ({} != {})",
+            self.node_hostnames.len(),
+            self.healthcheck_ports.len()
+        );
+        ensure!(
+            self.party_id < self.node_hostnames.len(),
+            "party_id {} is out of bounds for {} configured nodes",
+            self.party_id,
+            self.node_hostnames.len()
+        );
+        Ok(())
+    }
+
     /// Get the healthcheck port for this server (from healthcheck_ports[party_id])
     pub fn get_own_healthcheck_port(&self) -> Result<usize> {
         self.healthcheck_ports
