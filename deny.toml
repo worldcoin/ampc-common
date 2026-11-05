@@ -33,6 +33,10 @@ ignore = [
     # Oversized symlink targets can abort extraction before their contents are read.
     # Archive metadata is covered by the signature verified before ZipArchive::extract.
     { id = "RUSTSEC-2026-0429", reason = "ZIP symlink allocation DoS: build-only extraction of signature-verified libsodium MSVC archives; no runtime ZIP input or Linux ZIP extraction. Remove once upstream supports patched zip >=9" },
+    # pin-utils is archived; this is a maintenance advisory with no patched release.
+    # Only transitive: hyper and aws-smithy-{http,runtime,types} still use it in our lockfile.
+    # Remove this exception when dependency updates eliminate pin-utils from the graph.
+    { id = "RUSTSEC-2026-0441", reason = "unmaintained transitive dependency of Hyper and AWS Smithy; no direct workspace use or patched release (including 0.1.1)" },
 ]
 
 [sources]
