@@ -1,8 +1,10 @@
 use async_trait::async_trait;
-use eyre::{bail, Result};
+use eyre::{bail, eyre, Result};
+use std::collections::BTreeMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::execution::player::Role;
 use crate::network::mpc::NetworkValue;
 use crate::network::tcp::NetworkConnection;
 
@@ -164,6 +166,86 @@ impl<T: NetworkConnection> ControlChannel for TcpControlChannel<T> {
         match prev_token {
             NetworkValue::Bytes(ref bytes) if &bytes[..] == SYNC_TOKEN_BYTES => {}
             _ => bail!("invalid sync token received from prev party"),
+        }
+
+        Ok(())
+    }
+}
+
+/// A synchronization-safe control-plane channel to every other party,
+/// addressed by [`Role`] rather than ring position. Generalizes
+/// [`ControlChannel`] beyond the 3-party ring case: works for any number of
+/// parties, not just 3.
+///
+/// Like [`ControlChannel`], sends block until flushed and there is no
+/// automatic retry on error; call
+/// [`crate::network::mpc::NetworkHandle::mesh_control_channel`] again to
+/// reconnect.
+#[async_trait]
+pub trait MeshControlChannel: Send {
+    /// Send a value to `to`. Blocks until flushed.
+    async fn send(&mut self, to: Role, value: NetworkValue) -> Result<()>;
+
+    /// Receive a value from `from`. Blocks until a full message arrives.
+    async fn recv(&mut self, from: Role) -> Result<NetworkValue>;
+
+    /// All-to-all barrier: send a sync token to every other party, then
+    /// receive one from every other party.
+    ///
+    /// Every party must call `sync()` concurrently. Sends are issued before
+    /// receives to avoid deadlock, as in [`ControlChannel::sync`].
+    async fn sync(&mut self) -> Result<()>;
+}
+
+/// [`MeshControlChannel`] implementation over a generic [`NetworkConnection`]
+/// stream. Holds one dedicated stream per other party. Constructed by
+/// [`crate::network::mpc::NetworkHandle::mesh_control_channel`].
+pub(crate) struct TcpMeshControlChannel<T: NetworkConnection> {
+    streams: BTreeMap<Role, T>,
+    shutdown_ct: CancellationToken,
+}
+
+impl<T: NetworkConnection> TcpMeshControlChannel<T> {
+    pub(super) fn new(streams: BTreeMap<Role, T>, shutdown_ct: CancellationToken) -> Self {
+        Self {
+            streams,
+            shutdown_ct,
+        }
+    }
+}
+
+#[async_trait]
+impl<T: NetworkConnection> MeshControlChannel for TcpMeshControlChannel<T> {
+    async fn send(&mut self, to: Role, value: NetworkValue) -> Result<()> {
+        let stream = self
+            .streams
+            .get_mut(&to)
+            .ok_or_else(|| eyre!("no control channel to role {to:?}"))?;
+        write_value(stream, value, &self.shutdown_ct).await
+    }
+
+    async fn recv(&mut self, from: Role) -> Result<NetworkValue> {
+        let stream = self
+            .streams
+            .get_mut(&from)
+            .ok_or_else(|| eyre!("no control channel to role {from:?}"))?;
+        read_value(stream, &self.shutdown_ct).await
+    }
+
+    async fn sync(&mut self) -> Result<()> {
+        let token = NetworkValue::Bytes(SYNC_TOKEN_BYTES.to_vec().into());
+        // BTreeMap iteration is deterministic (unlike a HashMap), so every
+        // party visits the same roles in the same order here.
+        let roles: Vec<Role> = self.streams.keys().copied().collect();
+
+        for role in &roles {
+            self.send(*role, token.clone()).await?;
+        }
+        for role in &roles {
+            match self.recv(*role).await? {
+                NetworkValue::Bytes(ref bytes) if &bytes[..] == SYNC_TOKEN_BYTES => {}
+                _ => bail!("invalid sync token received from role {role:?}"),
+            }
         }
 
         Ok(())

@@ -59,6 +59,8 @@ impl GallerySync {
         config: &ServerCoordinationConfig,
         local: GalleryState,
     ) -> Result<()> {
+        config.validate()?;
+        let node_count = config.node_hostnames.len();
         *self.0.write().expect("gallery lock poisoned") = Some(local.clone());
         let responses = tokio::time::timeout(
             std::time::Duration::from_secs(config.startup_sync_timeout_secs),
@@ -86,7 +88,13 @@ impl GallerySync {
             )
         })??;
         // The coordination client returns peers in ascending party order, excluding this party.
-        let parties = (0..3).filter(|party| *party != config.party_id);
+        ensure!(
+            responses.len() == node_count - 1,
+            "Expected {} gallery snapshots, received {}",
+            node_count - 1,
+            responses.len()
+        );
+        let parties = (0..node_count).filter(|party| *party != config.party_id);
         for (party, (status, body)) in parties.zip(responses) {
             ensure!(
                 status.is_success(),
@@ -143,50 +151,50 @@ mod tests {
     }
     #[tokio::test]
     async fn exchanges_post_recovery_state_and_reports_conflicting_party() {
-        for mismatch in [false, true] {
-            let syncs = [
-                GallerySync::default(),
-                GallerySync::default(),
-                GallerySync::default(),
-            ];
-            let mut servers = Vec::new();
-            let mut ports = Vec::new();
-            for sync in &syncs {
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-                ports.push(listener.local_addr().unwrap().port().to_string());
-                let routes = sync.routes();
-                servers.push(tokio::spawn(async move {
-                    axum::serve(listener, routes).await.unwrap()
-                }));
-            }
-            let configs: Vec<ServerCoordinationConfig> = (0..3).map(|party| serde_json::from_value(serde_json::json!({
-                "party_id": party, "node_hostnames": "[\"127.0.0.1\", \"127.0.0.1\", \"127.0.0.1\"]",
-                "healthcheck_ports": serde_json::to_string(&ports).unwrap(), "http_query_retry_delay_ms": 1, "startup_sync_timeout_secs": 5
-        })).unwrap()).collect();
-            let mut changed = state();
-            if mismatch {
-                changed.serial_ids_digest[0] += 1;
-            }
-            let delayed = async {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                syncs[2].check(&configs[2], changed).await
-            };
-            let (a, b, c) = tokio::join!(
-                syncs[0].check(&configs[0], state()),
-                syncs[1].check(&configs[1], state()),
-                delayed,
-            );
-            if mismatch {
-                assert!(a.unwrap_err().to_string().contains("party 2"));
-                assert!(b.unwrap_err().to_string().contains("party 2"));
-                assert!(c.is_err());
-            } else {
-                a.unwrap();
-                b.unwrap();
-                c.unwrap();
-            }
-            for server in servers {
-                server.abort();
+        for node_count in [3, 5] {
+            for mismatch in [false, true] {
+                let syncs: Vec<_> = (0..node_count).map(|_| GallerySync::default()).collect();
+                let mut servers = tokio::task::JoinSet::new();
+                let mut ports = Vec::new();
+                for sync in &syncs {
+                    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    ports.push(listener.local_addr().unwrap().port().to_string());
+                    let routes = sync.routes();
+                    servers.spawn(async move { axum::serve(listener, routes).await.unwrap() });
+                }
+                let configs: Vec<ServerCoordinationConfig> = (0..node_count)
+                    .map(|party| serde_json::from_value(serde_json::json!({
+                        "party_id": party,
+                        "node_hostnames": serde_json::to_string(&vec!["127.0.0.1"; node_count]).unwrap(),
+                        "healthcheck_ports": serde_json::to_string(&ports).unwrap(),
+                        "http_query_retry_delay_ms": 1,
+                        "startup_sync_timeout_secs": 5
+                    })).unwrap()).collect();
+                let last_party = node_count - 1;
+                let results =
+                    futures::future::join_all(syncs.iter().zip(&configs).enumerate().map(
+                        |(party, (sync, config))| async move {
+                            let mut local = state();
+                            if party == last_party {
+                                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                if mismatch {
+                                    local.serial_ids_digest[0] += 1;
+                                }
+                            }
+                            sync.check(config, local).await
+                        },
+                    ))
+                    .await;
+                for (party, result) in results.into_iter().enumerate() {
+                    if mismatch {
+                        let error = result.unwrap_err().to_string();
+                        if party != last_party {
+                            assert!(error.contains(&format!("party {last_party}")), "{error}");
+                        }
+                    } else {
+                        result.unwrap();
+                    }
+                }
             }
         }
     }
